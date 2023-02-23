@@ -323,13 +323,23 @@ impl Universe{
         /*if let Some(region) = regions{
             statement.bind((1,region as i64)).unwrap();
         }*/
-        let mut regions = Vec::new();
+        let mut temp_regions = Vec::new();
         while let Ok(sqlite::State::Row) = statement.next() {
             let mut region = Region::new();
             region.id=statement.read::<i64, _>("regionId").unwrap() as u32; 
             region.name=statement.read::<String, _>("regionName").unwrap();
-            regions.push(region);
+            temp_regions.push(region);
         };
+        let query = "SELECT constellationId FROM mapConstellations WHERE regionId=?";
+        let mut regions = Vec::new();
+        for mut region in temp_regions{
+            let mut statement = connection.prepare(query)?;
+            statement.bind((1,region.id as i64)).unwrap();
+            while let Ok(sqlite::State::Row) = statement.next() {
+                region.constellations.push(statement.read::<i64, _>("constellationId").unwrap() as u32);
+            }
+            regions.push(region);
+        }
         Ok(regions)
     }
 
@@ -364,6 +374,7 @@ impl Universe{
                 if vec_parent_ids.len() > 0 {
                     query += " WHERE mss.constellationId=? ";
                 };
+                let mut temp_vec = Vec::new();
                 loop{
                     let mut statement = thread_connection.prepare(&query).unwrap();
                     if vec_parent_ids.len() > 0 {
@@ -381,11 +392,22 @@ impl Universe{
                         object.cords2d.x = statement.read::<i64, _>("x").unwrap() as i32;
                         object.cords2d.y = statement.read::<i64, _>("y").unwrap() as i32;
                         object.region = statement.read::<i64, _>("regionId").unwrap() as u32;
-                        sh_objects.lock().unwrap().push(object);
+                        temp_vec.push(object);
                     };
                     if vec_parent_ids.len() == 0{
                         break;
                     };
+                }
+                let mut query = String::from(" SELECT msg.solarSystemId FROM mapSystemGates ");
+                query += " AS msg WHERE msg.systemGateId ";
+                query += " IN (SELECT destination FROM mapSystemGates AS msg WHERE solarSystemId = ?)";
+                for mut object in temp_vec {
+                    let mut statement = thread_connection.prepare(&query).unwrap();
+                    statement.bind((1,object.id as i64)).unwrap();
+                    while let Ok(sqlite::State::Row) = statement.next() {
+                        object.connections.push(statement.read::<i64, _>("solarSystemId").unwrap() as u32);
+                    }
+                    sh_objects.lock().unwrap().push(object);
                 }
             });
             // store the handles
@@ -431,22 +453,32 @@ impl Universe{
                 if vec_parent_ids.len() > 0 {
                     query += " WHERE regionId=?";
                 };
+                let mut temp_vec = Vec::new();
                 loop{
                     let mut statement = thread_connection.prepare(&query).unwrap();
                     if vec_parent_ids.len() > 0 {
                         statement.bind((1,vec_parent_ids.pop().unwrap() as i64)).unwrap();
                     }
-                     //while there are regions left to consume
+                    //while there are regions left to consume
                     while let Ok(sqlite::State::Row) = statement.next() {
                         let mut object = Constellation::new();
                         object.id = statement.read::<i64, _>("constellationId").unwrap() as u32; 
                         object.name = statement.read::<String, _>("constellationName").unwrap();
                         object.region = statement.read::<i64, _>("regionId").unwrap() as u32;
-                        sh_objects.lock().unwrap().push(object);
+                        temp_vec.push(object);
                     };
                     if vec_parent_ids.len() == 0{
                         break;
                     };
+                }
+                let query = "SELECT solarSystemId FROM mapSolarSystems WHERE constellationId = ?";
+                for mut object in temp_vec{
+                    let mut statement = thread_connection.prepare(&query).unwrap();
+                    statement.bind((1,object.id as i64)).unwrap();
+                    while let Ok(sqlite::State::Row) = statement.next() {
+                        object.solar_systems.push(statement.read::<i64, _>("solarSystemId").unwrap() as u32); 
+                    };
+                    sh_objects.lock().unwrap().push(object);
                 }
             });
             // store the handles
