@@ -9,6 +9,7 @@ repository = "https://github.com/rafaga/sde/"
 license = "LGPL-3.0-or-later"
 keywords = ["sde", "eve-online"]
 categories = ["games", "value-formatting"]
+exclude = ["tests/","target/"]
 
 [badges]
 # The `maintenance` table indicates the status of the maintenance of
