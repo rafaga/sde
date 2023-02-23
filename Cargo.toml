@@ -1,0 +1,10 @@
+[package]
+name = "sde"
+version = "0.0.1"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+fux_kdtree = "0.2.0"
+sqlite = "0.30.4"
