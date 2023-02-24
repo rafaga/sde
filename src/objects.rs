@@ -10,13 +10,23 @@ use super::consts;
 // This can by any object or point with its associated metadata
 /// Struct that contains coordinates to help calculate nearest point in space
 #[derive(Copy, Clone, PartialEq)]
-pub struct KdtreePoint {
+pub struct SpatialPoint {
     dims: [f64; 3],
     /// Object Identifier for search propurses
-    pub id:i32,
+    pub id:u32,
 }
 
-impl KdtreePointTrait for KdtreePoint{
+impl SpatialPoint {
+    /// Creates a new Spatial point with an Id (solarSystemId) and the system's 3D coordinates
+    pub fn new(id: u32, x:f64, y:f64, z:f64) ->SpatialPoint{
+        SpatialPoint { 
+            dims: [x, y, z], 
+            id,
+        }
+    }
+}
+
+impl KdtreePointTrait for SpatialPoint{
     #[inline] // the inline on this method is important! as without it there is ~25% speed loss on the tree when cross-crate usage.
     fn dims(&self) -> &[f64] {
         &self.dims
@@ -296,6 +306,8 @@ pub struct Universe {
     pub moons: HashMap<u32, Moon>,
     /// Dictionaries struct
     pub dicts: Dictionaries,
+    /// KdTree Point locator
+    pub points: Option<kdtree::kdtree::Kdtree<SpatialPoint>>,
 }
 
 impl Universe{
@@ -309,7 +321,24 @@ impl Universe{
             planets:HashMap::new(),
             moons:HashMap::new(),
             dicts:Dictionaries::new(),
+            points: None,
         }
+    }
+
+    /// Function to get all the K-Space 3D coordinates from the SDE
+    pub fn get_points(&self, connection:&sqlite::ConnectionWithFullMutex) -> Result<Vec<SpatialPoint>,Error> {
+        let query = "SELECT SolarSystemId, centerX, centerY, centerZ FROM mapSolarSystems WHERE SolarSystemId BETWEEN 30000000 AND 30999999;";
+        let mut statement = connection.prepare(query)?;
+        let mut vec_points = Vec::new();
+        while let Ok(sqlite::State::Row) = statement.next() { 
+            let x =statement.read::<i64, _>("centerX").unwrap() as f64;
+            let y =statement.read::<i64, _>("centerY").unwrap() as f64; 
+            let z =statement.read::<i64, _>("centerZ").unwrap() as f64;
+            let id =statement.read::<i64, _>("solarSystemId").unwrap() as u32;
+            let point = SpatialPoint::new(id, x, y, z);
+            vec_points.push(point);
+        };
+        Ok(vec_points)
     }
 
     /// Function to get every region available in SDE database
@@ -351,6 +380,7 @@ impl Universe{
 
         //Preparing the Mutexed Vector to get all constellations
         let vec_objects = Arc::new(Mutex::new(Vec::new()));
+
         // Preparing a Mutexed Vector with region ids data
         let vec_parent_ids = match constellation{
             Some(temp_vec) => Arc::new(Mutex::new(temp_vec)),

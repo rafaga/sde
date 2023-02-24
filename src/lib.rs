@@ -89,4 +89,16 @@ impl SdeManager<'_> {
 
         Ok(true)
     }
+
+    /// Function that extracts points from database and insert into Universe struct.
+    pub fn get_points(&self, univ:&mut Universe) -> Result<bool,Error>{
+        if let Some(_) = univ.points{
+            return Ok(false);
+        }
+        let connection = sqlite::Connection::open_with_full_mutex(self.path)?;
+        if let Ok(mut vector) = univ.get_points(&connection){
+            univ.points=Some(kdtree::kdtree::Kdtree::new(vector.as_mut_slice()));
+        }
+        Ok(true)
+    }
 }

@@ -30,4 +30,12 @@ mod universe_tests {
         assert_eq!(univ.constellations.len(),789);
     }
 
+    #[test]
+    fn test_spatialpoints(){
+        let path = Path::new("tests/sde.db");
+        let manager = sde::SdeManager::new(path);
+        let mut univ = sde::objects::Universe::new();
+        assert!(manager.get_points(&mut univ).unwrap());
+    }
+
 }
