@@ -1,11 +1,11 @@
 use std::collections::HashMap;
-use std::sync::{Arc,Mutex};
-use std::thread;
+use std::sync::{Arc, Mutex};
+use std::{thread, vec};
 /*use kdtree::kdtree::Kdtree;
 use kdtree::kdtree::distance::squared_euclidean;*/
-use kdtree::kdtree::KdtreePointTrait;
-use sqlite::Error;
 use super::consts;
+use kdtree::kdtree::KdtreePointTrait;
+use rusqlite::Error;
 
 // This can by any object or point with its associated metadata
 /// Struct that contains coordinates to help calculate nearest point in space
@@ -13,20 +13,20 @@ use super::consts;
 pub struct SpatialPoint {
     dims: [f64; 3],
     /// Object Identifier for search propurses
-    pub id:u32,
+    pub id: u32,
 }
 
 impl SpatialPoint {
     /// Creates a new Spatial point with an Id (solarSystemId) and the system's 3D coordinates
-    pub fn new(id: u32, x:f64, y:f64, z:f64) ->SpatialPoint{
-        SpatialPoint { 
-            dims: [x, y, z], 
+    pub fn new(id: u32, x: f64, y: f64, z: f64) -> SpatialPoint {
+        SpatialPoint {
+            dims: [x, y, z],
             id,
         }
     }
 }
 
-impl KdtreePointTrait for SpatialPoint{
+impl KdtreePointTrait for SpatialPoint {
     #[inline] // the inline on this method is important! as without it there is ~25% speed loss on the tree when cross-crate usage.
     fn dims(&self) -> &[f64] {
         &self.dims
@@ -35,7 +35,7 @@ impl KdtreePointTrait for SpatialPoint{
 
 #[derive(Hash, PartialEq, Eq)]
 /// 3d point coordinates that it is used in:
-/// 
+///
 /// - SolarSystems
 pub struct Coordinates {
     /// X coorddinate
@@ -43,17 +43,13 @@ pub struct Coordinates {
     /// Y coordinate
     pub y: i64,
     /// Z coordinate
-    pub z: i64
+    pub z: i64,
 }
 
 impl Coordinates {
-    /// Creates a new Coordinates struct. ALl the coordinates are initialized. 
-    pub fn new() -> Self{
-        Coordinates {
-            x:0,
-            y:0,
-            z:0,
-        }
+    /// Creates a new Coordinates struct. ALl the coordinates are initialized.
+    pub fn new() -> Self {
+        Coordinates { x: 0, y: 0, z: 0 }
     }
 }
 
@@ -64,24 +60,20 @@ impl Default for Coordinates {
 }
 
 /// 2d point coordinates that it is used in:
-/// 
+///
 /// - SolarSystems (to represent abstraction maps)
 #[derive(Hash, PartialEq, Eq)]
 pub struct AbstractCoordinates {
     /// X coordinate
     pub x: i32,
     /// Y coordinate
-    pub y: i32
+    pub y: i32,
 }
 
-
 impl AbstractCoordinates {
-    /// Creates a new AbstractCoordinate struct. ALl the coordinates are initialized. 
-    pub fn new() -> Self{
-        AbstractCoordinates {
-            x:0,
-            y:0,
-        }
+    /// Creates a new AbstractCoordinate struct. ALl the coordinates are initialized.
+    pub fn new() -> Self {
+        AbstractCoordinates { x: 0, y: 0 }
     }
 }
 
@@ -93,10 +85,10 @@ impl Default for AbstractCoordinates {
 
 /// Abstraction for a Planet Moons. It store data relevant to this entity
 #[derive(Hash, PartialEq, Eq)]
-pub struct Moon{
+pub struct Moon {
     /// Moon Identifier
     pub id: u32,
-    /// Moon's Planet identifier 
+    /// Moon's Planet identifier
     pub planet: u32,
     /// The cardinal number of this moon in the planet
     pub index: u8,
@@ -104,14 +96,14 @@ pub struct Moon{
     pub solar_system: u32,
 }
 
-impl Moon{
+impl Moon {
     /// Creates a new Moon Strcut. ALl the values are initialized. Needs to be filled
-    pub fn new() -> Self{
+    pub fn new() -> Self {
         Moon {
-            id: 0, 
+            id: 0,
             planet: 0,
             index: 0,
-            solar_system:0,
+            solar_system: 0,
         }
     }
 }
@@ -124,20 +116,20 @@ impl Default for Moon {
 
 /// Abstraction for a Planet. It store data relevant to this entity
 #[derive(Hash, PartialEq, Eq)]
-pub struct Planet{
+pub struct Planet {
     /// Planet identifier
     pub id: u32,
     /// Planet's Solar System Idetifier
     pub solar_system: u32,
     /// The cardinal number of this planet in the solar system.
-    pub index: u8
+    pub index: u8,
 }
 
-impl Planet{
+impl Planet {
     /// Creates a new Planet Strcut. ALl the values are initialized. Needs to be filled
-    pub fn new() -> Self{
+    pub fn new() -> Self {
         Planet {
-            id: 0, 
+            id: 0,
             solar_system: 0,
             index: 0,
         }
@@ -152,7 +144,7 @@ impl Default for Planet {
 
 /// Abstraction for a Solar System. It store data relevant to this entity
 #[derive(Hash, PartialEq, Eq)]
-pub struct SolarSystem{
+pub struct SolarSystem {
     /// Solar System identifier
     pub id: u32,
     /// Solar System name
@@ -171,13 +163,13 @@ pub struct SolarSystem{
     pub cords2d: AbstractCoordinates,
 }
 
-impl SolarSystem{
+impl SolarSystem {
     /// Creates a new Solar System Strcut. ALl the values are initialized. Needs to be filled
-    pub fn new() -> Self{
+    pub fn new() -> Self {
         SolarSystem {
-            id: 0, 
-            name:String::new(),
-            region:0,
+            id: 0,
+            name: String::new(),
+            region: 0,
             constellation: 0,
             planets: Vec::new(),
             connections: Vec::new(),
@@ -195,7 +187,7 @@ impl Default for SolarSystem {
 
 /// Abstraction for a Constellation. It store data relevant to this entity
 #[derive(Hash, PartialEq, Eq)]
-pub struct Constellation{
+pub struct Constellation {
     /// Constellation Identifier
     pub id: u32,
     /// Constellation Name
@@ -205,15 +197,15 @@ pub struct Constellation{
     /// Solar System vector with Identifer numbers included in the constellation
     pub solar_systems: Vec<u32>,
     /// Solar System 2D Coordinates with the propourse of representing the system in abstraction map.
-    pub cords2d: AbstractCoordinates
+    pub cords2d: AbstractCoordinates,
 }
 
-impl Constellation{
+impl Constellation {
     /// Creates a new Constellation Strcut. ALl the values are initialized. Needs to be filled
-    pub fn new() -> Self{
+    pub fn new() -> Self {
         Constellation {
-            id:0,
-            name:String::new(), 
+            id: 0,
+            name: String::new(),
             region: 0,
             solar_systems: Vec::new(),
             cords2d: AbstractCoordinates::default(),
@@ -229,24 +221,24 @@ impl Default for Constellation {
 
 /// Abstraction for a Region. It store data relevant to this entity
 #[derive(Hash, PartialEq, Eq)]
-pub struct Region{
+pub struct Region {
     /// Region Identifier
     pub id: u32,
     /// Region Name
     pub name: String,
     /// Vector with Region's Constellationm Identifiers
     pub constellations: Vec<u32>,
-     /// Region 2D Coordinates with the propourse of representing the system in abstraction map.
-    pub cords2d: AbstractCoordinates
+    /// Region 2D Coordinates with the propourse of representing the system in abstraction map.
+    pub cords2d: AbstractCoordinates,
 }
 
-impl Region{
+impl Region {
     /// Creates a new Region Strcut. ALl the values are initialized. Needs to be filled
-    pub fn new() -> Self{
-        Region{
-            id:0, 
-            name:String::new(), 
-            constellations:Vec::new(),
+    pub fn new() -> Self {
+        Region {
+            id: 0,
+            name: String::new(),
+            constellations: Vec::new(),
             cords2d: AbstractCoordinates::default(),
         }
     }
@@ -257,24 +249,24 @@ impl Default for Region {
         Self::new()
     }
 }
- 
+
 /// Struct that contains Dictionary to search regions, constellations and solarsystems by name
-pub struct Dictionaries{
+pub struct Dictionaries {
     /// Solar system dictionary
-    pub system_names: HashMap<String,u32>,
+    pub system_names: HashMap<String, u32>,
     /// Constellations dictionary
-    pub constellation_names: HashMap<String,u32>,
+    pub constellation_names: HashMap<String, u32>,
     /// Region dictionary
-    pub region_names: HashMap<String,u32>,
+    pub region_names: HashMap<String, u32>,
 }
 
-impl Dictionaries{
+impl Dictionaries {
     /// Creates a new Dictionaries Strcut. ALl the values are initialized. Needs to be filled
-    pub fn new() -> Dictionaries{
-        Dictionaries{
-            system_names:HashMap::new(),
-            constellation_names:HashMap::new(),
-            region_names:HashMap::new(),
+    pub fn new() -> Dictionaries {
+        Dictionaries {
+            system_names: HashMap::new(),
+            constellation_names: HashMap::new(),
+            region_names: HashMap::new(),
         }
     }
 }
@@ -286,7 +278,7 @@ impl Default for Dictionaries {
 }
 
 /// Struct that contains everything in EVE Onoline Universe
-/// 
+///
 /// - Regions
 /// - Constellations
 /// - SolarSystems
@@ -295,9 +287,9 @@ impl Default for Dictionaries {
 /// - and the object dictionaries
 pub struct Universe {
     /// Region objects you can access the data with their Identfiers
-    pub regions: HashMap<u32,Region>,
+    pub regions: HashMap<u32, Region>,
     /// Constellation objects you can access the data with their Identfiers
-    pub constellations: HashMap<u32,Constellation>,
+    pub constellations: HashMap<u32, Constellation>,
     /// Solarsystem objects you can access the data with their Identfiers
     pub solar_systems: HashMap<u32, SolarSystem>,
     /// Planet objects you can access the data with their Identfiers
@@ -310,70 +302,94 @@ pub struct Universe {
     pub points: Option<kdtree::kdtree::Kdtree<SpatialPoint>>,
 }
 
-impl Universe{
-
+impl Universe {
     /// Creates a new Universe Strcut. ALl the values are initialized. Needs to be filled
-    pub fn new() -> Universe{
-        Universe{
-            regions:HashMap::new(),
-            constellations:HashMap::new(),
-            solar_systems:HashMap::new(),
-            planets:HashMap::new(),
-            moons:HashMap::new(),
-            dicts:Dictionaries::new(),
+    pub fn new() -> Universe {
+        Universe {
+            regions: HashMap::new(),
+            constellations: HashMap::new(),
+            solar_systems: HashMap::new(),
+            planets: HashMap::new(),
+            moons: HashMap::new(),
+            dicts: Dictionaries::new(),
             points: None,
         }
     }
 
     /// Function to get all the K-Space 3D coordinates from the SDE
-    pub fn get_points(&self, connection:&sqlite::ConnectionWithFullMutex) -> Result<Vec<SpatialPoint>,Error> {
+    pub fn get_points(&self, connection: rusqlite::Connection) -> Result<Vec<SpatialPoint>, Error> {
         let query = "SELECT SolarSystemId, centerX, centerY, centerZ FROM mapSolarSystems WHERE SolarSystemId BETWEEN 30000000 AND 30999999;";
         let mut statement = connection.prepare(query)?;
+        let mut rows = statement.query([])?;
         let mut vec_points = Vec::new();
-        while let Ok(sqlite::State::Row) = statement.next() { 
-            let x =statement.read::<i64, _>("centerX").unwrap() as f64;
-            let y =statement.read::<i64, _>("centerY").unwrap() as f64; 
-            let z =statement.read::<i64, _>("centerZ").unwrap() as f64;
-            let id =statement.read::<i64, _>("solarSystemId").unwrap() as u32;
+        while let Some(row) = rows.next()? {
+            let x = row.get(1)?;
+            let y = row.get(2)?;
+            let z = row.get(3)?;
+            let id = row.get(0)?;
             let point = SpatialPoint::new(id, x, y, z);
             vec_points.push(point);
-        };
+        }
         Ok(vec_points)
     }
 
     /// Function to get every region available in SDE database
-    pub fn get_region(&self, connection:&sqlite::ConnectionWithFullMutex,  regions: Option<Vec<u32>>) -> Result<Vec<Region>,Error>{
+    pub fn get_region(
+        &self,
+        connection: &rusqlite::Connection,
+        regions: Option<Vec<u32>>,
+    ) -> Result<Vec<Region>, Error> {
         let mut query = String::from("SELECT regionId, regionName FROM mapRegions");
-        if let Some(..) = regions{
-            query += " WHERE regionId=?;";
-        } 
-        
-        let mut statement = connection.prepare(query)?;
-        /*if let Some(region) = regions{
-            statement.bind((1,region as i64)).unwrap();
-        }*/
         let mut temp_regions = Vec::new();
-        while let Ok(sqlite::State::Row) = statement.next() {
-            let mut region = Region::new();
-            region.id=statement.read::<i64, _>("regionId").unwrap() as u32; 
-            region.name=statement.read::<String, _>("regionName").unwrap();
-            temp_regions.push(region);
-        };
-        let query = "SELECT constellationId FROM mapConstellations WHERE regionId=?";
-        let mut regions = Vec::new();
-        for mut region in temp_regions{
-            let mut statement = connection.prepare(query)?;
-            statement.bind((1,region.id as i64)).unwrap();
-            while let Ok(sqlite::State::Row) = statement.next() {
-                region.constellations.push(statement.read::<i64, _>("constellationId").unwrap() as u32);
-            }
-            regions.push(region);
+        let param_values: Vec<u32> = Vec::new();
+        let mut regions_result = Vec::new();
+        let mut vec_params = Vec::new();
+
+        if let Some(temp_vec) = regions {
+            query += " WHERE regionId=?;";
+            vec_params = temp_vec;
         }
-        Ok(regions)
+        loop {
+            let mut statement = connection.prepare(query.as_str())?;
+            let mut rows;
+            if vec_params.len() > 0 {
+                rows = statement.query([vec_params.pop().unwrap()])?;
+            } else {
+                rows = statement.query([])?;
+            }
+            while let Some(row) = rows.next()? {
+                let mut region = Region::new();
+                region.id = row.get(0)?;
+                region.name = row.get(1)?;
+                temp_regions.push(region);
+            }
+            let query = "SELECT constellationId FROM mapConstellations WHERE regionId=?";
+
+            loop {
+                let mut region = temp_regions.pop().unwrap();
+                let mut statement = connection.prepare(query)?;
+                let mut rows = statement.query([region.id])?;
+                while let Some(row) = rows.next()? {
+                    region.constellations.push(row.get(0)?);
+                }
+                regions_result.push(region);
+                if temp_regions.len() == 0 {
+                    break;
+                }
+            }
+            if param_values.len() == 0 {
+                break;
+            }
+        }
+        Ok(regions_result)
     }
 
     /// Function to get every Solarsystem or a Solar systems for a specific Constellation
-    pub fn get_solarsystem(&self,  connection:sqlite::ConnectionWithFullMutex,  constellation: Option<Vec<u32>>) -> Result<Vec<SolarSystem>,Error>{
+    pub fn get_solarsystem(
+        &self,
+        connection: rusqlite::Connection,
+        constellation: Option<Vec<u32>>,
+    ) -> Result<Vec<SolarSystem>, Error> {
         // preparing the connections that will be shared between threads
         let kconn = Arc::new(Mutex::new(connection));
         let mut handles = vec![];
@@ -382,7 +398,7 @@ impl Universe{
         let vec_objects = Arc::new(Mutex::new(Vec::new()));
 
         // Preparing a Mutexed Vector with region ids data
-        let vec_parent_ids = match constellation{
+        let vec_parent_ids = match constellation {
             Some(temp_vec) => Arc::new(Mutex::new(temp_vec)),
             None => Arc::new(Mutex::new(vec![])),
         };
@@ -395,7 +411,8 @@ impl Universe{
             // invoke a thread
             let handle = thread::spawn(move || {
                 let thread_connection = &sh_conn.lock().unwrap();
-                let mut query = String::from("SELECT mss.solarSystemId, mss.solarSystemName, mc.regionId, ");
+                let mut query =
+                    String::from("SELECT mss.solarSystemId, mss.solarSystemName, mc.regionId, ");
                 query += " mc.centerX, mc.centerY, mc.centerZ, mas.x, mas.y, mss.constellationId ";
                 query += " FROM mapSolarSystems AS mss INNER JOIN mapConstellations AS mc ";
                 query += " ON(mss.constellationId = mc.constellationId) INNER JOIN mapAbstractSystems AS mas ";
@@ -405,37 +422,41 @@ impl Universe{
                     query += " WHERE mss.constellationId=? ";
                 };
                 let mut temp_vec = Vec::new();
-                loop{
-                    let mut statement = thread_connection.prepare(&query).unwrap();
+                loop {
+                    let mut statement = thread_connection.prepare(query.as_str()).unwrap();
+                    let mut rows;
                     if vec_parent_ids.len() > 0 {
-                        statement.bind((1,vec_parent_ids.pop().unwrap() as i64)).unwrap();
+                        rows = statement.query([vec_parent_ids.pop().unwrap()]).unwrap();
+                    } else {
+                        rows = statement.query([]).unwrap();
                     }
-                     //while there are constellations left to consume
-                    while let Ok(sqlite::State::Row) = statement.next() {
+                    //while there are constellations left to consume
+                    while let Some(row) = rows.next().unwrap() {
                         let mut object = SolarSystem::new();
-                        object.id=statement.read::<i64, _>("solarSystemId").unwrap() as u32;
-                        object.name=statement.read::<String, _>("solarSystemName").unwrap();
-                        object.constellation =statement.read::<i64, _>("constellationId").unwrap() as u32;
-                        object.cords3d.x = statement.read::<i64, _>("centerX").unwrap();
-                        object.cords3d.y = statement.read::<i64, _>("centerY").unwrap();
-                        object.cords3d.z = statement.read::<i64, _>("centerZ").unwrap();
-                        object.cords2d.x = statement.read::<i64, _>("x").unwrap() as i32;
-                        object.cords2d.y = statement.read::<i64, _>("y").unwrap() as i32;
-                        object.region = statement.read::<i64, _>("regionId").unwrap() as u32;
+                        object.id = row.get(0).unwrap();
+                        object.name = row.get(1).unwrap();
+                        object.constellation = row.get(8).unwrap();
+                        object.cords3d.x = row.get::<_, f64>(3).unwrap() as i64; //i64
+                        object.cords3d.y = row.get::<_, f64>(4).unwrap() as i64; //i64
+                        object.cords3d.z = row.get::<_, f64>(5).unwrap() as i64; //i64
+                        object.cords2d.x = row.get::<_, f64>(6).unwrap() as i32; //i32
+                        object.cords2d.y = row.get::<_, f64>(7).unwrap() as i32; //i32
+                        object.region = row.get(2).unwrap();
                         temp_vec.push(object);
-                    };
-                    if vec_parent_ids.len() == 0{
+                    }
+                    if vec_parent_ids.len() == 0 {
                         break;
                     };
                 }
                 let mut query = String::from(" SELECT msg.solarSystemId FROM mapSystemGates ");
                 query += " AS msg WHERE msg.systemGateId ";
-                query += " IN (SELECT destination FROM mapSystemGates AS msg WHERE solarSystemId = ?)";
+                query +=
+                    " IN (SELECT destination FROM mapSystemGates AS msg WHERE solarSystemId = ?)";
                 for mut object in temp_vec {
-                    let mut statement = thread_connection.prepare(&query).unwrap();
-                    statement.bind((1,object.id as i64)).unwrap();
-                    while let Ok(sqlite::State::Row) = statement.next() {
-                        object.connections.push(statement.read::<i64, _>("solarSystemId").unwrap() as u32);
+                    let mut statement = thread_connection.prepare(query.as_str()).unwrap();
+                    let mut rows = statement.query([object.id]).unwrap();
+                    while let Some(row) = rows.next().unwrap() {
+                        object.connections.push(row.get(0).unwrap());
                     }
                     sh_objects.lock().unwrap().push(object);
                 }
@@ -453,11 +474,15 @@ impl Universe{
             let vec = &mut vec_objects.lock().unwrap();
             vec_result.append(vec);
         }
-        Ok(vec_result) 
+        Ok(vec_result)
     }
 
     /// Function to get every Constellation or a Constellation based on an specific Region
-    pub fn get_constellation(&self,  connection:sqlite::ConnectionWithFullMutex,  regions: Option<Vec<u32>>) -> Result<Vec<Constellation>,Error>{
+    pub fn get_constellation(
+        &self,
+        connection: rusqlite::Connection,
+        regions: Option<Vec<u32>>,
+    ) -> Result<Vec<Constellation>, Error> {
         // preparing the connections that will be shared between threads
         let kconn = Arc::new(Mutex::new(connection));
         let mut handles = vec![];
@@ -465,7 +490,7 @@ impl Universe{
         //Preparing the Mutexed Vector to get all constellations
         let vec_objects = Arc::new(Mutex::new(Vec::new()));
         // Preparing a Mutexed Vector with region ids data
-        let vec_parent_ids = match regions{
+        let vec_parent_ids = match regions {
             Some(temp_vec) => Arc::new(Mutex::new(temp_vec)),
             None => Arc::new(Mutex::new(vec![])),
         };
@@ -478,36 +503,36 @@ impl Universe{
             // invoke a thread
             let handle = thread::spawn(move || {
                 let thread_connection = &sh_conn.lock().unwrap();
-                let mut query = String::from("SELECT constellationId, constellationName, regionId FROM mapConstellations");
+                let mut query = String::from(
+                    "SELECT constellationId, constellationName, regionId FROM mapConstellations",
+                );
                 let vec_parent_ids = &mut sh_parent_ids.lock().unwrap();
                 if vec_parent_ids.len() > 0 {
                     query += " WHERE regionId=?";
                 };
                 let mut temp_vec = Vec::new();
-                loop{
-                    let mut statement = thread_connection.prepare(&query).unwrap();
-                    if vec_parent_ids.len() > 0 {
-                        statement.bind((1,vec_parent_ids.pop().unwrap() as i64)).unwrap();
-                    }
+                loop {
+                    let mut statement = thread_connection.prepare(query.as_str()).unwrap();
+                    let mut rows = statement.query(&[&vec_parent_ids.pop().unwrap()]).unwrap();
                     //while there are regions left to consume
-                    while let Ok(sqlite::State::Row) = statement.next() {
+                    while let Some(row) = rows.next().unwrap() {
                         let mut object = Constellation::new();
-                        object.id = statement.read::<i64, _>("constellationId").unwrap() as u32; 
-                        object.name = statement.read::<String, _>("constellationName").unwrap();
-                        object.region = statement.read::<i64, _>("regionId").unwrap() as u32;
+                        object.id = row.get(0).unwrap();
+                        object.name = row.get(1).unwrap();
+                        object.region = row.get(2).unwrap();
                         temp_vec.push(object);
-                    };
-                    if vec_parent_ids.len() == 0{
+                    }
+                    if vec_parent_ids.len() == 0 {
                         break;
                     };
                 }
                 let query = "SELECT solarSystemId FROM mapSolarSystems WHERE constellationId = ?";
-                for mut object in temp_vec{
-                    let mut statement = thread_connection.prepare(&query).unwrap();
-                    statement.bind((1,object.id as i64)).unwrap();
-                    while let Ok(sqlite::State::Row) = statement.next() {
-                        object.solar_systems.push(statement.read::<i64, _>("solarSystemId").unwrap() as u32); 
-                    };
+                for mut object in temp_vec {
+                    let mut statement = thread_connection.prepare(query).unwrap();
+                    let mut rows = statement.query([object.id]).unwrap();
+                    while let Some(row) = rows.next().unwrap() {
+                        object.solar_systems.push(row.get(0).unwrap());
+                    }
                     sh_objects.lock().unwrap().push(object);
                 }
             });
@@ -524,11 +549,15 @@ impl Universe{
             let vec = &mut vec_objects.lock().unwrap();
             vec_result.append(vec);
         }
-        Ok(vec_result) 
+        Ok(vec_result)
     }
 
     /// Function to get every Planet or all Planets for a specific Solar System
-    pub fn get_planet(&self,  connection:sqlite::ConnectionWithFullMutex,  solar_systems: Option<Vec<u32>>) -> Result<Vec<Planet>,Error>{
+    pub fn get_planet(
+        &self,
+        connection: rusqlite::Connection,
+        solar_systems: Option<Vec<u32>>,
+    ) -> Result<Vec<Planet>, Error> {
         // preparing the connections that will be shared between threads
         let kconn = Arc::new(Mutex::new(connection));
         let mut handles = vec![];
@@ -536,7 +565,7 @@ impl Universe{
         //Preparing the Mutexed Vector to get all constellations
         let vec_objects = Arc::new(Mutex::new(Vec::new()));
         // Preparing a Mutexed Vector with region ids data
-        let vec_parent_ids = match solar_systems{
+        let vec_parent_ids = match solar_systems {
             Some(temp_vec) => Arc::new(Mutex::new(temp_vec)),
             None => Arc::new(Mutex::new(vec![])),
         };
@@ -549,87 +578,24 @@ impl Universe{
             // invoke a thread
             let handle = thread::spawn(move || {
                 let thread_connection = &sh_conn.lock().unwrap();
-                let mut query = String::from("SELECT planetId, planetaryIndex, solarSystemId FROM mapPlanets");
+                let mut query =
+                    String::from("SELECT planetId, planetaryIndex, solarSystemId FROM mapPlanets");
                 let vec_parent_ids = &mut sh_parent_ids.lock().unwrap();
                 if vec_parent_ids.len() > 0 {
                     query += " WHERE solarSystemId=?";
                 };
-                loop{
-                    let mut statement = thread_connection.prepare(&query).unwrap();
-                    if vec_parent_ids.len() > 0 {
-                        statement.bind((1,vec_parent_ids.pop().unwrap() as i64)).unwrap();
-                    }
-                     //while there are regions left to consume
-                    while let Ok(sqlite::State::Row) = statement.next() {
+                loop {
+                    let mut statement = thread_connection.prepare(query.as_str()).unwrap();
+                    let mut rows = statement.query(&[&vec_parent_ids.pop().unwrap()]).unwrap();
+                    //while there are regions left to consume
+                    while let Some(row) = rows.next().unwrap() {
                         let mut object = Planet::new();
-                        object.id=statement.read::<i64, _>("planetId").unwrap() as u32; 
-                        object.solar_system = statement.read::<i64, _>("solarSystemId").unwrap() as u32;
-                        object.index=statement.read::<i64, _>("planetaryIndex").unwrap() as u8;
+                        object.id = row.get(0).unwrap();
+                        object.solar_system = row.get(2).unwrap();
+                        object.index = row.get(1).unwrap();
                         sh_objects.lock().unwrap().push(object);
-                    };
-                    if vec_parent_ids.len() == 0{
-                        break;
-                    };
-                }
-            });
-            // store the handles
-            handles.push(handle);
-        }
-
-        // Initialize Constellation Vector
-        let mut vec_result = vec![];
-        for handle in handles {
-            //Waiting the threads to end
-            handle.join().unwrap();
-            // Getting the Object vector
-            let vec = &mut vec_objects.lock().unwrap();
-            vec_result.append(vec);
-        }
-        Ok(vec_result) 
-    }
-
-    /// Function to get every Moon or all Moons for a specific planet
-    pub fn get_moon(&self,  connection:sqlite::ConnectionWithFullMutex,  planets: Option<Vec<u32>>) -> Result<Vec<Moon>,Error>{
-        // preparing the connections that will be shared between threads
-        let kconn = Arc::new(Mutex::new(connection));
-        let mut handles = vec![];
-
-        //Preparing the Mutexed Vector to get all constellations
-        let vec_objects = Arc::new(Mutex::new(Vec::new()));
-        // Preparing a Mutexed Vector with region ids data
-        let vec_parent_ids = match planets{
-            Some(temp_vec) => Arc::new(Mutex::new(temp_vec)),
-            None => Arc::new(Mutex::new(vec![])),
-        };
-        for _x in [0..consts::MAX_THREADS] {
-            // cloning Objects to invoke a thread
-            let sh_objects = Arc::clone(&vec_objects);
-            let sh_parent_ids = Arc::clone(&vec_parent_ids);
-            let sh_conn = Arc::clone(&kconn);
-
-            // invoke a thread
-            let handle = thread::spawn(move || {
-                let thread_connection = &sh_conn.lock().unwrap();
-                let mut query = String::from("SELECT moonId, moonIndex, solarSystemId, planetId FROM mapMoons ");
-                let vec_parent_ids = &mut sh_parent_ids.lock().unwrap();
-                if vec_parent_ids.len() > 0 {
-                    query += " WHERE planetId=?";
-                };
-                loop{
-                    let mut statement = thread_connection.prepare(&query).unwrap();
-                    if vec_parent_ids.len() > 0 {
-                        statement.bind((1,vec_parent_ids.pop().unwrap() as i64)).unwrap();
                     }
-                        //while there are regions left to consume
-                    while let Ok(sqlite::State::Row) = statement.next() {
-                        let mut object = Moon::new();
-                        object.id=statement.read::<i64, _>("moonId").unwrap() as u32; 
-                        object.planet = statement.read::<i64, _>("planetId").unwrap() as u32;
-                        object.index=statement.read::<i64, _>("moonIndex").unwrap() as u8; 
-                        object.solar_system=statement.read::<i64, _>("solarSystemId").unwrap() as u32;
-                        sh_objects.lock().unwrap().push(object);
-                    };
-                    if vec_parent_ids.len() == 0{
+                    if vec_parent_ids.len() == 0 {
                         break;
                     };
                 }
@@ -650,6 +616,71 @@ impl Universe{
         Ok(vec_result)
     }
 
+    /// Function to get every Moon or all Moons for a specific planet
+    pub fn get_moon(
+        &self,
+        connection: rusqlite::Connection,
+        planets: Option<Vec<u32>>,
+    ) -> Result<Vec<Moon>, Error> {
+        // preparing the connections that will be shared between threads
+        let kconn = Arc::new(Mutex::new(connection));
+        let mut handles = vec![];
+
+        //Preparing the Mutexed Vector to get all constellations
+        let vec_objects = Arc::new(Mutex::new(Vec::new()));
+        // Preparing a Mutexed Vector with region ids data
+        let vec_parent_ids = match planets {
+            Some(temp_vec) => Arc::new(Mutex::new(temp_vec)),
+            None => Arc::new(Mutex::new(vec![])),
+        };
+        for _x in [0..consts::MAX_THREADS] {
+            // cloning Objects to invoke a thread
+            let sh_objects = Arc::clone(&vec_objects);
+            let sh_parent_ids = Arc::clone(&vec_parent_ids);
+            let sh_conn = Arc::clone(&kconn);
+
+            // invoke a thread
+            let handle = thread::spawn(move || {
+                let thread_connection = &sh_conn.lock().unwrap();
+                let mut query = String::from(
+                    "SELECT moonId, moonIndex, solarSystemId, planetId FROM mapMoons ",
+                );
+                let vec_parent_ids = &mut sh_parent_ids.lock().unwrap();
+                if vec_parent_ids.len() > 0 {
+                    query += " WHERE planetId=?";
+                };
+                loop {
+                    let mut statement = thread_connection.prepare(query.as_str()).unwrap();
+                    let mut rows = statement.query(&[&vec_parent_ids.pop().unwrap()]).unwrap();
+                    //while there are regions left to consume
+                    while let Some(row) = rows.next().unwrap() {
+                        let mut object = Moon::new();
+                        object.id = row.get(0).unwrap();
+                        object.planet = row.get(3).unwrap();
+                        object.index = row.get(1).unwrap();
+                        object.solar_system = row.get(2).unwrap();
+                        sh_objects.lock().unwrap().push(object);
+                    }
+                    if vec_parent_ids.len() == 0 {
+                        break;
+                    };
+                }
+            });
+            // store the handles
+            handles.push(handle);
+        }
+
+        // Initialize Constellation Vector
+        let mut vec_result = vec![];
+        for handle in handles {
+            //Waiting the threads to end
+            handle.join().unwrap();
+            // Getting the Object vector
+            let vec = &mut vec_objects.lock().unwrap();
+            vec_result.append(vec);
+        }
+        Ok(vec_result)
+    }
 }
 
 impl Default for Universe {

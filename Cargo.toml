@@ -38,4 +38,4 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 fux_kdtree = "0.2.0"
-sqlite = "0.30.4"
+rusqlite = "0.28.0"
