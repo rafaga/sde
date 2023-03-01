@@ -411,12 +411,10 @@ impl Universe {
             // invoke a thread
             let handle = thread::spawn(move || {
                 let thread_connection = &sh_conn.lock().unwrap();
-                let mut query =
-                    String::from("SELECT mss.solarSystemId, mss.solarSystemName, mc.regionId, ");
-                query += " mc.centerX, mc.centerY, mc.centerZ, mas.x, mas.y, mss.constellationId ";
-                query += " FROM mapSolarSystems AS mss INNER JOIN mapConstellations AS mc ";
-                query += " ON(mss.constellationId = mc.constellationId) INNER JOIN mapAbstractSystems AS mas ";
-                query += " ON(mas.solarSystemId = mss.solarSystemId) ";
+                let mut query = String::from("SELECT mss.solarSystemId, mss.solarSystemName, mc.regionId, ");
+                query += " mc.centerX, mc.centerY, mc.centerZ, mss.projX, mss.projY, mss.constellationId ";
+                query += " FROM mapSolarSystems AS mss ";
+                query += " INNER JOIN mapConstellations AS mc ON(mss.constellationId = mc.constellationId)  ";
                 let vec_parent_ids = &mut sh_parent_ids.lock().unwrap();
                 if vec_parent_ids.len() > 0 {
                     query += " WHERE mss.constellationId=? ";
