@@ -16,9 +16,9 @@ pub struct SpatialPoint {
     pub id: u32,
 }
 
-impl SpatialPoint {
+impl<'s>  SpatialPoint   {
     /// Creates a new Spatial point with an Id (solarSystemId) and the system's 3D coordinates
-    pub fn new(id: u32, x: f64, y: f64, z: f64) -> SpatialPoint {
+    pub fn new(id: u32, x: f64, y: f64, z: f64) -> SpatialPoint  {
         SpatialPoint {
             dims: [x, y, z],
             id,
@@ -26,14 +26,14 @@ impl SpatialPoint {
     }
 }
 
-impl KdtreePointTrait for SpatialPoint {
+impl<'s>  KdtreePointTrait for SpatialPoint  {
     #[inline] // the inline on this method is important! as without it there is ~25% speed loss on the tree when cross-crate usage.
     fn dims(&self) -> &[f64] {
         &self.dims
     }
 }
 
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Hash, PartialEq, Eq, Clone)]
 /// 3d point coordinates that it is used in:
 ///
 /// - SolarSystems
@@ -62,7 +62,7 @@ impl Default for Coordinates {
 /// 2d point coordinates that it is used in:
 ///
 /// - SolarSystems (to represent abstraction maps)
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Hash, PartialEq, Eq, Clone)]
 pub struct AbstractCoordinates {
     /// X coordinate
     pub x: i32,
@@ -84,7 +84,7 @@ impl Default for AbstractCoordinates {
 }
 
 /// Abstraction for a Planet Moons. It store data relevant to this entity
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Hash, PartialEq, Eq, Clone)]
 pub struct Moon {
     /// Moon Identifier
     pub id: u32,
@@ -115,7 +115,7 @@ impl Default for Moon {
 }
 
 /// Abstraction for a Planet. It store data relevant to this entity
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Hash, PartialEq, Eq, Clone)]
 pub struct Planet {
     /// Planet identifier
     pub id: u32,
@@ -143,7 +143,7 @@ impl Default for Planet {
 }
 
 /// Abstraction for a Solar System. It store data relevant to this entity
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Hash, PartialEq, Eq, Clone)]
 pub struct SolarSystem {
     /// Solar System identifier
     pub id: u32,
@@ -186,7 +186,7 @@ impl Default for SolarSystem {
 }
 
 /// Abstraction for a Constellation. It store data relevant to this entity
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Hash, PartialEq, Eq, Clone)]
 pub struct Constellation {
     /// Constellation Identifier
     pub id: u32,
@@ -220,7 +220,7 @@ impl Default for Constellation {
 }
 
 /// Abstraction for a Region. It store data relevant to this entity
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Hash, PartialEq, Eq, Clone)]
 pub struct Region {
     /// Region Identifier
     pub id: u32,
@@ -250,6 +250,7 @@ impl Default for Region {
     }
 }
 
+#[derive(PartialEq, Eq, Clone)]
 /// Struct that contains Dictionary to search regions, constellations and solarsystems by name
 pub struct Dictionaries {
     /// Solar system dictionary
@@ -277,6 +278,7 @@ impl Default for Dictionaries {
     }
 }
 
+#[derive(Clone)]
 /// Struct that contains everything in EVE Onoline Universe
 ///
 /// - Regions
@@ -299,7 +301,7 @@ pub struct Universe {
     /// Dictionaries struct
     pub dicts: Dictionaries,
     /// KdTree Point locator
-    pub points: Option<kdtree::kdtree::Kdtree<SpatialPoint>>,
+    pub points: Option<Vec<SpatialPoint>>,
 }
 
 impl Universe {
@@ -317,20 +319,20 @@ impl Universe {
     }
 
     /// Function to get all the K-Space 3D coordinates from the SDE
-    pub fn get_points(&self, connection: rusqlite::Connection) -> Result<Vec<SpatialPoint>, Error> {
+    pub fn get_points(connection: rusqlite::Connection) -> Result<Vec<SpatialPoint>, Error> {
         let query = "SELECT SolarSystemId, centerX, centerY, centerZ FROM mapSolarSystems WHERE SolarSystemId BETWEEN 30000000 AND 30999999;";
         let mut statement = connection.prepare(query)?;
         let mut rows = statement.query([])?;
-        let mut vec_points = Vec::new();
+        let mut pointk = Vec::new();
         while let Some(row) = rows.next()? {
             let x = row.get(1)?;
             let y = row.get(2)?;
             let z = row.get(3)?;
             let id = row.get(0)?;
             let point = SpatialPoint::new(id, x, y, z);
-            vec_points.push(point);
+            pointk.push(point);
         }
-        Ok(vec_points)
+        Ok(pointk)
     }
 
     /// Function to get every region available in SDE database

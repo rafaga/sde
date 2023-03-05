@@ -2,39 +2,44 @@
 mod universe_tests {
     //use super::*;
     use std::path::Path;
+    use sde::SdeManager;
+    use async_std::task;
+    
 
     #[test]
     fn test_solar_systems() {
         let path = Path::new("tests/sde.db");
-        let manager = sde::SdeManager::new(path);
-        let mut univ = sde::objects::Universe::new();
-        println!("{}", manager.get_universe(&mut univ).unwrap());
-        assert_eq!(univ.solar_systems.len(), 5431);
+        let mut manager = sde::SdeManager::new(path);
+        let _resp = manager.get_universe();
+        assert_eq!(manager.universe.solar_systems.len(), 5431);
     }
 
     #[test]
     fn test_regions() {
         let path = Path::new("tests/sde.db");
-        let manager = sde::SdeManager::new(path);
-        let mut univ = sde::objects::Universe::new();
-        println!("{}", manager.get_universe(&mut univ).unwrap());
-        assert_eq!(univ.regions.len(), 68);
+        let mut manager = sde::SdeManager::new(path);
+        let _resp= manager.get_universe();
+        assert_eq!(manager.universe.regions.len(), 68);
     }
 
-    #[test]
-    fn test_constellations() {
-        let path = Path::new("tests/sde.db");
-        let manager = sde::SdeManager::new(path);
-        let mut univ = sde::objects::Universe::new();
-        println!("{}", manager.get_universe(&mut univ).unwrap());
-        assert_eq!(univ.constellations.len(), 789);
-    }
 
     #[test]
     fn test_spatialpoints() {
         let path = Path::new("tests/sde.db");
         let manager = sde::SdeManager::new(path);
-        let mut univ = sde::objects::Universe::new();
-        assert!(manager.get_points(&mut univ).unwrap());
+        assert!(manager.get_points().unwrap());
     }
+
+
+    #[test]
+    fn test_async_constellations() -> () {
+        let path = Path::new("assets/sde-isometric.db");
+        let mut a = SdeManager::new(path);
+        task::spawn(async move {
+            let _res = &a.get_async_universe().await;
+            assert_eq!(a.universe.constellations.len(), 789);
+        });  
+        
+    } 
+    
 }
