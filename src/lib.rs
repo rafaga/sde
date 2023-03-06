@@ -7,7 +7,7 @@
 //! there are these advantages:
 //!
 //!
-use crate::objects::Universe;
+use crate::objects::{Universe,Point2D,Point3D};
 use rusqlite::{Connection, Error, OpenFlags};
 use std::path::Path;
 use futures::{task::Poll,future::Future,task::Context};
@@ -129,21 +129,49 @@ impl<'a> SdeManager<'a> {
         Ok(true)
     }
 
-    /// Function that extracts points from database and insert into Universe struct.
-    pub fn get_points(mut self) -> Result<bool, Error> {
-        self.state = State::Awaiting;
-        if let Some(_) = self.universe.points {
-            return Ok(false);
-        }
+    /// Function to get all the K-Space 3D coordinates from the SDE
+    pub fn get_3dpoints(self) -> Result<Vec<Point3D>, Error> {
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
         let connection = Connection::open_with_flags(self.path, flags)?;
-        let vec_points = Universe::get_points(connection)?;
-        self.universe.points = Some(vec_points);
-        self.state = State::Done;
-        Ok(true)
+        let mut query = String::from("SELECT SolarSystemId, centerX, centerY, centerZ ");
+        query += " FROM mapSolarSystems WHERE SolarSystemId BETWEEN 30000000 AND 30999999;";
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = statement.query([])?;
+        let mut pointk = Vec::new();
+        while let Some(row) = rows.next()? {
+            let x = row.get(1)?;
+            let y = row.get(2)?;
+            let z = row.get(3)?;
+            let id = row.get(0)?;
+            let point = Point3D::new(id, [x, y, z]);
+            pointk.push(point);
+        }
+        Ok(pointk)
     }
+
+    /// Function to get all the K-Space 2D coordinates from the SDE
+    pub fn get_2dpoints(self) -> Result<Vec<Point2D>, Error> {
+        let mut flags = OpenFlags::default();
+        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
+        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
+        let connection = Connection::open_with_flags(self.path, flags)?;
+        let mut query = String::from("SELECT SolarSystemId, projX, projY ");
+        query += " FROM mapSolarSystems WHERE SolarSystemId BETWEEN 30000000 AND 30999999;";
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = statement.query([])?;
+        let mut pointk = Vec::new();
+        while let Some(row) = rows.next()? {
+            let x = row.get(1)?;
+            let y = row.get(2)?;
+            let id = row.get(0)?;
+            let point = Point2D::new(id, [x, y]);
+            pointk.push(point);
+        }
+        Ok(pointk)
+    }
+
 }
 
 impl<'a> Future for SdeManager<'a>{

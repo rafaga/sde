@@ -24,10 +24,17 @@ mod universe_tests {
 
 
     #[test]
-    fn test_spatialpoints() {
+    fn test_3dpoints() {
         let path = Path::new("tests/sde.db");
         let manager = sde::SdeManager::new(path);
-        assert!(manager.get_points().unwrap());
+        assert_eq!(manager.get_3dpoints().unwrap().len(),5431);
+    }
+
+    #[test]
+    fn test_2dpoints() {
+        let path = Path::new("tests/sde.db");
+        let manager = sde::SdeManager::new(path);
+        assert_eq!(manager.get_2dpoints().unwrap().len(),5431);
     }
 
 

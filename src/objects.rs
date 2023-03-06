@@ -7,26 +7,53 @@ use super::consts;
 use kdtree::kdtree::KdtreePointTrait;
 use rusqlite::Error;
 
+
 // This can by any object or point with its associated metadata
 /// Struct that contains coordinates to help calculate nearest point in space
 #[derive(Copy, Clone, PartialEq)]
-pub struct SpatialPoint {
-    dims: [f64; 3],
+pub struct Point2D{
+    dims: [f64; 2],
     /// Object Identifier for search propurses
     pub id: u32,
 }
 
-impl<'s>  SpatialPoint   {
+impl Point2D {
     /// Creates a new Spatial point with an Id (solarSystemId) and the system's 3D coordinates
-    pub fn new(id: u32, x: f64, y: f64, z: f64) -> SpatialPoint  {
-        SpatialPoint {
-            dims: [x, y, z],
+    pub fn new(id: u32, cords: [f64;2]) -> Point2D {
+        Point2D {
+            dims: cords,
             id,
         }
     }
 }
 
-impl<'s>  KdtreePointTrait for SpatialPoint  {
+impl KdtreePointTrait for Point2D {
+    #[inline] // the inline on this method is important! as without it there is ~25% speed loss on the tree when cross-crate usage.
+    fn dims(&self) -> &[f64] {
+        &self.dims
+    }
+}
+
+// This can by any object or point with its associated metadata
+/// Struct that contains coordinates to help calculate nearest point in space
+#[derive(Copy, Clone, PartialEq)]
+pub struct Point3D {
+    dims: [f64; 3],
+    /// Object Identifier for search propurses
+    pub id: u32,
+}
+
+impl<'s>  Point3D   {
+    /// Creates a new Spatial point with an Id (solarSystemId) and the system's 3D coordinates
+    pub fn new(id: u32, cords: [f64;3]) -> Point3D  {
+        Point3D {
+            dims: cords,
+            id,
+        }
+    }
+}
+
+impl<'s>  KdtreePointTrait for Point3D  {
     #[inline] // the inline on this method is important! as without it there is ~25% speed loss on the tree when cross-crate usage.
     fn dims(&self) -> &[f64] {
         &self.dims
@@ -300,8 +327,6 @@ pub struct Universe {
     pub moons: HashMap<u32, Moon>,
     /// Dictionaries struct
     pub dicts: Dictionaries,
-    /// KdTree Point locator
-    pub points: Option<Vec<SpatialPoint>>,
 }
 
 impl Universe {
@@ -314,25 +339,7 @@ impl Universe {
             planets: HashMap::new(),
             moons: HashMap::new(),
             dicts: Dictionaries::new(),
-            points: None,
         }
-    }
-
-    /// Function to get all the K-Space 3D coordinates from the SDE
-    pub fn get_points(connection: rusqlite::Connection) -> Result<Vec<SpatialPoint>, Error> {
-        let query = "SELECT SolarSystemId, centerX, centerY, centerZ FROM mapSolarSystems WHERE SolarSystemId BETWEEN 30000000 AND 30999999;";
-        let mut statement = connection.prepare(query)?;
-        let mut rows = statement.query([])?;
-        let mut pointk = Vec::new();
-        while let Some(row) = rows.next()? {
-            let x = row.get(1)?;
-            let y = row.get(2)?;
-            let z = row.get(3)?;
-            let id = row.get(0)?;
-            let point = SpatialPoint::new(id, x, y, z);
-            pointk.push(point);
-        }
-        Ok(pointk)
     }
 
     /// Function to get every region available in SDE database
