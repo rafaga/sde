@@ -11,6 +11,7 @@ use rusqlite::Error;
 // This can by any object or point with its associated metadata
 /// Struct that contains coordinates to help calculate nearest point in space
 #[derive(Copy, Clone, PartialEq)]
+#[derive(serde::Deserialize, serde::Serialize)]
 pub struct Point2D{
     dims: [f64; 2],
     /// Object Identifier for search propurses
@@ -37,6 +38,7 @@ impl KdtreePointTrait for Point2D {
 // This can by any object or point with its associated metadata
 /// Struct that contains coordinates to help calculate nearest point in space
 #[derive(Copy, Clone, PartialEq)]
+#[derive(serde::Deserialize, serde::Serialize)]
 pub struct Point3D {
     dims: [f64; 3],
     /// Object Identifier for search propurses
