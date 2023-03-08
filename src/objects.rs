@@ -1,67 +1,46 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::{thread, vec};
-/*use kdtree::kdtree::Kdtree;
-use kdtree::kdtree::distance::squared_euclidean;*/
 use super::consts;
-use kdtree::kdtree::KdtreePointTrait;
 use rusqlite::Error;
 
 
 // This can by any object or point with its associated metadata
 /// Struct that contains coordinates to help calculate nearest point in space
-#[derive(Copy, Clone, PartialEq)]
-#[derive(serde::Deserialize, serde::Serialize)]
-pub struct Point2D{
-    dims: [f64; 2],
+#[derive(Clone)]
+pub struct SystemPoint{
+    dimension: usize,
+    /// coordinates of the Solar System
+    pub coords: [f64;3],
+    /// coordinates for lines connecting this point
+    pub lines: Vec<[f64;3]>,
     /// Object Identifier for search propurses
-    pub id: u32,
+    pub id: usize,
 }
 
-impl Point2D {
+impl SystemPoint{
     /// Creates a new Spatial point with an Id (solarSystemId) and the system's 3D coordinates
-    pub fn new(id: u32, cords: [f64;2]) -> Point2D {
-        Point2D {
-            dims: cords,
+    pub fn new(id: usize, coords: Vec<f64>) -> SystemPoint {
+        let point = [0.0f64;3];
+        let size= coords.len();
+        SystemPoint {
+            coords: point,
+            dimension: size,
             id,
+            lines: Vec::new(),
         }
     }
-}
 
-impl KdtreePointTrait for Point2D {
-    #[inline] // the inline on this method is important! as without it there is ~25% speed loss on the tree when cross-crate usage.
-    fn dims(&self) -> &[f64] {
-        &self.dims
+
+    /// Get the number of dimensions used in this object
+    pub fn get_dimension(self) -> usize {
+        self.dimension
     }
+
 }
 
 // This can by any object or point with its associated metadata
 /// Struct that contains coordinates to help calculate nearest point in space
-#[derive(Copy, Clone, PartialEq)]
-#[derive(serde::Deserialize, serde::Serialize)]
-pub struct Point3D {
-    dims: [f64; 3],
-    /// Object Identifier for search propurses
-    pub id: u32,
-}
-
-impl<'s>  Point3D   {
-    /// Creates a new Spatial point with an Id (solarSystemId) and the system's 3D coordinates
-    pub fn new(id: u32, cords: [f64;3]) -> Point3D  {
-        Point3D {
-            dims: cords,
-            id,
-        }
-    }
-}
-
-impl<'s>  KdtreePointTrait for Point3D  {
-    #[inline] // the inline on this method is important! as without it there is ~25% speed loss on the tree when cross-crate usage.
-    fn dims(&self) -> &[f64] {
-        &self.dims
-    }
-}
-
 #[derive(Hash, PartialEq, Eq, Clone)]
 /// 3d point coordinates that it is used in:
 ///

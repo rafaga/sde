@@ -22,31 +22,20 @@ mod universe_tests {
         assert_eq!(manager.universe.regions.len(), 68);
     }
 
+    #[test]
+    fn test_constellations() {
+        let path = Path::new("tests/sde.db");
+        let mut manager = sde::SdeManager::new(path);
+        let _resp= manager.get_universe();
+        assert_eq!(manager.universe.constellations.len(), 789);
+    }
+
 
     #[test]
     fn test_3dpoints() {
         let path = Path::new("tests/sde.db");
         let manager = sde::SdeManager::new(path);
-        assert_eq!(manager.get_3dpoints().unwrap().len(),5431);
+        assert_eq!(manager.get_systempoints(2).unwrap().len(),5431);
     }
-
-    #[test]
-    fn test_2dpoints() {
-        let path = Path::new("tests/sde.db");
-        let manager = sde::SdeManager::new(path);
-        assert_eq!(manager.get_2dpoints().unwrap().len(),5431);
-    }
-
-
-    #[test]
-    fn test_async_constellations() -> () {
-        let path = Path::new("assets/sde-isometric.db");
-        let mut a = SdeManager::new(path);
-        task::spawn(async move {
-            let _res = &a.get_async_universe().await;
-            assert_eq!(a.universe.constellations.len(), 789);
-        });  
-        
-    } 
     
 }

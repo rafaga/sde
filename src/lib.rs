@@ -7,11 +7,9 @@
 //! there are these advantages:
 //!
 //!
-use crate::objects::{Universe,Point2D,Point3D};
+use crate::objects::{Universe,SystemPoint};
 use rusqlite::{Connection, Error, OpenFlags};
-use std::path::Path;
-use futures::{task::Poll,future::Future,task::Context};
-use std::pin::Pin;
+use std::{path::Path};
 
 
 /// Module that has Data object abstractions to fill with the database data.
@@ -23,6 +21,7 @@ pub mod consts {
     /// Maximum number of threads to invoke in a multithread routines
     pub const MAX_THREADS: i8 = 8;
 }
+
 
 /// Manages the process of reading SDE data and putting into different data structures
 /// for easy in-memory access.
@@ -52,11 +51,6 @@ impl<'a> SdeManager<'a> {
             state: State::Awaiting,
             universe: Universe::new()
         }
-    }
-
-    /// Asynbc Call to get Universe function
-    pub async fn get_async_universe(&mut self) -> Result<bool, Error> {
-        self.get_universe()
     }
 
     /// Method that retrieve all Eve Online universe data and some dictionaries to quick
@@ -129,6 +123,7 @@ impl<'a> SdeManager<'a> {
         Ok(true)
     }
 
+    /* 
     /// Function to get all the K-Space 3D coordinates from the SDE
     pub fn get_3dpoints(self) -> Result<Vec<Point3D>, Error> {
         let mut flags = OpenFlags::default();
@@ -170,18 +165,49 @@ impl<'a> SdeManager<'a> {
             pointk.push(point);
         }
         Ok(pointk)
-    }
+    }*/
 
-}
-
-impl<'a> Future for SdeManager<'a>{
-
-    type Output = Result<bool, Error>;
-    
-    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> { 
-        match self.state {
-            State::Awaiting => return  Poll::Pending,
-            State::Done => return Poll::Ready(Ok(true)),
+    /// Function to get all the K-Space solar systems coordinates from the SDE including data to build a map
+    /// and serach for basic stuff
+    pub fn get_systempoints(self,dimentions: u8) -> Result<Vec<SystemPoint>, Error> {
+        let mut flags = OpenFlags::default();
+        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
+        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
+        let connection = Connection::open_with_flags(self.path, flags)?;
+        let mut query = String::from("SELECT SolarSystemId, centerX, centerY, centerZ, projX, projY ");
+        query += " FROM mapSolarSystems WHERE SolarSystemId BETWEEN 30000000 AND 30999999;";
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = statement.query([])?;
+        let mut pointk = Vec::new();
+        while let Some(row) = rows.next()? {
+            let mut _coords = Vec::new();
+            if dimentions == 2 {
+                _coords = vec![row.get(4)?,row.get(5)?];
+            } else {
+                _coords = vec![row.get(1)?,row.get(2)?,row.get(3)?];
+            }
+            let id = row.get(0)?;
+            let point = SystemPoint::new(id,_coords);
+            pointk.push(point);
         }
+        query = "SELECT mps.centerX, mps.centerY, mps.centerZ, mps.projX, mps.projY ".to_string();
+        query += "FROM mapSolarSystems AS mps INNER JOIN mapSystemGates AS msg ";
+        query += "ON (mps.SolarSystemId = msg.SolarSystemId) WHERE systemGateId IN ";
+        query += "(SELECT msga.systemGateId FROM mapSystemGates AS msga INNER JOIN mapSystemGates AS msgb ";
+        query += " ON (msga.systemGateId = msgb.destination) WHERE msgb.SolarSystemId=?)";
+        for point in &mut pointk{
+            let mut statement = connection.prepare(query.as_str())?;
+            let mut rows = statement.query([&point.id])?;
+            while let Some(row) = rows.next()? {
+                let mut _coords= [row.get(3)?,row.get(4)?,0.0];
+                if dimentions == 3 {
+                    _coords = [row.get(0)?,row.get(1)?,row.get(2)?];
+                }
+                point.lines.push(_coords);
+
+            }
+        }
+        Ok(pointk)
     }
+
 }
