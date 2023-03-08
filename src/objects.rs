@@ -8,6 +8,7 @@ use rusqlite::Error;
 // This can by any object or point with its associated metadata
 /// Struct that contains coordinates to help calculate nearest point in space
 #[derive(Clone)]
+#[derive(serde::Deserialize, serde::Serialize)]
 pub struct SystemPoint{
     dimension: usize,
     /// coordinates of the Solar System
