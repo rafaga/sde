@@ -22,8 +22,13 @@ pub struct SystemPoint{
 impl SystemPoint{
     /// Creates a new Spatial point with an Id (solarSystemId) and the system's 3D coordinates
     pub fn new(id: usize, coords: Vec<f64>) -> SystemPoint {
-        let point = [0.0f64;3];
+        let mut point = [0.0f64;3];
         let size= coords.len();
+        point[0] = coords[0];
+        point[1] = coords[1];
+        if size == 3 {
+            point[2] = coords[2];
+        }
         SystemPoint {
             coords: point,
             dimension: size,
