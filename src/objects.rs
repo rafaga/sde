@@ -51,7 +51,7 @@ impl SystemPoint{
 /// 3d point coordinates that it is used in:
 ///
 /// - SolarSystems
-pub struct Coordinates {
+pub struct Coordinates3D {
     /// X coorddinate
     pub x: i64,
     /// Y coordinate
@@ -60,14 +60,14 @@ pub struct Coordinates {
     pub z: i64,
 }
 
-impl Coordinates {
+impl Coordinates3D {
     /// Creates a new Coordinates struct. ALl the coordinates are initialized.
     pub fn new() -> Self {
-        Coordinates { x: 0, y: 0, z: 0 }
+        Coordinates3D { x: 0, y: 0, z: 0 }
     }
 }
 
-impl Default for Coordinates {
+impl Default for Coordinates3D {
     fn default() -> Self {
         Self::new()
     }
@@ -77,21 +77,21 @@ impl Default for Coordinates {
 ///
 /// - SolarSystems (to represent abstraction maps)
 #[derive(Hash, PartialEq, Eq, Clone)]
-pub struct AbstractCoordinates {
+pub struct Coordinates2D {
     /// X coordinate
-    pub x: i32,
+    pub x: i64,
     /// Y coordinate
-    pub y: i32,
+    pub y: i64,
 }
 
-impl AbstractCoordinates {
+impl Coordinates2D {
     /// Creates a new AbstractCoordinate struct. ALl the coordinates are initialized.
     pub fn new() -> Self {
-        AbstractCoordinates { x: 0, y: 0 }
+        Coordinates2D { x: 0, y: 0 }
     }
 }
 
-impl Default for AbstractCoordinates {
+impl Default for Coordinates2D {
     fn default() -> Self {
         Self::new()
     }
@@ -172,14 +172,16 @@ pub struct SolarSystem {
     /// Vector with Solar system identifiers where this Solar system has connections via Stargates
     pub connections: Vec<u32>,
     /// Solar System 3D Coordinates
-    pub cords3d: Coordinates,
+    pub cords3d: Coordinates3D,
     /// Solar System 2D Coordinates with the propourse of representing the system in abstraction map.
-    pub cords2d: AbstractCoordinates,
+    pub cords2d: Coordinates2D,
+    /// The factor that we need to adjust the coordinates
+    pub factor: i64
 }
 
 impl SolarSystem {
     /// Creates a new Solar System Strcut. ALl the values are initialized. Needs to be filled
-    pub fn new() -> Self {
+    pub fn new(factor: i64) -> Self {
         SolarSystem {
             id: 0,
             name: String::new(),
@@ -187,15 +189,26 @@ impl SolarSystem {
             constellation: 0,
             planets: Vec::new(),
             connections: Vec::new(),
-            cords3d: Coordinates::default(),
-            cords2d: AbstractCoordinates::default(),
+            cords3d: Coordinates3D::default(),
+            cords2d: Coordinates2D::default(),
+            factor: factor,
         }
+    }
+
+    /// this function that correct the original 2d coordinates using the correction factor
+    pub fn coord2d_to_f64(self) -> [f64;2] {
+       [(self.cords2d.x / self.factor) as f64, (self.cords3d.y / self.factor) as f64]
+    }
+
+    /// this function that correct the original 3d coordinates using the correction factor
+    pub fn coord3d_to_f64(self) -> [f64;3] {
+        [(self.cords2d.x / self.factor) as f64, (self.cords3d.y / self.factor) as f64, (self.cords3d.z / self.factor) as f64]
     }
 }
 
 impl Default for SolarSystem {
     fn default() -> Self {
-        Self::new()
+        Self::new(10000000000000)
     }
 }
 
@@ -211,7 +224,7 @@ pub struct Constellation {
     /// Solar System vector with Identifer numbers included in the constellation
     pub solar_systems: Vec<u32>,
     /// Solar System 2D Coordinates with the propourse of representing the system in abstraction map.
-    pub cords2d: AbstractCoordinates,
+    pub cords2d: Coordinates2D,
 }
 
 impl Constellation {
@@ -222,7 +235,7 @@ impl Constellation {
             name: String::new(),
             region: 0,
             solar_systems: Vec::new(),
-            cords2d: AbstractCoordinates::default(),
+            cords2d: Coordinates2D::default(),
         }
     }
 }
@@ -243,7 +256,7 @@ pub struct Region {
     /// Vector with Region's Constellationm Identifiers
     pub constellations: Vec<u32>,
     /// Region 2D Coordinates with the propourse of representing the system in abstraction map.
-    pub cords2d: AbstractCoordinates,
+    pub cords2d: Coordinates2D,
 }
 
 impl Region {
@@ -253,7 +266,7 @@ impl Region {
             id: 0,
             name: String::new(),
             constellations: Vec::new(),
-            cords2d: AbstractCoordinates::default(),
+            cords2d: Coordinates2D::default(),
         }
     }
 }
@@ -314,11 +327,13 @@ pub struct Universe {
     pub moons: HashMap<u32, Moon>,
     /// Dictionaries struct
     pub dicts: Dictionaries,
+    /// Factor used to correct coordinates
+    pub factor: i64,
 }
 
 impl Universe {
     /// Creates a new Universe Strcut. ALl the values are initialized. Needs to be filled
-    pub fn new() -> Universe {
+    pub fn new(factor: i64) -> Universe {
         Universe {
             regions: HashMap::new(),
             constellations: HashMap::new(),
@@ -326,6 +341,7 @@ impl Universe {
             planets: HashMap::new(),
             moons: HashMap::new(),
             dicts: Dictionaries::new(),
+            factor: factor,
         }
     }
 
@@ -403,8 +419,9 @@ impl Universe {
             let sh_objects = Arc::clone(&vec_objects);
             let sh_parent_ids = Arc::clone(&vec_parent_ids);
             let sh_conn = Arc::clone(&kconn);
-
+            let temp_factor = self.factor.clone();
             // invoke a thread
+
             let handle = thread::spawn(move || {
                 let thread_connection = &sh_conn.lock().unwrap();
                 let mut query = String::from("SELECT mss.solarSystemId, mss.solarSystemName, mc.regionId, ");
@@ -426,15 +443,15 @@ impl Universe {
                     }
                     //while there are constellations left to consume
                     while let Some(row) = rows.next().unwrap() {
-                        let mut object = SolarSystem::new();
+                        let mut object = SolarSystem::new(temp_factor);
                         object.id = row.get(0).unwrap();
                         object.name = row.get(1).unwrap();
                         object.constellation = row.get(8).unwrap();
                         object.cords3d.x = row.get::<_, f64>(3).unwrap() as i64; //i64
                         object.cords3d.y = row.get::<_, f64>(4).unwrap() as i64; //i64
                         object.cords3d.z = row.get::<_, f64>(5).unwrap() as i64; //i64
-                        object.cords2d.x = row.get::<_, f64>(6).unwrap() as i32; //i32
-                        object.cords2d.y = row.get::<_, f64>(7).unwrap() as i32; //i32
+                        object.cords2d.x = row.get::<_, f64>(6).unwrap() as i64; //i64
+                        object.cords2d.y = row.get::<_, f64>(7).unwrap() as i64; //i64
                         object.region = row.get(2).unwrap();
                         temp_vec.push(object);
                     }
@@ -679,6 +696,6 @@ impl Universe {
 
 impl Default for Universe {
     fn default() -> Self {
-        Self::new()
+        Self::new(10000000000000)
     }
 }

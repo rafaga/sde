@@ -28,28 +28,20 @@ pub mod consts {
 pub struct SdeManager<'a> {
     /// The path to the SDE database
     pub path: &'a Path,
-    /// This stores the current state of SDEManager for async porpourses
-    pub state: State,
     /// The universe Object that contains all the data
-    pub universe: Universe
+    pub universe: Universe,
+    /// Adjusting factor for coordinates (because are very large numbers)
+    pub factor: i64
 }
 
-// List of states our `async` block can be in
-/// States in where SdeManager could be in 
-pub enum State {
-    /// SDEManager is not doing something and has not yet finished
-    Awaiting,
-    /// SDEManager has done its task
-    Done,
-}
 
 impl<'a> SdeManager<'a> {
     /// Creates a new SdeManager using a path to build the connection
-    pub fn new(path: &Path) -> SdeManager {
+    pub fn new(path: &Path, factor: i64) -> SdeManager {
         SdeManager { 
             path,
-            state: State::Awaiting,
-            universe: Universe::new()
+            universe: Universe::new(factor),
+            factor: factor, // 10000000000000
         }
     }
 
@@ -62,7 +54,6 @@ impl<'a> SdeManager<'a> {
     /// - Constellations
     /// - Solar Systems
     pub fn get_universe(&mut self) -> Result<bool, Error> {
-        self.state = State::Awaiting;
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
@@ -119,53 +110,8 @@ impl<'a> SdeManager<'a> {
                 .or_insert(system.id);
             self.universe.solar_systems.entry(system.id).or_insert(system);
         }
-        self.state = State::Done;
         Ok(true)
     }
-
-    /* 
-    /// Function to get all the K-Space 3D coordinates from the SDE
-    pub fn get_3dpoints(self) -> Result<Vec<Point3D>, Error> {
-        let mut flags = OpenFlags::default();
-        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
-        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
-        let connection = Connection::open_with_flags(self.path, flags)?;
-        let mut query = String::from("SELECT SolarSystemId, centerX, centerY, centerZ ");
-        query += " FROM mapSolarSystems WHERE SolarSystemId BETWEEN 30000000 AND 30999999;";
-        let mut statement = connection.prepare(query.as_str())?;
-        let mut rows = statement.query([])?;
-        let mut pointk = Vec::new();
-        while let Some(row) = rows.next()? {
-            let x = row.get(1)?;
-            let y = row.get(2)?;
-            let z = row.get(3)?;
-            let id = row.get(0)?;
-            let point = Point3D::new(id, [x, y, z]);
-            pointk.push(point);
-        }
-        Ok(pointk)
-    }
-
-    /// Function to get all the K-Space 2D coordinates from the SDE
-    pub fn get_2dpoints(self) -> Result<Vec<Point2D>, Error> {
-        let mut flags = OpenFlags::default();
-        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
-        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
-        let connection = Connection::open_with_flags(self.path, flags)?;
-        let mut query = String::from("SELECT SolarSystemId, projX, projY ");
-        query += " FROM mapSolarSystems WHERE SolarSystemId BETWEEN 30000000 AND 30999999;";
-        let mut statement = connection.prepare(query.as_str())?;
-        let mut rows = statement.query([])?;
-        let mut pointk = Vec::new();
-        while let Some(row) = rows.next()? {
-            let x = row.get(1)?;
-            let y = row.get(2)?;
-            let id = row.get(0)?;
-            let point = Point2D::new(id, [x, y]);
-            pointk.push(point);
-        }
-        Ok(pointk)
-    }*/
 
     /// Function to get all the K-Space solar systems coordinates from the SDE including data to build a map
     /// and serach for basic stuff
@@ -186,6 +132,11 @@ impl<'a> SdeManager<'a> {
             } else {
                 _coords = vec![row.get(1)?,row.get(2)?,row.get(3)?];
             }
+            _coords[0] = _coords[0] / self.factor as f64;
+            _coords[1] = _coords[1] / self.factor as f64;
+            if dimentions == 3 {
+                _coords[2] = _coords[2] / self.factor as f64;
+            }
             let id = row.get(0)?;
             let point = SystemPoint::new(id,_coords);
             pointk.push(point);
@@ -200,8 +151,11 @@ impl<'a> SdeManager<'a> {
             let mut rows = statement.query([&point.id])?;
             while let Some(row) = rows.next()? {
                 let mut _coords= [row.get(3)?,row.get(4)?,0.0];
+                _coords[0] = _coords[0] / self.factor as f64;
+                _coords[1] = _coords[1] / self.factor as f64;
                 if dimentions == 3 {
                     _coords = [row.get(0)?,row.get(1)?,row.get(2)?];
+                    _coords[2] = _coords[2] / self.factor as f64;
                 }
                 point.lines.push(_coords);
 
