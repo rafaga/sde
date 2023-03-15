@@ -114,7 +114,7 @@ impl<'a> SdeManager<'a> {
     }
 
     /// Function to get all the K-Space solar systems coordinates from the SDE including data to build a map
-    /// and serach for basic stuff
+    /// and search for basic stuff
     pub fn get_systempoints(self,dimentions: u8) -> Result<Vec<SystemPoint>, Error> {
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
@@ -125,7 +125,12 @@ impl<'a> SdeManager<'a> {
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows = statement.query([])?;
         let mut pointk = Vec::new();
+        let mut min_id = usize::MAX;
         while let Some(row) = rows.next()? {
+            let id:usize = row.get(0)?;
+            if id < min_id {
+                min_id = id;
+            }
             let mut _coords = Vec::new();
             if dimentions == 2 {
                 _coords = vec![row.get(4)?,row.get(5)?];
@@ -137,12 +142,11 @@ impl<'a> SdeManager<'a> {
             if dimentions == 3 {
                 _coords[2] = _coords[2] / self.factor as f64;
             }
-            let id = row.get(0)?;
             let point = SystemPoint::new(id,_coords);
             pointk.push(point);
         }
-        query = "SELECT mps.centerX, mps.centerY, mps.centerZ, mps.projX, mps.projY ".to_string();
-        query += "FROM mapSolarSystems AS mps INNER JOIN mapSystemGates AS msg ";
+        query = "SELECT mps.centerX, mps.centerY, mps.centerZ, mps.projX, mps.projY, ".to_string();
+        query += "mps.SolarSystemId FROM mapSolarSystems AS mps INNER JOIN mapSystemGates AS msg ";
         query += "ON (mps.SolarSystemId = msg.SolarSystemId) WHERE systemGateId IN ";
         query += "(SELECT msga.systemGateId FROM mapSystemGates AS msga INNER JOIN mapSystemGates AS msgb ";
         query += " ON (msga.systemGateId = msgb.destination) WHERE msgb.SolarSystemId=?)";
@@ -150,6 +154,13 @@ impl<'a> SdeManager<'a> {
             let mut statement = connection.prepare(query.as_str())?;
             let mut rows = statement.query([&point.id])?;
             while let Some(row) = rows.next()? {
+                // Optimization: to avoid printing twice the same line, we are just skipping coordinates
+                // for SolarSystems that has an Id less than the current one printed. with the exception
+                // of the lowest ID
+                let gate_system:usize = row.get(5)?;
+                if gate_system < point.id && point.id != min_id {
+                    continue;
+                }
                 let mut _coords= [row.get(3)?,row.get(4)?,0.0];
                 _coords[0] = _coords[0] / self.factor as f64;
                 _coords[1] = _coords[1] / self.factor as f64;

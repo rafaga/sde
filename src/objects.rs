@@ -208,7 +208,7 @@ impl SolarSystem {
 
 impl Default for SolarSystem {
     fn default() -> Self {
-        Self::new(10000000000000)
+        Self::new(1)
     }
 }
 
@@ -696,6 +696,6 @@ impl Universe {
 
 impl Default for Universe {
     fn default() -> Self {
-        Self::new(10000000000000)
+        Self::new(1)
     }
 }

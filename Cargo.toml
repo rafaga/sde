@@ -1,6 +1,6 @@
 [package]
 name = "sde"
-version = "0.0.11"
+version = "0.0.12"
 edition = "2021"
 authors = ["Rafael Amador <rafaga@duck.com"]
 description = "A library to read Eve Online's SDE data from sqlite database."
