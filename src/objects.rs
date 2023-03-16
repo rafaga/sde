@@ -17,6 +17,8 @@ pub struct SystemPoint{
     pub lines: Vec<[f64;3]>,
     /// Object Identifier for search propurses
     pub id: usize,
+    /// SolarSystem Name
+    pub name: String,
 }
 
 impl SystemPoint{
@@ -34,6 +36,7 @@ impl SystemPoint{
             dimension: size,
             id,
             lines: Vec::new(),
+            name: String::new(),
         }
     }
 

@@ -120,7 +120,7 @@ impl<'a> SdeManager<'a> {
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
         let connection = Connection::open_with_flags(self.path, flags)?;
-        let mut query = String::from("SELECT SolarSystemId, centerX, centerY, centerZ, projX, projY ");
+        let mut query = String::from("SELECT SolarSystemId, centerX, centerY, centerZ, projX, projY, SolarSystemName ");
         query += " FROM mapSolarSystems WHERE SolarSystemId BETWEEN 30000000 AND 30999999;";
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows = statement.query([])?;
@@ -142,7 +142,8 @@ impl<'a> SdeManager<'a> {
             if dimentions == 3 {
                 _coords[2] = _coords[2] / self.factor as f64;
             }
-            let point = SystemPoint::new(id,_coords);
+            let mut point = SystemPoint::new(id,_coords);
+            point.name = row.get(6)?;
             pointk.push(point);
         }
         query = "SELECT mps.centerX, mps.centerY, mps.centerZ, mps.projX, mps.projY, ".to_string();
@@ -169,7 +170,6 @@ impl<'a> SdeManager<'a> {
                     _coords[2] = _coords[2] / self.factor as f64;
                 }
                 point.lines.push(_coords);
-
             }
         }
         Ok(pointk)
