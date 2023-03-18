@@ -4,50 +4,6 @@ use std::{thread, vec};
 use super::consts;
 use rusqlite::Error;
 
-
-// This can by any object or point with its associated metadata
-/// Struct that contains coordinates to help calculate nearest point in space
-#[derive(Clone)]
-#[derive(serde::Deserialize, serde::Serialize)]
-pub struct SystemPoint{
-    dimension: usize,
-    /// coordinates of the Solar System
-    pub coords: [f64;3],
-    /// coordinates for lines connecting this point
-    pub lines: Vec<[f64;3]>,
-    /// Object Identifier for search propurses
-    pub id: usize,
-    /// SolarSystem Name
-    pub name: String,
-}
-
-impl SystemPoint{
-    /// Creates a new Spatial point with an Id (solarSystemId) and the system's 3D coordinates
-    pub fn new(id: usize, coords: Vec<f64>) -> SystemPoint {
-        let mut point = [0.0f64;3];
-        let size= coords.len();
-        point[0] = coords[0];
-        point[1] = coords[1];
-        if size == 3 {
-            point[2] = coords[2];
-        }
-        SystemPoint {
-            coords: point,
-            dimension: size,
-            id,
-            lines: Vec::new(),
-            name: String::new(),
-        }
-    }
-
-
-    /// Get the number of dimensions used in this object
-    pub fn get_dimension(self) -> usize {
-        self.dimension
-    }
-
-}
-
 // This can by any object or point with its associated metadata
 /// Struct that contains coordinates to help calculate nearest point in space
 #[derive(Hash, PartialEq, Eq, Clone)]

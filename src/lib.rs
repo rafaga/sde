@@ -7,10 +7,10 @@
 //! there are these advantages:
 //!
 //!
-use crate::objects::{Universe,SystemPoint};
+use crate::objects::Universe;
 use rusqlite::{Connection, Error, OpenFlags};
 use std::{path::Path};
-
+use egui_map::map::MapPoint;
 
 /// Module that has Data object abstractions to fill with the database data.
 pub mod objects;
@@ -115,7 +115,7 @@ impl<'a> SdeManager<'a> {
 
     /// Function to get all the K-Space solar systems coordinates from the SDE including data to build a map
     /// and search for basic stuff
-    pub fn get_systempoints(self,dimentions: u8) -> Result<Vec<SystemPoint>, Error> {
+    pub fn get_systempoints(self,dimentions: u8) -> Result<Vec<MapPoint>, Error> {
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
@@ -142,7 +142,7 @@ impl<'a> SdeManager<'a> {
             if dimentions == 3 {
                 _coords[2] = _coords[2] / self.factor as f64;
             }
-            let mut point = SystemPoint::new(id,_coords);
+            let mut point = MapPoint::new(id,_coords);
             point.name = row.get(6)?;
             pointk.push(point);
         }
