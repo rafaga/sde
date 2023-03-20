@@ -10,7 +10,7 @@
 use crate::objects::Universe;
 use rusqlite::{Connection, Error, OpenFlags};
 use std::{path::Path};
-use egui_map::map::MapPoint;
+use egui_map::map::objects::MapPoint;
 
 /// Module that has Data object abstractions to fill with the database data.
 pub mod objects;
