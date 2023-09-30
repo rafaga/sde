@@ -38,5 +38,5 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 egui-map = { version = "0.0" }
-rusqlite = { version = "0.28.0", features = ["bundled-windows"] }
+rusqlite = { version = "0", features = ["bundled-windows"] }
 serde = { version = "1.0", features = ["derive"] }
