@@ -4,9 +4,34 @@ use std::{thread, vec};
 use super::consts;
 use rusqlite::Error;
 
+#[derive(Hash, PartialEq, Eq, Clone)]
+pub struct EveRegionArea {
+    pub region_id: u32,
+    pub name: String,
+    pub min:Coordinates2D,
+    pub max:Coordinates2D,
+}
+
+impl EveRegionArea{
+    pub fn new() -> Self {
+        EveRegionArea {
+            region_id: 0,
+            name: String::new(),
+            min: Coordinates2D {
+                x: 0,
+                y: 0,
+            },
+            max: Coordinates2D{
+                x: 0,
+                y: 0,
+            }
+        }
+    }
+}
+
+#[derive(Hash, PartialEq, Eq, Clone)]
 // This can by any object or point with its associated metadata
 /// Struct that contains coordinates to help calculate nearest point in space
-#[derive(Hash, PartialEq, Eq, Clone)]
 /// 3d point coordinates that it is used in:
 ///
 /// - SolarSystems
@@ -46,7 +71,7 @@ pub struct Coordinates2D {
 impl Coordinates2D {
     /// Creates a new AbstractCoordinate struct. ALl the coordinates are initialized.
     pub fn new() -> Self {
-        Coordinates2D { x: 0, y: 0 }
+        Coordinates2D { x: 0, y: 0}
     }
 }
 
