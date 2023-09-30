@@ -37,6 +37,6 @@ maintenance = { status = "actively-developed" }
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-egui-map = { version = "0.0" }
+egui-map = { git = "http://github.com/rafaga/egui-map.git", branch = "test"}
 rusqlite = { version = "0", features = ["bundled-windows"] }
 serde = { version = "1.0", features = ["derive"] }
