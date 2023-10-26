@@ -54,6 +54,9 @@ impl<'a> SdeManager<'a> {
     /// - Constellations
     /// - Solar Systems
     pub fn get_universe(&mut self) -> Result<bool, Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("get_universe");
+
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
@@ -116,6 +119,8 @@ impl<'a> SdeManager<'a> {
     /// Function to get all the K-Space solar systems coordinates from the SDE including data to build a map
     /// and search for basic stuff
     pub fn get_systempoints(&self,dimentions: u8) -> Result<Vec<MapPoint>, Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("get_systempoints");
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
@@ -176,6 +181,8 @@ impl<'a> SdeManager<'a> {
     }
 
     pub fn get_region_coordinates(&self) -> Result<Vec<EveRegionArea>, Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("get_region_coordinates");
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
