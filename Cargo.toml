@@ -36,7 +36,12 @@ maintenance = { status = "actively-developed" }
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = []
+puffin = ["dep:puffin"]
+
 [dependencies]
 egui-map = { git = "http://github.com/rafaga/egui-map.git", branch = "test"}
 rusqlite = { version = "0", features = ["bundled-windows"] }
 serde = { version = "1.0", features = ["derive"] }
+puffin = {version = "0.16", optional = true, default-features = false}
