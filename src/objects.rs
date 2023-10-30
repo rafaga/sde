@@ -335,6 +335,9 @@ impl Universe {
         connection: &rusqlite::Connection,
         regions: Option<Vec<u32>>,
     ) -> Result<Vec<Region>, Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("get_region");
+        
         let mut query = String::from("SELECT regionId, regionName FROM mapRegions");
         let mut temp_regions = Vec::new();
         let param_values: Vec<u32> = Vec::new();
@@ -386,6 +389,9 @@ impl Universe {
         connection: rusqlite::Connection,
         constellation: Option<Vec<u32>>,
     ) -> Result<Vec<SolarSystem>, Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("get_solarsystem");
+
         // preparing the connections that will be shared between threads
         let kconn = Arc::new(Mutex::new(connection));
         let mut handles = vec![];
@@ -478,6 +484,8 @@ impl Universe {
         connection: rusqlite::Connection,
         regions: Option<Vec<u32>>,
     ) -> Result<Vec<Constellation>, Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("get_constellation");
         // preparing the connections that will be shared between threads
         let kconn = Arc::new(Mutex::new(connection));
         let mut handles = vec![];
@@ -553,6 +561,8 @@ impl Universe {
         connection: rusqlite::Connection,
         solar_systems: Option<Vec<u32>>,
     ) -> Result<Vec<Planet>, Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("get_planet");
         // preparing the connections that will be shared between threads
         let kconn = Arc::new(Mutex::new(connection));
         let mut handles = vec![];
@@ -617,6 +627,9 @@ impl Universe {
         connection: rusqlite::Connection,
         planets: Option<Vec<u32>>,
     ) -> Result<Vec<Moon>, Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("get_moon");
+
         // preparing the connections that will be shared between threads
         let kconn = Arc::new(Mutex::new(connection));
         let mut handles = vec![];

@@ -68,6 +68,8 @@ impl<'a> SdeManager<'a> {
 
         // fill a vector with ids to get constellations, fill a Hashmap of regions and dictionary to find fast an id
         for region in regions {
+            #[cfg(feature = "puffin")]
+            puffin::profile_scope!("hashmap_add_regions");
             parent_ids.push(region.id);
             self.universe.dicts
                 .region_names
@@ -85,6 +87,8 @@ impl<'a> SdeManager<'a> {
 
         let mut parent_ids = vec![];
         for constel in constellations {
+            #[cfg(feature = "puffin")]
+            puffin::profile_scope!("hashmap_add_constellations");
             parent_ids.push(constel.id);
             self.universe.dicts
                 .constellation_names
@@ -106,6 +110,8 @@ impl<'a> SdeManager<'a> {
 
         let mut parent_ids = vec![];
         for system in solar_systems {
+            #[cfg(feature = "puffin")]
+            puffin::profile_scope!("hashmap_add_palnetary_systems");
             parent_ids.push(system.id);
             self.universe.dicts
                 .constellation_names
