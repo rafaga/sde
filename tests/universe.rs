@@ -27,12 +27,11 @@ mod universe_tests {
         assert_eq!(manager.universe.constellations.len(), 789);
     }
 
-
-    #[test]
-    fn test_3dpoints() {
+    #[tokio::test]
+    async fn test_3dpoints() {
         let path = Path::new("tests/sde.db");
         let manager = sde::SdeManager::new(path, 100000000000000);
-        assert_eq!(manager.get_systempoints(2).unwrap().len(),5431);
+        assert_eq!(manager.get_systempoints(2).await.unwrap().len(),5431);
     }
     
 }
