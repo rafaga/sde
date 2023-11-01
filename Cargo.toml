@@ -47,4 +47,4 @@ serde = { version = "1.0", features = ["derive"] }
 puffin = {version = "0.16", optional = true, default-features = false}
 
 [dev-dependencies]
-tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
+# tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }

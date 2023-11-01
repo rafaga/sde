@@ -124,7 +124,7 @@ impl<'a> SdeManager<'a> {
 
     /// Function to get all the K-Space solar systems coordinates from the SDE including data to build a map
     /// and search for basic stuff
-    pub async fn get_systempoints(&self,dimentions: u8) -> Result<Vec<MapPoint>, Error> {
+    pub fn get_systempoints(&self,dimentions: u8) -> Result<Vec<MapPoint>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_systempoints");
         let mut flags = OpenFlags::default();
