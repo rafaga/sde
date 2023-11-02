@@ -125,10 +125,11 @@ impl<'a> SdeManager<'a> {
 
     /// Function to get all the K-Space solar systems coordinates from the SDE including data to build a map
     /// and search for basic stuff
-    pub fn get_systempoints(&self,dimentions: u8) -> Result<Vec<MapPoint>, Error> {
+    pub fn get_systempoints(&self,dimentions: u8) -> Result<HashMap<usize,MapPoint>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_systempoints");
 
+        let mut hash_map:HashMap<usize,MapPoint> = HashMap::new();
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
@@ -138,7 +139,6 @@ impl<'a> SdeManager<'a> {
         query += " FROM mapSolarSystems WHERE SolarSystemId BETWEEN 30000000 AND 30999999;";
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows = statement.query([])?;
-        let mut pointk = Vec::new();
         let mut min_id = usize::MAX;
         while let Some(row) = rows.next()? {
             #[cfg(feature = "puffin")]
@@ -161,7 +161,7 @@ impl<'a> SdeManager<'a> {
             }
             let mut point = MapPoint::new(id,_coords);
             point.name = row.get(6)?;
-            pointk.push(point);
+            hash_map.insert(id, point);
         }
         
         /*query = "SELECT mps.centerX, mps.centerY, mps.centerZ, mps.projX, mps.projY, ".to_string();
@@ -194,7 +194,7 @@ impl<'a> SdeManager<'a> {
                 point.lines.push(_coords);
             }
         }*/
-        Ok(pointk)
+        Ok(hash_map)
     }
 
     pub fn get_connections(&self, mut hash_map: HashMap<usize,MapPoint>, dimentions: u8) -> Result<HashMap<usize,MapPoint>,Error> {
