@@ -139,7 +139,7 @@ impl<'a> SdeManager<'a> {
         let mut min_id = usize::MAX;
         while let Some(row) = rows.next()? {
             #[cfg(feature = "puffin")]
-            puffin::profile_scope!("iterating over points");
+            puffin::profile_scope!("getting system points");
 
             let id:usize = row.get(0)?;
             if id < min_id {
@@ -167,7 +167,7 @@ impl<'a> SdeManager<'a> {
         query += " ON (msga.systemGateId = msgb.destination) WHERE msgb.SolarSystemId=?)";
         for point in &mut pointk{
             #[cfg(feature = "puffin")]
-            puffin::profile_scope!("iterating over points");
+            puffin::profile_scope!("getting neiborgh points");
 
             let mut statement = connection.prepare(query.as_str())?;
             let mut rows = statement.query([&point.id])?;
