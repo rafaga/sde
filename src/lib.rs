@@ -10,7 +10,8 @@ use crate::objects::Universe;
 use objects::EveRegionArea;
 use rusqlite::{Connection, Error, OpenFlags};
 use std::path::Path;
-use egui_map::map::objects::MapPoint;
+use egui_map::map::{objects::MapPoint, Map};
+use std::collections::HashMap;
 
 /// Module that has Data object abstractions to fill with the database data.
 pub mod objects;
@@ -111,7 +112,7 @@ impl<'a> SdeManager<'a> {
         let mut parent_ids = vec![];
         for system in solar_systems {
             #[cfg(feature = "puffin")]
-            puffin::profile_scope!("hashmap_add_palnetary_systems");
+            puffin::profile_scope!("hashmap_add_planetary_systems");
             parent_ids.push(system.id);
             self.universe.dicts
                 .constellation_names
@@ -127,10 +128,12 @@ impl<'a> SdeManager<'a> {
     pub fn get_systempoints(&self,dimentions: u8) -> Result<Vec<MapPoint>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_systempoints");
+
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
         let connection = Connection::open_with_flags(self.path, flags)?;
+
         let mut query = String::from("SELECT SolarSystemId, centerX, centerY, centerZ, projX, projY, SolarSystemName ");
         query += " FROM mapSolarSystems WHERE SolarSystemId BETWEEN 30000000 AND 30999999;";
         let mut statement = connection.prepare(query.as_str())?;
@@ -160,11 +163,13 @@ impl<'a> SdeManager<'a> {
             point.name = row.get(6)?;
             pointk.push(point);
         }
-        query = "SELECT mps.centerX, mps.centerY, mps.centerZ, mps.projX, mps.projY, ".to_string();
+        
+        /*query = "SELECT mps.centerX, mps.centerY, mps.centerZ, mps.projX, mps.projY, ".to_string();
         query += "mps.SolarSystemId FROM mapSolarSystems AS mps INNER JOIN mapSystemGates AS msg ";
         query += "ON (mps.SolarSystemId = msg.SolarSystemId) WHERE systemGateId IN ";
         query += "(SELECT msga.systemGateId FROM mapSystemGates AS msga INNER JOIN mapSystemGates AS msgb ";
         query += " ON (msga.systemGateId = msgb.destination) WHERE msgb.SolarSystemId=?)";
+
         for point in &mut pointk{
             #[cfg(feature = "puffin")]
             puffin::profile_scope!("getting neiborgh points");
@@ -188,8 +193,61 @@ impl<'a> SdeManager<'a> {
                 }
                 point.lines.push(_coords);
             }
-        }
+        }*/
         Ok(pointk)
+    }
+
+    pub fn get_connections(&self, mut hash_map: HashMap<usize,MapPoint>, dimentions: u8) -> Result<HashMap<usize,MapPoint>,Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("get_connections");
+
+        let mut flags = OpenFlags::default();
+        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
+        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
+        let connection = Connection::open_with_flags(self.path, flags)?;
+        
+        let mut query = String::from("SELECT msga.solarSystemId AS origin, mps.SolarSystemId AS destination, mps.centerX, ");
+        query += "mps.centerY, mps.centerZ, mps.projX, mps.projY FROM mapSystemGates AS msga ";
+        query += "INNER JOIN mapSystemGates AS msgb ON (msgb.systemGateId = msga.destination) ";
+        query += "INNER JOIN mapSolarSystems AS mps ON (mps.solarSystemId = msgb.solarSystemId)";
+        query += "ORDER BY 1";
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = statement.query([])?;
+        let mut id:(usize,usize) = (0,0);
+        let mut vec_coords: Vec<[f64; 3]> = Vec::new();
+        while let Some(row) = rows.next()? {
+
+            // Optimization: to avoid printing twice the same line, we are just skipping coordinates
+            // for SolarSystems that has an Id less than the current one printed. with the exception
+            // of the lowest ID
+            let systems:(usize,usize)= (row.get(0)?,row.get(1)?);
+            if id.0 == 0 {
+                id.0 = systems.0;
+            }
+            if id.1 != systems.0 {
+                hash_map.entry(systems.0).and_modify(|point| { point.lines=vec_coords.clone() });
+                vec_coords.clear();
+                id.1 = systems.0;
+            }
+            if systems.1 < systems.0 {
+                continue;
+            }
+            let mut coords:[f64; 3]= [0.0,0.0,0.0];
+            coords[0] = row.get(5)?;
+            coords[1] = row.get(6)?;
+            coords[0] = coords[0] / self.factor as f64;
+            coords[1] = coords[1] / self.factor as f64;
+            if dimentions == 3 {
+                coords = [row.get(2)?,row.get(3)?,row.get(4)?];
+                coords[2] = coords[2] / self.factor as f64;
+            }
+            vec_coords.push(coords);
+        }
+        if id.1 != 0 {
+            hash_map.entry(id.1).and_modify(|point| { point.lines=vec_coords });
+        }
+        Ok(hash_map)
     }
 
     pub fn get_region_coordinates(&self) -> Result<Vec<EveRegionArea>, Error> {
