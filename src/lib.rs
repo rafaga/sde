@@ -10,7 +10,7 @@ use crate::objects::Universe;
 use objects::EveRegionArea;
 use rusqlite::{Connection, Error, OpenFlags};
 use std::path::Path;
-use egui_map::map::{objects::MapPoint, Map};
+use egui_map::map::objects::MapPoint;
 use std::collections::HashMap;
 
 /// Module that has Data object abstractions to fill with the database data.
@@ -221,16 +221,17 @@ impl<'a> SdeManager<'a> {
             // Optimization: to avoid printing twice the same line, we are just skipping coordinates
             // for SolarSystems that has an Id less than the current one printed. with the exception
             // of the lowest ID
-            let systems:(usize,usize)= (row.get(0)?,row.get(1)?);
+            let origin = row.get(0)?;
+            let destination = row.get::<usize,usize>(1)?;
             if id.0 == 0 {
-                id.0 = systems.0;
+                id.0 = origin;
             }
-            if id.1 != systems.0 {
-                hash_map.entry(systems.0).and_modify(|point| { point.lines=vec_coords.clone() });
+            if id.1 != origin {
+                hash_map.entry(origin).and_modify(|point| { point.lines=vec_coords.clone() });
                 vec_coords.clear();
-                id.1 = systems.0;
+                id.1 = origin;
             }
-            if systems.1 < systems.0 {
+            if destination < origin {
                 continue;
             }
             let mut coords:[f64; 3]= [0.0,0.0,0.0];
