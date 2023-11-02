@@ -138,6 +138,9 @@ impl<'a> SdeManager<'a> {
         let mut pointk = Vec::new();
         let mut min_id = usize::MAX;
         while let Some(row) = rows.next()? {
+            #[cfg(feature = "puffin")]
+            puffin::profile_scope!("iterating over points");
+
             let id:usize = row.get(0)?;
             if id < min_id {
                 min_id = id;
@@ -163,6 +166,9 @@ impl<'a> SdeManager<'a> {
         query += "(SELECT msga.systemGateId FROM mapSystemGates AS msga INNER JOIN mapSystemGates AS msgb ";
         query += " ON (msga.systemGateId = msgb.destination) WHERE msgb.SolarSystemId=?)";
         for point in &mut pointk{
+            #[cfg(feature = "puffin")]
+            puffin::profile_scope!("iterating over points");
+
             let mut statement = connection.prepare(query.as_str())?;
             let mut rows = statement.query([&point.id])?;
             while let Some(row) = rows.next()? {
