@@ -192,14 +192,14 @@ impl<'a> SdeManager<'a> {
             // of the lowest ID
             let origin = row.get(0)?;
             let destination = row.get::<usize,usize>(1)?;
-            if id.0 == 0 {
+            if id.1 == 0 {
                 id.0 = origin;
-            }
+            } 
             if id.1 != origin {
                 hash_map.entry(origin).and_modify(|point| { point.lines=vec_coords.clone() });
                 vec_coords.clear();
-                id.1 = origin;
             }
+            id.1 = origin;
             if destination < origin {
                 continue;
             }
