@@ -163,37 +163,6 @@ impl<'a> SdeManager<'a> {
             point.name = row.get(6)?;
             hash_map.insert(id, point);
         }
-        
-        /*query = "SELECT mps.centerX, mps.centerY, mps.centerZ, mps.projX, mps.projY, ".to_string();
-        query += "mps.SolarSystemId FROM mapSolarSystems AS mps INNER JOIN mapSystemGates AS msg ";
-        query += "ON (mps.SolarSystemId = msg.SolarSystemId) WHERE systemGateId IN ";
-        query += "(SELECT msga.systemGateId FROM mapSystemGates AS msga INNER JOIN mapSystemGates AS msgb ";
-        query += " ON (msga.systemGateId = msgb.destination) WHERE msgb.SolarSystemId=?)";
-
-        for point in &mut pointk{
-            #[cfg(feature = "puffin")]
-            puffin::profile_scope!("getting neiborgh points");
-
-            let mut statement = connection.prepare(query.as_str())?;
-            let mut rows = statement.query([&point.id])?;
-            while let Some(row) = rows.next()? {
-                // Optimization: to avoid printing twice the same line, we are just skipping coordinates
-                // for SolarSystems that has an Id less than the current one printed. with the exception
-                // of the lowest ID
-                let gate_system:usize = row.get(5)?;
-                if gate_system < point.id && point.id != min_id {
-                    continue;
-                }
-                let mut _coords= [row.get(3)?,row.get(4)?,0.0];
-                _coords[0] = _coords[0] / self.factor as f64;
-                _coords[1] = _coords[1] / self.factor as f64;
-                if dimentions == 3 {
-                    _coords = [row.get(0)?,row.get(1)?,row.get(2)?];
-                    _coords[2] = _coords[2] / self.factor as f64;
-                }
-                point.lines.push(_coords);
-            }
-        }*/
         Ok(hash_map)
     }
 
@@ -222,7 +191,7 @@ impl<'a> SdeManager<'a> {
             // for SolarSystems that has an Id less than the current one printed. with the exception
             // of the lowest ID
             let origin = row.get(0)?;
-            let destination = row.get::<usize,usize>(1)?;
+            //let destination = row.get::<usize,usize>(1)?;
             if id.0 == 0 {
                 id.0 = origin;
             }
@@ -231,9 +200,9 @@ impl<'a> SdeManager<'a> {
                 vec_coords.clear();
                 id.1 = origin;
             }
-            if destination < origin {
+            /*if destination < origin {
                 continue;
-            }
+            }*/
             let mut coords:[f64; 3]= [0.0,0.0,0.0];
             coords[0] = row.get(5)?;
             coords[1] = row.get(6)?;
