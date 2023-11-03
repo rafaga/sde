@@ -191,7 +191,7 @@ impl<'a> SdeManager<'a> {
             // for SolarSystems that has an Id less than the current one printed. with the exception
             // of the lowest ID
             let origin = row.get(0)?;
-            //let destination = row.get::<usize,usize>(1)?;
+            let destination = row.get::<usize,usize>(1)?;
             if id.0 == 0 {
                 id.0 = origin;
             }
@@ -200,9 +200,9 @@ impl<'a> SdeManager<'a> {
                 vec_coords.clear();
                 id.1 = origin;
             }
-            /*if destination < origin {
+            if destination < origin {
                 continue;
-            }*/
+            }
             let mut coords:[f64; 3]= [0.0,0.0,0.0];
             coords[0] = row.get(5)?;
             coords[1] = row.get(6)?;
