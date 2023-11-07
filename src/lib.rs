@@ -179,7 +179,7 @@ impl<'a> SdeManager<'a> {
         query += "mps.centerY, mps.centerZ, mps.projX, mps.projY FROM mapSystemGates AS msga ";
         query += "INNER JOIN mapSystemGates AS msgb ON (msgb.systemGateId = msga.destination) ";
         query += "INNER JOIN mapSolarSystems AS mps ON (mps.solarSystemId = msgb.solarSystemId)";
-        query += "ORDER BY 1";
+        query += "ORDER BY 1 ASC";
 
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows = statement.query([])?;
@@ -200,7 +200,7 @@ impl<'a> SdeManager<'a> {
                 vec_coords.clear();
             }
             id.1 = origin;
-            if origin > destination && destination != id.0 {
+            if origin > destination && origin != id.0 {
                 continue;
             }
             let mut coords:[f64; 3]= [0.0,0.0,0.0];
