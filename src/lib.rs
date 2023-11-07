@@ -201,7 +201,7 @@ impl<'a> SdeManager<'a> {
             }
             id.1 = origin;
             if destination < origin {
-                continue;
+                //continue;
             }
             let mut coords:[f64; 3]= [0.0,0.0,0.0];
             coords[0] = row.get(5)?;
