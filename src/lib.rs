@@ -200,8 +200,8 @@ impl<'a> SdeManager<'a> {
                 vec_coords.clear();
             }
             id.1 = origin;
-            if destination < origin {
-                //continue;
+            if origin > destination && destination != id.0 {
+                continue;
             }
             let mut coords:[f64; 3]= [0.0,0.0,0.0];
             coords[0] = row.get(5)?;
