@@ -10,7 +10,7 @@ use crate::objects::Universe;
 use objects::EveRegionArea;
 use rusqlite::{Connection, Error, OpenFlags};
 use std::path::Path;
-use egui_map::map::objects::MapPoint;
+use egui_map::map::objects::{MapPoint,MapLine};
 use std::collections::HashMap;
 
 /// Module that has Data object abstractions to fill with the database data.
@@ -166,6 +166,36 @@ impl<'a> SdeManager<'a> {
         Ok(hash_map)
     }
 
+    pub fn get_regional_connections(&self) -> Result<Vec<MapLine>,Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("get_regional_connections");
+
+        let mut flags = OpenFlags::default();
+        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
+        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
+        let connection = Connection::open_with_flags(self.path, flags)?;
+
+        let mut query = String::from("SELECT msga.solarSystemId AS origin, mpsa.projX as originX, mpsa.projY as originY, mpsb.SolarSystemId AS destination,");
+        query += "mpsb.projX as destinationX, mpsb.projY as destinationY ";
+        query += "FROM mapSystemGates AS msga ";
+        query += "INNER JOIN mapSystemGates AS msgb ON (msgb.systemGateId = msga.destination) ";
+        query += "INNER JOIN mapSolarSystems AS mpsa ON (mpsa.solarSystemId = msga.solarSystemId) ";
+        query += "INNER JOIN mapSolarSystems AS mpsb ON (mpsb.solarSystemId = msgb.solarSystemId) ";
+        query += "INNER JOIN mapConstellations AS mca ON (mca.constellationId = mpsa.constellationId) ";
+        query += "INNER JOIN mapConstellations AS mcb ON (mcb.constellationId = mpsb.constellationId) ";
+        query += "WHERE mca.regionId <> mcb.regionId AND mpsa.solarSystemId < mpsb.solarSystemId ";
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = statement.query([])?;
+        let mut vec_lines = Vec::new();
+        while let Some(row) = rows.next()? {
+            let cords:[f32;4] = [row.get(1)?, row.get(2)?, row.get(4)?, row.get(5)?];
+            let ffactor = self.factor as f32;
+            vec_lines.push(MapLine::new(cords[0] / ffactor,cords[1] / ffactor,cords[2] / ffactor,cords[3] / ffactor));
+        }
+        Ok(vec_lines)
+    } 
+
     pub fn get_connections(&self, mut hash_map: HashMap<usize,MapPoint>, dimentions: u8) -> Result<HashMap<usize,MapPoint>,Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_connections");
@@ -185,6 +215,7 @@ impl<'a> SdeManager<'a> {
         let mut rows = statement.query([])?;
         let mut id:(usize,usize) = (0,0);
         let mut vec_coords: Vec<[f64; 3]> = Vec::new();
+        let mut mapped:HashMap<usize,usize> = HashMap::new();
         while let Some(row) = rows.next()? {
 
             // Optimization: to avoid printing twice the same line, we are just skipping coordinates
@@ -192,28 +223,45 @@ impl<'a> SdeManager<'a> {
             // of the lowest ID
             let origin = row.get(0)?;
             let destination = row.get::<usize,usize>(1)?;
+
+            // we store the first system
             if id.1 == 0 {
+                mapped.entry(id.0).or_insert(1);
                 id.0 = origin;
             } 
+
+            //we compare the current system with the first, if not the same then we add the coordinates to hashmap
             if id.1 != origin {
-                hash_map.entry(origin).and_modify(|point| { point.lines=vec_coords.clone() });
+                hash_map.entry(id.1).and_modify(|point| { point.lines=vec_coords.clone() });
                 vec_coords.clear();
             }
+
+            // we add the current origin system
             id.1 = origin;
-            if origin > destination && origin != id.0 {
+            // if destination point is already mapped and not the fist node then we skip it
+            if mapped.contains_key(&destination) && origin != id.0 {
                 continue;
             }
+
+            // initialize a coordinate in 
             let mut coords:[f64; 3]= [0.0,0.0,0.0];
+
+            //we get the coordinate point and multiply with the adjust factor
             coords[0] = row.get(5)?;
             coords[1] = row.get(6)?;
             coords[0] = coords[0] / self.factor as f64;
             coords[1] = coords[1] / self.factor as f64;
+
+            // if we had a third dimesion we add the Z axis coordinate 
             if dimentions == 3 {
                 coords = [row.get(2)?,row.get(3)?,row.get(4)?];
                 coords[2] = coords[2] / self.factor as f64;
             }
+
+            // we add the coordinates to the vector
             vec_coords.push(coords);
         }
+        // we add the last point to the hashmap
         if id.1 != 0 {
             hash_map.entry(id.1).and_modify(|point| { point.lines=vec_coords });
         }
