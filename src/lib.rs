@@ -188,9 +188,9 @@ impl<'a> SdeManager<'a> {
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows = statement.query([])?;
         let mut vec_lines = Vec::new();
+        let ffactor = self.factor as f32;
         while let Some(row) = rows.next()? {
             let cords:[f32;4] = [row.get(1)?, row.get(2)?, row.get(4)?, row.get(5)?];
-            let ffactor = self.factor as f32;
             vec_lines.push(MapLine::new(cords[0] / ffactor,cords[1] / ffactor,cords[2] / ffactor,cords[3] / ffactor));
         }
         Ok(vec_lines)
