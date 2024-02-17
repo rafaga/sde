@@ -26,6 +26,7 @@ pub mod consts {
 
 /// Manages the process of reading SDE data and putting into different data structures
 /// for easy in-memory access.
+#[derive(Clone)]
 pub struct SdeManager<'a> {
     /// The path to the SDE database
     pub path: &'a Path,
@@ -298,5 +299,9 @@ impl<'a> SdeManager<'a> {
             areas.push(region); 
         }
         Ok(areas)
+    }
+
+    pub fn get_system_id(&self,name: usize) -> usize {
+        0
     }
 }
