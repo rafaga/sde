@@ -307,11 +307,11 @@ impl<'a> SdeManager<'a> {
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
         let connection = Connection::open_with_flags(self.path, flags)?;
 
-        
-        let query = String::from("SELECT SolarSystemId FROM mapSolarSystems WHERE SolarSystemName = ?1;");
+        let query = String::from("SELECT SolarSystemId FROM mapSolarSystems WHERE LOWER(SolarSystemName) LIKE ?1;");
 
         let mut statement = connection.prepare(query.as_str())?;
-        let mut rows = statement.query(params![name])?;
+        let system_like_name = "%".to_string() + name.as_str() + "%";
+        let mut rows = statement.query(params![system_like_name])?;
         let mut id=0;
         while let Some(row) = rows.next()? {
             id = row.get(0)?;
