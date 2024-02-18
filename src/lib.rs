@@ -8,7 +8,7 @@
 //!
 use crate::objects::Universe;
 use objects::EveRegionArea;
-use rusqlite::{Connection, Error, OpenFlags};
+use rusqlite::{params, Connection, Error, OpenFlags};
 use std::path::Path;
 use egui_map::map::objects::{MapPoint,MapLine};
 use std::collections::HashMap;
@@ -308,11 +308,10 @@ impl<'a> SdeManager<'a> {
         let connection = Connection::open_with_flags(self.path, flags)?;
 
         
-        let mut query = String::from("SELECT SolarSystemId FROM mapSolarSystems ");
-        query += " WHERE SolarSystemName = ?;";
+        let query = String::from("SELECT SolarSystemId FROM mapSolarSystems WHERE SolarSystemName = ?1;");
 
         let mut statement = connection.prepare(query.as_str())?;
-        let mut rows = statement.query([name])?;
+        let mut rows = statement.query(params![name])?;
         let mut id=0;
         while let Some(row) = rows.next()? {
             id = row.get(0)?;
