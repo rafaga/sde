@@ -301,7 +301,22 @@ impl<'a> SdeManager<'a> {
         Ok(areas)
     }
 
-    pub fn get_system_id(&self,name: usize) -> usize {
-        0
+    pub fn get_system_id(self, name:String) -> Result<usize, Error> {
+        let mut flags = OpenFlags::default();
+        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
+        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
+        let connection = Connection::open_with_flags(self.path, flags)?;
+
+        
+        let mut query = String::from("SELECT SolarSystemId FROM mapSolarSystems ");
+        query += " WHERE SolarSystemName = ?;";
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = statement.query([name])?;
+        let mut id=0;
+        while let Some(row) = rows.next()? {
+            id = row.get(0)?;
+        }
+        Ok(id)
     }
 }
