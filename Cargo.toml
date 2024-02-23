@@ -46,11 +46,13 @@ rusqlite = { version = "0", features = ["bundled-sqlcipher", "backup", "blob"] }
 serde = { version = "1.0", features = ["derive"] }
 puffin = {version = "0.18", optional = true, default-features = false}
 
+# Not Windows:
+[target.'cfg(not(windows))'.dependencies]
+rusqlite = { version = "0", features = ["bundled-sqlcipher", "backup", "blob"] }
+
+# Windows:
 [target.'cfg(windows)'.dependencies]
-egui-map = { git = "https://github.com/rafaga/egui-map", branch="test" }
 rusqlite = { version = "0", features = ["bundled-sqlcipher-vendored-openssl", "backup", "blob"] }
-serde = { version = "1.0", features = ["derive"] }
-puffin = {version = "0.18", optional = true, default-features = false}
 
 [dev-dependencies]
 # tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
