@@ -301,13 +301,14 @@ impl<'a> SdeManager<'a> {
         Ok(areas)
     }
 
-    pub fn get_system_id(self, name:String) -> Result<Vec<(usize,String,String)>, Error> {
+    pub fn get_system_id(self, name:String) -> Result<Vec<(usize,String,usize,String)>, Error> {
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
         let connection = Connection::open_with_flags(self.path, flags)?;
 
-        let mut query = String::from("SELECT mss.SolarSystemId, mss.SolarSystemName, mr.regionName FROM mapSolarSystems AS mss ");
+        let mut query = String::from("SELECT mss.SolarSystemId, mss.SolarSystemName, mr.RegionId ,mr.regionName"); 
+        query += "FROM mapSolarSystems AS mss ";
         query += "INNER JOIN mapConstellations AS mc ON (mc.constellationId = mss.constellationId) ";
         query += "INNER JOIN mapRegions AS mr ON (mr.RegionId = mc.RegionId) ";
         query += "WHERE LOWER(mss.SolarSystemName) LIKE ?1; ";
@@ -317,7 +318,7 @@ impl<'a> SdeManager<'a> {
         let mut rows = statement.query(params![system_like_name])?;
         let mut results = Vec::new();
         while let Some(row) = rows.next()? {
-            results.push((row.get(0)?,row.get(1)?,row.get(2)?));
+            results.push((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?));
         }
         Ok(results)
     }
