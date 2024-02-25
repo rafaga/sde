@@ -307,7 +307,7 @@ impl<'a> SdeManager<'a> {
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
         let connection = Connection::open_with_flags(self.path, flags)?;
 
-        let mut query = String::from("SELECT mss.SolarSystemId, mss.SolarSystemName, mr.RegionId ,mr.regionName"); 
+        let mut query = String::from("SELECT mss.SolarSystemId, mss.SolarSystemName, mr.RegionId, mr.regionName"); 
         query += "FROM mapSolarSystems AS mss ";
         query += "INNER JOIN mapConstellations AS mc ON (mc.constellationId = mss.constellationId) ";
         query += "INNER JOIN mapRegions AS mr ON (mr.RegionId = mc.RegionId) ";
