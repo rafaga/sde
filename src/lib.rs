@@ -322,4 +322,23 @@ impl<'a> SdeManager<'a> {
         }
         Ok(results)
     }
+
+    pub fn get_system_coords(self, id_node: usize) -> Result<Option<(u64,u64)>,Error>{
+        let mut flags = OpenFlags::default();
+        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
+        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
+        let connection = Connection::open_with_flags(self.path, flags)?;
+
+        let mut query = String::from("SELECT mss.ProjX, mss.ProjY "); 
+        query += "FROM mapSolarSystems AS mss ";
+        query += "WHERE mss.SolarSystemId = ?1; ";
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let system_like_name = id_node.to_string();
+        let mut rows = statement.query(params![system_like_name])?;
+        while let Some(row) = rows.next()? {
+            return Ok(Some((row.get::<usize,u64>(0)?,row.get::<usize,u64>(1)?)));
+        }
+        Ok(None)
+    }
 }
