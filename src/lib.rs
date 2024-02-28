@@ -337,7 +337,8 @@ impl<'a> SdeManager<'a> {
         let system_like_name = id_node.to_string();
         let mut rows = statement.query(params![system_like_name])?;
         while let Some(row) = rows.next()? {
-            return Ok(Some((row.get(0)?,row.get(1)?)));
+            let data = (row.get::<usize,f64>(0)? / self.factor as f64,row.get::<usize,f64>(1)? / self.factor as f64);
+            return Ok(Some(data));
         }
         Ok(None)
     }
