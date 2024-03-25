@@ -1,30 +1,30 @@
+use super::consts;
+use rusqlite::Error;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::{thread, vec};
-use super::consts;
-use rusqlite::Error;
 
 #[derive(Hash, PartialEq, Eq, Clone)]
 pub struct EveRegionArea {
     pub region_id: u32,
     pub name: String,
-    pub min:Coordinates2D,
-    pub max:Coordinates2D,
+    pub min: Coordinates2D,
+    pub max: Coordinates2D,
 }
 
-impl EveRegionArea{
+impl Default for EveRegionArea {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EveRegionArea {
     pub fn new() -> Self {
         EveRegionArea {
             region_id: 0,
             name: String::new(),
-            min: Coordinates2D {
-                x: 0,
-                y: 0,
-            },
-            max: Coordinates2D{
-                x: 0,
-                y: 0,
-            }
+            min: Coordinates2D { x: 0, y: 0 },
+            max: Coordinates2D { x: 0, y: 0 },
         }
     }
 }
@@ -71,7 +71,7 @@ pub struct Coordinates2D {
 impl Coordinates2D {
     /// Creates a new AbstractCoordinate struct. ALl the coordinates are initialized.
     pub fn new() -> Self {
-        Coordinates2D { x: 0, y: 0}
+        Coordinates2D { x: 0, y: 0 }
     }
 }
 
@@ -160,7 +160,7 @@ pub struct SolarSystem {
     /// Solar System 2D Coordinates with the propourse of representing the system in abstraction map.
     pub cords2d: Coordinates2D,
     /// The factor that we need to adjust the coordinates
-    pub factor: i64
+    pub factor: i64,
 }
 
 impl SolarSystem {
@@ -175,18 +175,25 @@ impl SolarSystem {
             connections: Vec::new(),
             cords3d: Coordinates3D::default(),
             cords2d: Coordinates2D::default(),
-            factor: factor,
+            factor,
         }
     }
 
     /// this function that correct the original 2d coordinates using the correction factor
-    pub fn coord2d_to_f64(self) -> [f64;2] {
-       [(self.cords2d.x / self.factor) as f64, (self.cords3d.y / self.factor) as f64]
+    pub fn coord2d_to_f64(self) -> [f64; 2] {
+        [
+            (self.cords2d.x / self.factor) as f64,
+            (self.cords3d.y / self.factor) as f64,
+        ]
     }
 
     /// this function that correct the original 3d coordinates using the correction factor
-    pub fn coord3d_to_f64(self) -> [f64;3] {
-        [(self.cords2d.x / self.factor) as f64, (self.cords3d.y / self.factor) as f64, (self.cords3d.z / self.factor) as f64]
+    pub fn coord3d_to_f64(self) -> [f64; 3] {
+        [
+            (self.cords2d.x / self.factor) as f64,
+            (self.cords3d.y / self.factor) as f64,
+            (self.cords3d.z / self.factor) as f64,
+        ]
     }
 }
 
@@ -325,7 +332,7 @@ impl Universe {
             planets: HashMap::new(),
             moons: HashMap::new(),
             dicts: Dictionaries::new(),
-            factor: factor,
+            factor,
         }
     }
 
@@ -337,7 +344,7 @@ impl Universe {
     ) -> Result<Vec<Region>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_region");
-        
+
         let mut query = String::from("SELECT regionId, regionName FROM mapRegions");
         let mut temp_regions = Vec::new();
         let param_values: Vec<u32> = Vec::new();
@@ -351,7 +358,7 @@ impl Universe {
         loop {
             let mut statement = connection.prepare(query.as_str())?;
             let mut rows;
-            if vec_params.len() > 0 {
+            if !vec_params.is_empty() {
                 rows = statement.query([vec_params.pop().unwrap()])?;
             } else {
                 rows = statement.query([])?;
@@ -372,11 +379,11 @@ impl Universe {
                     region.constellations.push(row.get(0)?);
                 }
                 regions_result.push(region);
-                if temp_regions.len() == 0 {
+                if temp_regions.is_empty() {
                     break;
                 }
             }
-            if param_values.len() == 0 {
+            if param_values.is_empty() {
                 break;
             }
         }
@@ -388,7 +395,7 @@ impl Universe {
         &self,
         connection: rusqlite::Connection,
         constellation: Option<Vec<u32>>,
-        invert_coordinates:bool,
+        invert_coordinates: bool,
     ) -> Result<Vec<SolarSystem>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_solarsystem");
@@ -405,17 +412,18 @@ impl Universe {
             Some(temp_vec) => Arc::new(Mutex::new(temp_vec)),
             None => Arc::new(Mutex::new(vec![])),
         };
-        for _x in [0..consts::MAX_THREADS] {
+        for _x in (0..consts::MAX_THREADS).collect::<std::vec::Vec<i8>>() {
             // cloning Objects to invoke a thread
             let sh_objects = Arc::clone(&vec_objects);
             let sh_parent_ids = Arc::clone(&vec_parent_ids);
             let sh_conn = Arc::clone(&kconn);
-            let temp_factor = self.factor.clone();
+            let temp_factor = self.factor;
             // invoke a thread
 
             let handle = thread::spawn(move || {
                 let thread_connection = &sh_conn.lock().unwrap();
-                let mut query = String::from("SELECT mss.solarSystemId, mss.solarSystemName, mc.regionId, ");
+                let mut query =
+                    String::from("SELECT mss.solarSystemId, mss.solarSystemName, mc.regionId, ");
                 query += " mc.centerX, mc.centerY, mc.centerZ, mss.projX, mss.projY, mss.constellationId ";
                 query += " FROM mapSolarSystems AS mss ";
                 query += " INNER JOIN mapConstellations AS mc ON(mss.constellationId = mc.constellationId)  ";
@@ -445,9 +453,9 @@ impl Universe {
                         object.cords2d.y = row.get::<_, f64>(7).unwrap() as i64; //i64
                         if invert_coordinates {
                             object.cords3d.x *= -1;
-                            object.cords3d.y *= -1; 
-                            object.cords3d.z *= -1; 
-                            object.cords2d.x *= -1; 
+                            object.cords3d.y *= -1;
+                            object.cords3d.z *= -1;
+                            object.cords2d.x *= -1;
                             object.cords2d.y *= -1;
                         }
                         object.region = row.get(2).unwrap();
@@ -505,7 +513,7 @@ impl Universe {
             Some(temp_vec) => Arc::new(Mutex::new(temp_vec)),
             None => Arc::new(Mutex::new(vec![])),
         };
-        for _x in [0..consts::MAX_THREADS] {
+        for _x in (0..consts::MAX_THREADS).collect::<std::vec::Vec<i8>>() {
             // cloning Objects to invoke a thread
             let sh_objects = Arc::clone(&vec_objects);
             let sh_parent_ids = Arc::clone(&vec_parent_ids);
@@ -524,7 +532,7 @@ impl Universe {
                 let mut temp_vec = Vec::new();
                 loop {
                     let mut statement = thread_connection.prepare(query.as_str()).unwrap();
-                    let mut rows = statement.query(&[&vec_parent_ids.pop().unwrap()]).unwrap();
+                    let mut rows = statement.query([&vec_parent_ids.pop().unwrap()]).unwrap();
                     //while there are regions left to consume
                     while let Some(row) = rows.next().unwrap() {
                         let mut object = Constellation::new();
@@ -582,7 +590,7 @@ impl Universe {
             Some(temp_vec) => Arc::new(Mutex::new(temp_vec)),
             None => Arc::new(Mutex::new(vec![])),
         };
-        for _x in [0..consts::MAX_THREADS] {
+        for _x in (0..consts::MAX_THREADS).collect::<std::vec::Vec<i8>>() {
             // cloning Objects to invoke a thread
             let sh_objects = Arc::clone(&vec_objects);
             let sh_parent_ids = Arc::clone(&vec_parent_ids);
@@ -599,7 +607,7 @@ impl Universe {
                 };
                 loop {
                     let mut statement = thread_connection.prepare(query.as_str()).unwrap();
-                    let mut rows = statement.query(&[&vec_parent_ids.pop().unwrap()]).unwrap();
+                    let mut rows = statement.query([&vec_parent_ids.pop().unwrap()]).unwrap();
                     //while there are regions left to consume
                     while let Some(row) = rows.next().unwrap() {
                         let mut object = Planet::new();
@@ -649,7 +657,7 @@ impl Universe {
             Some(temp_vec) => Arc::new(Mutex::new(temp_vec)),
             None => Arc::new(Mutex::new(vec![])),
         };
-        for _x in [0..consts::MAX_THREADS] {
+        for _x in (0..consts::MAX_THREADS).collect::<std::vec::Vec<i8>>() {
             // cloning Objects to invoke a thread
             let sh_objects = Arc::clone(&vec_objects);
             let sh_parent_ids = Arc::clone(&vec_parent_ids);
@@ -667,7 +675,7 @@ impl Universe {
                 };
                 loop {
                     let mut statement = thread_connection.prepare(query.as_str()).unwrap();
-                    let mut rows = statement.query(&[&vec_parent_ids.pop().unwrap()]).unwrap();
+                    let mut rows = statement.query([&vec_parent_ids.pop().unwrap()]).unwrap();
                     //while there are regions left to consume
                     while let Some(row) = rows.next().unwrap() {
                         let mut object = Moon::new();
