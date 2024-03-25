@@ -152,10 +152,8 @@ impl<'a> SdeManager<'a> {
             if id < min_id {
                 min_id = id;
             }
-
-
             //we get the coordinate point and multiply with the adjust factor
-            let mut coords = Vec::new();
+            let mut coords;
             if dimentions == 2 {
                 coords = vec![row.get(4)?, row.get(5)?];
             } else {
@@ -200,12 +198,14 @@ impl<'a> SdeManager<'a> {
         let ffactor = self.factor as f32;
         while let Some(row) = rows.next()? {
             let mut cords:[f32;4] = [row.get(1)?, row.get(2)?, row.get(4)?, row.get(5)?];
-            if self.invert_coordinates {
-                for i in 0..cords.len() {
+            for i in 0..cords.len() {
+                cords[i] /= ffactor;
+                if self.invert_coordinates {
                     cords[i] *= -1.0;
                 }
             }
-            vec_lines.push(MapLine::new(cords[0] / ffactor,cords[1] / ffactor,cords[2] / ffactor,cords[3] / ffactor));
+            
+            vec_lines.push(MapLine::new(cords[0],cords[1],cords[2],cords[3]));
         }
         Ok(vec_lines)
     } 
