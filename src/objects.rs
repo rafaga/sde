@@ -388,6 +388,7 @@ impl Universe {
         &self,
         connection: rusqlite::Connection,
         constellation: Option<Vec<u32>>,
+        invert_coordinates:bool,
     ) -> Result<Vec<SolarSystem>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_solarsystem");
@@ -442,6 +443,13 @@ impl Universe {
                         object.cords3d.z = row.get::<_, f64>(5).unwrap() as i64; //i64
                         object.cords2d.x = row.get::<_, f64>(6).unwrap() as i64; //i64
                         object.cords2d.y = row.get::<_, f64>(7).unwrap() as i64; //i64
+                        if invert_coordinates {
+                            object.cords3d.x *= -1;
+                            object.cords3d.y *= -1; 
+                            object.cords3d.z *= -1; 
+                            object.cords2d.x *= -1; 
+                            object.cords2d.y *= -1;
+                        }
                         object.region = row.get(2).unwrap();
                         temp_vec.push(object);
                     }

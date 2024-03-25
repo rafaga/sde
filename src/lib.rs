@@ -33,7 +33,9 @@ pub struct SdeManager<'a> {
     /// The universe Object that contains all the data
     pub universe: Universe,
     /// Adjusting factor for coordinates (because are very large numbers)
-    pub factor: i64
+    pub factor: i64,
+    /// Invert the sign of all coordinate values
+    pub invert_coordinates: bool,
 }
 
 
@@ -44,6 +46,7 @@ impl<'a> SdeManager<'a> {
             path,
             universe: Universe::new(factor),
             factor: factor, // 10000000000000
+            invert_coordinates: true,
         }
     }
 
@@ -108,7 +111,7 @@ impl<'a> SdeManager<'a> {
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
         let connection = Connection::open_with_flags(self.path, flags)?;
-        let solar_systems = self.universe.get_solarsystem(connection, parent_ids)?;
+        let solar_systems = self.universe.get_solarsystem(connection, parent_ids,self.invert_coordinates)?;
 
         let mut parent_ids = vec![];
         for system in solar_systems {
@@ -149,18 +152,23 @@ impl<'a> SdeManager<'a> {
             if id < min_id {
                 min_id = id;
             }
-            let mut _coords = Vec::new();
+
+
+            //we get the coordinate point and multiply with the adjust factor
+            let mut coords = Vec::new();
             if dimentions == 2 {
-                _coords = vec![row.get(4)?,row.get(5)?];
+                coords = vec![row.get(4)?, row.get(5)?];
             } else {
-                _coords = vec![row.get(1)?,row.get(2)?,row.get(3)?];
+                // if we had a third dimesion we add the Z axis coordinate 
+                coords = vec![row.get(1)?,row.get(2)?,row.get(3)?];
             }
-            _coords[0] = _coords[0] / self.factor as f64;
-            _coords[1] = _coords[1] / self.factor as f64;
-            if dimentions == 3 {
-                _coords[2] = _coords[2] / self.factor as f64;
+            for i in 0..dimentions{
+                if self.invert_coordinates{
+                    coords[i as usize] *= -1.0;
+                }
+                coords[i as usize] /=  self.factor as f64;
             }
-            let mut point = MapPoint::new(id,_coords);
+            let mut point = MapPoint::new(id,coords);
             point.name = row.get(6)?;
             hash_map.insert(id, point);
         }
@@ -191,7 +199,12 @@ impl<'a> SdeManager<'a> {
         let mut vec_lines = Vec::new();
         let ffactor = self.factor as f32;
         while let Some(row) = rows.next()? {
-            let cords:[f32;4] = [row.get(1)?, row.get(2)?, row.get(4)?, row.get(5)?];
+            let mut cords:[f32;4] = [row.get(1)?, row.get(2)?, row.get(4)?, row.get(5)?];
+            if self.invert_coordinates {
+                for i in 0..cords.len() {
+                    cords[i] *= -1.0;
+                }
+            }
             vec_lines.push(MapLine::new(cords[0] / ffactor,cords[1] / ffactor,cords[2] / ffactor,cords[3] / ffactor));
         }
         Ok(vec_lines)
@@ -245,18 +258,20 @@ impl<'a> SdeManager<'a> {
             }
 
             // initialize a coordinate in 
-            let mut coords:[f64; 3]= [0.0,0.0,0.0];
+            let mut coords;
 
             //we get the coordinate point and multiply with the adjust factor
-            coords[0] = row.get(5)?;
-            coords[1] = row.get(6)?;
-            coords[0] = coords[0] / self.factor as f64;
-            coords[1] = coords[1] / self.factor as f64;
-
-            // if we had a third dimesion we add the Z axis coordinate 
-            if dimentions == 3 {
+            if dimentions == 2 {
+                coords = [row.get(5)?, row.get(6)?, 0.0];
+            } else {
+                // if we had a third dimesion we add the Z axis coordinate 
                 coords = [row.get(2)?,row.get(3)?,row.get(4)?];
-                coords[2] = coords[2] / self.factor as f64;
+            }
+            for i in 0..dimentions{
+                if self.invert_coordinates{
+                    coords[i as usize] *= -1.0;
+                }
+                coords[i as usize] /=  self.factor as f64;
             }
 
             // we add the coordinates to the vector
@@ -296,6 +311,14 @@ impl<'a> SdeManager<'a> {
             region.max.y = row.get(3)?;
             region.min.x = row.get(4)?;
             region.min.y = row.get(5)?;
+            // we invert the coordinates and swap the min with the max
+            if self.invert_coordinates {
+                let temp = (region.max.x * -1,region.max.y * -1);
+                region.max.x = region.min.x * -1;
+                region.max.y = region.min.y * -1;
+                region.min.x = temp.0;
+                region.min.y = temp.1;
+            }
             areas.push(region); 
         }
         Ok(areas)
@@ -337,7 +360,10 @@ impl<'a> SdeManager<'a> {
         let system_like_name = id_node.to_string();
         let mut rows = statement.query(params![system_like_name])?;
         while let Some(row) = rows.next()? {
-            let data = (row.get::<usize,f64>(0)? / self.factor as f64,row.get::<usize,f64>(1)? / self.factor as f64);
+            let mut data = (row.get::<usize,f64>(0)? / self.factor as f64,row.get::<usize,f64>(1)? / self.factor as f64);
+            if self.invert_coordinates {
+                data = (data.0 * -1.0,data.1 * -1.0);
+            }
             return Ok(Some(data));
         }
         Ok(None)
