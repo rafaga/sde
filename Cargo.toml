@@ -55,3 +55,6 @@ rusqlite = { version = "0.31.0", features = ["bundled-sqlcipher-vendored-openssl
 
 [dev-dependencies]
 # tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
+
+[patch.crates-io]
+egui-map = { path = "../egui-map/"}

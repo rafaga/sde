@@ -32,14 +32,14 @@ pub struct SdeManager<'a> {
     /// The universe Object that contains all the data
     pub universe: Universe,
     /// Adjusting factor for coordinates (because are very large numbers)
-    pub factor: i64,
+    pub factor: u64,
     /// Invert the sign of all coordinate values
     pub invert_coordinates: bool,
 }
 
 impl<'a> SdeManager<'a> {
     /// Creates a new SdeManager using a path to build the connection
-    pub fn new(path: &Path, factor: i64) -> SdeManager {
+    pub fn new(path: &Path, factor: u64) -> SdeManager {
         SdeManager {
             path,
             universe: Universe::new(factor),
@@ -149,7 +149,7 @@ impl<'a> SdeManager<'a> {
         let connection = Connection::open_with_flags(self.path, flags)?;
 
         let mut query = String::from(
-            "SELECT SolarSystemId, centerX, centerY, centerZ, projX, projY, SolarSystemName ",
+            "SELECT SolarSystemId, centerX, centerY, centerZ, projX, projY, projZ, SolarSystemName ",
         );
         query += " FROM mapSolarSystems WHERE SolarSystemId BETWEEN 30000000 AND 30999999;";
         let mut statement = connection.prepare(query.as_str())?;
@@ -164,21 +164,30 @@ impl<'a> SdeManager<'a> {
                 min_id = id;
             }
             //we get the coordinate point and multiply with the adjust factor
-            let mut coords;
+            let mut coords= Vec::new();
             if dimentions == 2 {
-                coords = vec![row.get(4)?, row.get(5)?];
+                for index in 4..7 {
+                    let mut val = row.get(index)?;
+                    val /= self.factor as f64;
+                    if self.invert_coordinates {
+                        val *= -1.0;
+                    }
+                    if val != 0.00 {
+                        coords.push(val);
+                    }
+                }
             } else {
                 // if we had a third dimesion we add the Z axis coordinate
                 coords = vec![row.get(1)?, row.get(2)?, row.get(3)?];
-            }
-            for i in 0..dimentions {
-                if self.invert_coordinates {
-                    coords[i as usize] *= -1.0;
+                for i in 0..3 {
+                    coords[i as usize] /= self.factor as f64;
+                    if self.invert_coordinates {
+                        coords[i as usize] *= -1.0;
+                    }
                 }
-                coords[i as usize] /= self.factor as f64;
             }
             let mut point = MapPoint::new(id, coords);
-            point.name = row.get(6)?;
+            point.name = row.get(7)?;
             hash_map.insert(id, point);
         }
         Ok(hash_map)
@@ -193,16 +202,15 @@ impl<'a> SdeManager<'a> {
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
         let connection = Connection::open_with_flags(self.path, flags)?;
 
-        let mut query = String::from("SELECT msga.solarSystemId AS origin, mpsa.projX as originX, mpsa.projY as originY, mpsb.SolarSystemId AS destination,");
-        query += "mpsb.projX as destinationX, mpsb.projY as destinationY ";
+        let mut query = String::from("SELECT msga.solarSystemId AS origin, mpsa.projX as originX, ");
+        query += "mpsa.projY as originY, mpsa.projZ as originZ, mpsb.SolarSystemId AS destination, ";
+        query += "mpsb.projX as destinationX, mpsb.projY as destinationY, mpsb.projZ as destinationZ ";
         query += "FROM mapSystemGates AS msga ";
         query += "INNER JOIN mapSystemGates AS msgb ON (msgb.systemGateId = msga.destination) ";
         query += "INNER JOIN mapSolarSystems AS mpsa ON (mpsa.solarSystemId = msga.solarSystemId) ";
         query += "INNER JOIN mapSolarSystems AS mpsb ON (mpsb.solarSystemId = msgb.solarSystemId) ";
-        query +=
-            "INNER JOIN mapConstellations AS mca ON (mca.constellationId = mpsa.constellationId) ";
-        query +=
-            "INNER JOIN mapConstellations AS mcb ON (mcb.constellationId = mpsb.constellationId) ";
+        query += "INNER JOIN mapConstellations AS mca ON (mca.constellationId = mpsa.constellationId) ";
+        query += "INNER JOIN mapConstellations AS mcb ON (mcb.constellationId = mpsb.constellationId) ";
         query += "WHERE mca.regionId <> mcb.regionId AND mpsa.solarSystemId < mpsb.solarSystemId ";
 
         let mut statement = connection.prepare(query.as_str())?;
@@ -210,14 +218,14 @@ impl<'a> SdeManager<'a> {
         let mut vec_lines = Vec::new();
         let ffactor = self.factor as f32;
         while let Some(row) = rows.next()? {
-            let mut cords: [f32; 4] = [row.get(1)?, row.get(2)?, row.get(4)?, row.get(5)?];
-            for i in 0..cords.len() {
-                cords[i] /= ffactor;
+            let mut coords: [f32; 6] = [row.get(1)?, row.get(2)?, row.get(3)?, row.get(5)?, row.get(6)?, row.get(7)?];
+            for i in 0..coords.len() {
+                coords[i] /= ffactor;
                 if self.invert_coordinates {
-                    cords[i] *= -1.0;
+                    coords[i] *= -1.0;
                 }
             }
-            vec_lines.push(MapLine::new(cords[0], cords[1], cords[2], cords[3]));
+            vec_lines.push(MapLine::new(coords[0], coords[1], coords[2], coords[3]));
         }
         Ok(vec_lines)
     }
