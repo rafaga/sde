@@ -136,6 +136,27 @@ impl<'a> SdeManager<'a> {
         Ok(true)
     }
 
+    /// Given a point in three axis covert it into a 2-axis coordinates, but this coordinate must be 
+    /// previously porjected using an algorithm
+   fn three_to_two_axis(input:[f32;3], axis_to_remove:Option<usize>) -> [f32;2] {
+        let mut result = [0.00,0.00];
+        let mut last_index = 0;
+        for i in 0..input.len() {
+            if let Some(axis_number) = axis_to_remove {
+                if i == axis_number {
+                    continue;
+                }
+            } else {
+                if input[i] == 0.0 {
+                    continue;
+                } 
+            }
+            result[last_index] = input[i];
+            last_index+=1;
+        }
+        result
+    }
+
     /// Function to get all the K-Space solar systems coordinates from the SDE including data to build a map
     /// and search for basic stuff
     pub fn get_systempoints(&self, dimentions: u8) -> Result<HashMap<usize, MapPoint>, Error> {
@@ -218,14 +239,17 @@ impl<'a> SdeManager<'a> {
         let mut vec_lines = Vec::new();
         let ffactor = self.factor as f32;
         while let Some(row) = rows.next()? {
-            let mut coords: [f32; 6] = [row.get(1)?, row.get(2)?, row.get(3)?, row.get(5)?, row.get(6)?, row.get(7)?];
-            for i in 0..coords.len() {
-                coords[i] /= ffactor;
+            let mut coord1 = Self::three_to_two_axis([row.get(1)?,row.get(2)?,row.get(3)?], None); 
+            let mut coord2 = Self::three_to_two_axis([row.get(5)?, row.get(6)?, row.get(7)?], None);
+            for i in 0..2 {
+                coord1[i] /= ffactor;
+                coord2[i] /= ffactor;
                 if self.invert_coordinates {
-                    coords[i] *= -1.0;
+                    coord1[i] *= -1.0;
+                    coord2[i] *= -1.0;
                 }
             }
-            vec_lines.push(MapLine::new(coords[0], coords[1], coords[2], coords[3]));
+            vec_lines.push(MapLine::new(coord1[0], coord1[1], coord2[0], coord2[1]));
         }
         Ok(vec_lines)
     }
@@ -243,10 +267,9 @@ impl<'a> SdeManager<'a> {
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
         let connection = Connection::open_with_flags(self.path, flags)?;
 
-        let mut query = String::from(
-            "SELECT msga.solarSystemId AS origin, mps.SolarSystemId AS destination, mps.centerX, ",
-        );
-        query += "mps.centerY, mps.centerZ, mps.projX, mps.projY FROM mapSystemGates AS msga ";
+        let mut query = String::from("SELECT msga.solarSystemId AS origin, mps.SolarSystemId AS destination, ");
+        query += "mps.centerX, mps.centerY, mps.centerZ, mps.projX, mps.projY, mps.projZ ";
+        query += "FROM mapSystemGates AS msga ";
         query += "INNER JOIN mapSystemGates AS msgb ON (msgb.systemGateId = msga.destination) ";
         query += "INNER JOIN mapSolarSystems AS mps ON (mps.solarSystemId = msgb.solarSystemId)";
         query += "ORDER BY 1 ASC";
@@ -289,7 +312,7 @@ impl<'a> SdeManager<'a> {
 
             //we get the coordinate point and multiply with the adjust factor
             if dimentions == 2 {
-                coords = [row.get(5)?, row.get(6)?, 0.0];
+                coords = [row.get(5)?, 0.00, row.get(7)?];
             } else {
                 // if we had a third dimesion we add the Z axis coordinate
                 coords = [row.get(2)?, row.get(3)?, row.get(4)?];
@@ -405,3 +428,5 @@ impl<'a> SdeManager<'a> {
         Ok(None)
     }
 }
+
+
