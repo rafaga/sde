@@ -424,8 +424,8 @@ impl Universe {
                 let thread_connection = &sh_conn.lock().unwrap();
                 let mut query =
                     String::from("SELECT mss.solarSystemId, mss.solarSystemName, mc.regionId, ");
-                query += " mc.centerX, mc.centerY, mc.centerZ, mss.projX, mss.projY, mss.constellationId ";
-                query += " FROM mapSolarSystems AS mss ";
+                query += " mc.centerX, mc.centerY, mc.centerZ, mss.projX, mss.projY, mss.projZ, ";
+                query += " mss.constellationId FROM mapSolarSystems AS mss ";
                 query += " INNER JOIN mapConstellations AS mc ON(mss.constellationId = mc.constellationId)  ";
                 let vec_parent_ids = &mut sh_parent_ids.lock().unwrap();
                 if vec_parent_ids.len() > 0 {

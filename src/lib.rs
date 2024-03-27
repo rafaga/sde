@@ -246,7 +246,7 @@ impl<'a> SdeManager<'a> {
         let mut query = String::from(
             "SELECT msga.solarSystemId AS origin, mps.SolarSystemId AS destination, mps.centerX, ",
         );
-        query += "mps.centerY, mps.centerZ, mps.projX, mps.projY FROM mapSystemGates AS msga ";
+        query += "mps.centerY, mps.centerZ, mps.projX, mps.projY, mps.projZ FROM mapSystemGates AS msga ";
         query += "INNER JOIN mapSystemGates AS msgb ON (msgb.systemGateId = msga.destination) ";
         query += "INNER JOIN mapSolarSystems AS mps ON (mps.solarSystemId = msgb.solarSystemId)";
         query += "ORDER BY 1 ASC";
@@ -325,7 +325,8 @@ impl<'a> SdeManager<'a> {
         query += "MAX(reg.max_y) AS region_max_y, MIN(reg.min_x) AS region_min_x, ";
         query += "MIN(reg.min_y) AS region_min_y FROM (SELECT mr.regionId, mr.regionName, ";
         query += "mc.constellationId, MAX(mss.projX) AS max_x, MAX(mss.projY) AS max_y, ";
-        query += "MIN(mss.projX) AS min_x, MIN(mss.projY) AS min_y FROM mapRegions AS mr ";
+        query += "MAX(mss.projZ) AS max_z, MIN(mss.projX) AS min_x, MIN(mss.projY) AS min_y, ";
+        query += "MIN(mss.projZ) AS min_z FROM mapRegions AS mr ";
         query += "INNER JOIN mapConstellations mc ON (mc.regionId = mr.regionId) ";
         query += "INNER JOIN mapSolarSystems mss ON (mc.constellationId = mss.constellationId) ";
         query += " WHERE mr.regionId BETWEEN 10000000 AND 10999999 GROUP BY mr.regionId, mr.regionName, mc.constellationId) ";
@@ -364,8 +365,7 @@ impl<'a> SdeManager<'a> {
             "SELECT mss.SolarSystemId, mss.SolarSystemName, mr.RegionId, mr.regionName ",
         );
         query += "FROM mapSolarSystems AS mss ";
-        query +=
-            "INNER JOIN mapConstellations AS mc ON (mc.constellationId = mss.constellationId) ";
+        query += "INNER JOIN mapConstellations AS mc ON (mc.constellationId = mss.constellationId) ";
         query += "INNER JOIN mapRegions AS mr ON (mr.RegionId = mc.RegionId) ";
         query += "WHERE LOWER(mss.SolarSystemName) LIKE ?1; ";
 
@@ -385,9 +385,8 @@ impl<'a> SdeManager<'a> {
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
         let connection = Connection::open_with_flags(self.path, flags)?;
 
-        let mut query = String::from("SELECT mss.ProjX, mss.ProjY ");
-        query += "FROM mapSolarSystems AS mss ";
-        query += "WHERE mss.SolarSystemId = ?1; ";
+        let mut query = String::from("SELECT mss.ProjX, mss.ProjY, mss.ProjZ ");
+        query += "FROM mapSolarSystems AS mss WHERE mss.SolarSystemId = ?1; ";
 
         let mut statement = connection.prepare(query.as_str())?;
         let system_like_name = id_node.to_string();
