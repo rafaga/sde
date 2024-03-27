@@ -160,12 +160,12 @@ pub struct SolarSystem {
     /// Solar System 2D Coordinates with the propourse of representing the system in abstraction map.
     pub cords2d: Coordinates2D,
     /// The factor that we need to adjust the coordinates
-    pub factor: i64,
+    pub factor: u64,
 }
 
 impl SolarSystem {
     /// Creates a new Solar System Strcut. ALl the values are initialized. Needs to be filled
-    pub fn new(factor: i64) -> Self {
+    pub fn new(factor: u64) -> Self {
         SolarSystem {
             id: 0,
             name: String::new(),
@@ -182,17 +182,17 @@ impl SolarSystem {
     /// this function that correct the original 2d coordinates using the correction factor
     pub fn coord2d_to_f64(self) -> [f64; 2] {
         [
-            (self.cords2d.x / self.factor) as f64,
-            (self.cords3d.y / self.factor) as f64,
+            (self.cords2d.x / self.factor as i64 ) as f64,
+            (self.cords3d.y / self.factor as i64 ) as f64,
         ]
     }
 
     /// this function that correct the original 3d coordinates using the correction factor
     pub fn coord3d_to_f64(self) -> [f64; 3] {
         [
-            (self.cords2d.x / self.factor) as f64,
-            (self.cords3d.y / self.factor) as f64,
-            (self.cords3d.z / self.factor) as f64,
+            (self.cords2d.x / self.factor as i64) as f64,
+            (self.cords3d.y / self.factor as i64) as f64,
+            (self.cords3d.z / self.factor as i64) as f64,
         ]
     }
 }
@@ -319,12 +319,12 @@ pub struct Universe {
     /// Dictionaries struct
     pub dicts: Dictionaries,
     /// Factor used to correct coordinates
-    pub factor: i64,
+    pub factor: u64,
 }
 
 impl Universe {
     /// Creates a new Universe Strcut. ALl the values are initialized. Needs to be filled
-    pub fn new(factor: i64) -> Universe {
+    pub fn new(factor: u64) -> Universe {
         Universe {
             regions: HashMap::new(),
             constellations: HashMap::new(),
@@ -451,6 +451,8 @@ impl Universe {
                         object.cords3d.z = row.get::<_, f64>(5).unwrap() as i64; //i64
                         object.cords2d.x = row.get::<_, f64>(6).unwrap() as i64; //i64
                         object.cords2d.y = row.get::<_, f64>(7).unwrap() as i64; //i64
+
+                        // Invert coordinates if needed
                         if invert_coordinates {
                             object.cords3d.x *= -1;
                             object.cords3d.y *= -1;
