@@ -334,13 +334,13 @@ impl<'a> SdeManager<'a> {
             region.min.x = row.get(4)?;
             region.min.y = row.get(5)?;
             // we invert the coordinates and swap the min with the max
-            if self.invert_coordinates {
-                let temp = (-region.max.x, -region.max.y);
-                region.max.x = -region.min.x;
-                region.max.y = -region.min.y;
+            /*if self.invert_coordinates {
+                let temp = (region.max.x * -1, -region.max.y * -1);
+                region.max.x = region.min.x * -1;
+                region.max.y = region.min.y * -1;
                 region.min.x = temp.0;
                 region.min.y = temp.1;
-            }
+            }*/
             areas.push(region);
         }
         Ok(areas)
