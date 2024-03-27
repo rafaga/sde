@@ -42,7 +42,6 @@ puffin = ["dep:puffin"]
 
 [dependencies]
 egui-map = { version = "0.0.12" }
-serde = { version = "1.0.197", features = ["derive"] }
 puffin = { version = "0.19.0", optional = true, default-features = false}
 
 # Not Windows:
@@ -57,4 +56,7 @@ rusqlite = { version = "0.31.0", features = ["bundled-sqlcipher-vendored-openssl
 # tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 
 [patch.crates-io]
+# If you want to use the bleeding edge version of egui and eframe:
+# egui = { git = "https://github.com/emilk/egui", branch = "master" }
+# eframe = { git = "https://github.com/emilk/egui", branch = "master" }
 egui-map = { path = "../egui-map/"}
