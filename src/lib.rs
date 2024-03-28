@@ -35,16 +35,19 @@ pub struct SdeManager<'a> {
     pub factor: u64,
     /// Invert the sign of all coordinate values
     pub invert_coordinates: bool,
+    /// Projected Axis number 0 for X, 1 for Y and 2 for Z
+    projected_axis:usize,
 }
 
 impl<'a> SdeManager<'a> {
     /// Creates a new SdeManager using a path to build the connection
-    pub fn new(path: &Path, factor: u64) -> SdeManager {
+    pub fn new(path: &Path, factor: u64, projected_axis: usize) -> SdeManager {
         SdeManager {
             path,
             universe: Universe::new(factor),
             factor, // 10000000000000
             invert_coordinates: true,
+            projected_axis,
         }
     }
 
@@ -138,19 +141,13 @@ impl<'a> SdeManager<'a> {
 
     /// Given a point in three axis covert it into a 2-axis coordinates, but this coordinate must be 
     /// previously porjected using an algorithm
-   fn three_to_two_axis(input:[f32;3], axis_to_remove:Option<usize>) -> [f32;2] {
+   fn as_two_axis(&self, input:[f32;3]) -> [f32;2] {
         let mut result = [0.00,0.00];
         let mut last_index = 0;
-        for i in 0..input.len() {
-            if let Some(axis_number) = axis_to_remove {
-                if i == axis_number {
-                    continue;
-                }
-            } else {
-                if input[i] == 0.0 {
-                    continue;
-                } 
-            }
+        for i in 0..3 {
+            if i == self.projected_axis {
+                continue;
+            } 
             result[last_index] = input[i];
             last_index+=1;
         }
