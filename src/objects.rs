@@ -1,15 +1,17 @@
 use super::consts;
-use rusqlite::Error;
+use rusqlite::Error as RusqliteError;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::{thread, vec};
+use std::{thread, vec, convert::{From,Into,TryInto}};
+use std::io::{ErrorKind,Error as GenericError};
+use std::ops::{Div, DivAssign, Mul, MulAssign};
 
 #[derive(Hash, PartialEq, Eq, Clone)]
 pub struct EveRegionArea {
     pub region_id: u32,
     pub name: String,
-    pub min: Coordinates2D,
-    pub max: Coordinates2D,
+    pub min: Coordinate,
+    pub max: Coordinate,
 }
 
 impl Default for EveRegionArea {
@@ -23,8 +25,8 @@ impl EveRegionArea {
         EveRegionArea {
             region_id: 0,
             name: String::new(),
-            min: Coordinates2D { x: 0, y: 0 },
-            max: Coordinates2D { x: 0, y: 0 },
+            min: Coordinate::new(),
+            max: Coordinate::new(),
         }
     }
 }
@@ -35,7 +37,7 @@ impl EveRegionArea {
 /// 3d point coordinates that it is used in:
 ///
 /// - SolarSystems
-pub struct Coordinates3D {
+pub struct Coordinate {
     /// X coorddinate
     pub x: i64,
     /// Y coordinate
@@ -44,40 +46,194 @@ pub struct Coordinates3D {
     pub z: i64,
 }
 
-impl Coordinates3D {
+impl Coordinate {
     /// Creates a new Coordinates struct. ALl the coordinates are initialized.
     pub fn new() -> Self {
-        Coordinates3D { x: 0, y: 0, z: 0 }
+        Coordinate { x: 0, y: 0, z:0 }
     }
+
+
 }
 
-impl Default for Coordinates3D {
+impl Default for Coordinate {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// 2d point coordinates that it is used in:
-///
-/// - SolarSystems (to represent abstraction maps)
-#[derive(Hash, PartialEq, Eq, Clone)]
-pub struct Coordinates2D {
-    /// X coordinate
-    pub x: i64,
-    /// Y coordinate
-    pub y: i64,
-}
-
-impl Coordinates2D {
-    /// Creates a new AbstractCoordinate struct. ALl the coordinates are initialized.
-    pub fn new() -> Self {
-        Coordinates2D { x: 0, y: 0 }
+impl From<[i64;3]> for Coordinate {
+    fn from(value: [i64;3]) -> Self {
+        Self{
+            x: value[0],
+            y: value[1],
+            z: value[2],
+        }
     }
 }
 
-impl Default for Coordinates2D {
-    fn default() -> Self {
-        Self::new()
+impl Into<[i64;3]> for Coordinate {
+    fn into(self) -> [i64;3] {
+        [self.x,self.y,self.z]
+    }
+}
+
+impl Into<[f64;3]> for Coordinate {
+    fn into(self) -> [f64;3] {
+        [self.x as f64,self.y as f64,self.z as f64]
+    }
+}
+
+impl TryInto<[f32;2]> for Coordinate {
+    type Error = GenericError;
+
+    fn try_into(self) -> Result<[f32; 2], <Self as TryInto<[f32; 2]>>::Error> {
+        if self.x == 0 {
+            Ok([self.y as f32,self.z as f32])
+        } else {
+            if self.y == 0 {
+                Ok([self.x as f32,self.z as f32])
+            } else {
+                if self.z == 0 {
+                    Ok([self.x as f32,self.y as f32])
+                } else {
+                    Err(GenericError::new(ErrorKind::NotFound,"projection pivot value not found, it is not possible to determine wich values to return."))
+                }
+            }
+        }
+    }
+}
+
+impl TryInto<[f32;3]> for Coordinate {
+    type Error = GenericError;
+
+    fn try_into(self) -> Result<[f32; 3], <Self as TryInto<[f32; 3]>>::Error> {
+        if self.x  > f32::MAX as i64 || self.x < f32::MIN as i64|| self.y > f32::MAX as i64 || self.y < f32::MIN as i64 || self.z > f32::MAX as i64|| self.z < f32::MIN as i64 {
+            return Err(GenericError::new(ErrorKind::InvalidData,"Value Overflow"));
+        }
+        Ok([self.x as f32,self.y as f32,self.z as f32])
+    }
+}
+
+impl TryInto<[i64;2]> for Coordinate {
+    type Error = GenericError;
+
+    fn try_into(self) -> Result<[i64; 2], <Self as TryInto<[i64; 2]>>::Error> {
+        if self.x  > f32::MAX as i64 || self.x < f32::MIN as i64|| self.y > f32::MAX as i64 || self.y < f32::MIN as i64 || self.z > f32::MAX as i64|| self.z < f32::MIN as i64 {
+            return Err(GenericError::new(ErrorKind::InvalidData,"Value Overflow"));
+        }
+        if self.x == 0 {
+            Ok([self.y,self.z])
+        } else {
+            if self.y == 0 {
+                Ok([self.x,self.z])
+            } else {
+                if self.z == 0 {
+                    Ok([self.x,self.y])
+                } else {
+                    Err(GenericError::new(ErrorKind::NotFound,"projection pivot value not found, it is not possible to determine wich values to return."))
+                }
+            }
+        }
+    }
+}
+
+impl From<[f32;3]> for Coordinate {
+    fn from(value: [f32;3]) -> Self {
+        Self { 
+            x: value[0].round() as i64, 
+            y: value[1].round() as i64, 
+            z: value[2].round() as i64, 
+        }
+    }
+}
+
+impl DivAssign<isize> for Coordinate {
+    fn div_assign(&mut self, rhs: isize){
+        self.x = self.x / rhs as i64;
+        self.y = self.y / rhs as i64;
+        self.z = self.z / rhs as i64;
+    }
+}
+
+impl DivAssign<u64> for Coordinate {
+    fn div_assign(&mut self, rhs: u64){
+        self.x = self.x / rhs as i64;
+        self.y = self.y / rhs as i64;
+        self.z = self.z / rhs as i64;
+    }
+}
+
+impl DivAssign<i32> for Coordinate {
+    fn div_assign(&mut self, rhs: i32){
+        self.x = self.x / rhs as i64;
+        self.y = self.y / rhs as i64;
+        self.z = self.z / rhs as i64;
+    }
+}
+
+impl DivAssign<f32> for Coordinate {
+    fn div_assign(&mut self, rhs: f32){
+        self.x = self.x / rhs.round() as i64;
+        self.y = self.y / rhs.round() as i64;
+        self.z = self.z / rhs.round() as i64;
+    }
+}
+
+impl MulAssign<isize> for Coordinate {
+    fn mul_assign(&mut self, rhs: isize) {
+        self.x = self.x * rhs as i64;
+        self.y = self.y * rhs as i64;
+        self.z = self.z * rhs as i64;
+    }
+
+}
+
+impl MulAssign<u64> for Coordinate {
+    fn mul_assign(&mut self, rhs: u64) {
+        self.x = self.x * rhs as i64;
+        self.y = self.y * rhs as i64;
+        self.z = self.z * rhs as i64;
+    }
+
+}
+
+impl MulAssign<i32> for Coordinate {
+    fn mul_assign(&mut self, rhs: i32) {
+        self.x = self.x * rhs as i64;
+        self.y = self.y * rhs as i64;
+        self.z = self.z * rhs as i64;
+    }
+
+}
+
+impl MulAssign<f32> for Coordinate {
+    fn mul_assign(&mut self, rhs: f32) {
+        self.x = self.x * rhs.round() as i64;
+        self.y = self.y * rhs.round() as i64;
+        self.z = self.z * rhs.round() as i64;
+    }
+
+}
+
+impl Mul<isize> for Coordinate {
+    type Output = Self;
+    fn mul(self, rhs: isize) -> Self::Output {
+        Self {
+            x: self.x * rhs as i64,
+            y: self.y * rhs as i64,
+            z: self.z * rhs as i64,
+        }
+    }
+}
+
+impl Div<isize> for Coordinate {
+    type Output = Self;
+    fn div(self, rhs: isize) -> Self::Output {
+        Self {
+            x: self.x / rhs as i64,
+            y: self.y / rhs as i64,
+            z: self.z / rhs as i64,
+        }
     }
 }
 
@@ -156,9 +312,9 @@ pub struct SolarSystem {
     /// Vector with Solar system identifiers where this Solar system has connections via Stargates
     pub connections: Vec<u32>,
     /// Solar System 3D Coordinates
-    pub cords3d: Coordinates3D,
+    pub real_coords: Coordinate,
     /// Solar System 2D Coordinates with the propourse of representing the system in abstraction map.
-    pub cords2d: Coordinates2D,
+    pub projected_coords: Coordinate,
     /// The factor that we need to adjust the coordinates
     pub factor: u64,
 }
@@ -173,8 +329,8 @@ impl SolarSystem {
             constellation: 0,
             planets: Vec::new(),
             connections: Vec::new(),
-            cords3d: Coordinates3D::default(),
-            cords2d: Coordinates2D::default(),
+            real_coords: Coordinate::new(),
+            projected_coords: Coordinate::new(),
             factor,
         }
     }
@@ -182,17 +338,17 @@ impl SolarSystem {
     /// this function that correct the original 2d coordinates using the correction factor
     pub fn coord2d_to_f64(self) -> [f64; 2] {
         [
-            (self.cords2d.x / self.factor as i64 ) as f64,
-            (self.cords3d.y / self.factor as i64 ) as f64,
+            (self.projected_coords.x / self.factor as i64 ) as f64,
+            (self.real_coords.y / self.factor as i64 ) as f64,
         ]
     }
 
     /// this function that correct the original 3d coordinates using the correction factor
     pub fn coord3d_to_f64(self) -> [f64; 3] {
         [
-            (self.cords2d.x / self.factor as i64) as f64,
-            (self.cords3d.y / self.factor as i64) as f64,
-            (self.cords3d.z / self.factor as i64) as f64,
+            (self.projected_coords.x / self.factor as i64) as f64,
+            (self.real_coords.y / self.factor as i64) as f64,
+            (self.real_coords.z / self.factor as i64) as f64,
         ]
     }
 }
@@ -215,7 +371,7 @@ pub struct Constellation {
     /// Solar System vector with Identifer numbers included in the constellation
     pub solar_systems: Vec<u32>,
     /// Solar System 2D Coordinates with the propourse of representing the system in abstraction map.
-    pub cords2d: Coordinates2D,
+    pub projected_coords: Coordinate,
 }
 
 impl Constellation {
@@ -226,7 +382,7 @@ impl Constellation {
             name: String::new(),
             region: 0,
             solar_systems: Vec::new(),
-            cords2d: Coordinates2D::default(),
+            projected_coords: Coordinate::new(),
         }
     }
 }
@@ -247,7 +403,7 @@ pub struct Region {
     /// Vector with Region's Constellationm Identifiers
     pub constellations: Vec<u32>,
     /// Region 2D Coordinates with the propourse of representing the system in abstraction map.
-    pub cords2d: Coordinates2D,
+    pub projected_coords: Coordinate,
 }
 
 impl Region {
@@ -257,7 +413,7 @@ impl Region {
             id: 0,
             name: String::new(),
             constellations: Vec::new(),
-            cords2d: Coordinates2D::default(),
+            projected_coords: Coordinate::new(),
         }
     }
 }
@@ -341,7 +497,7 @@ impl Universe {
         &self,
         connection: &rusqlite::Connection,
         regions: Option<Vec<u32>>,
-    ) -> Result<Vec<Region>, Error> {
+    ) -> Result<Vec<Region>, RusqliteError> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_region");
 
@@ -396,7 +552,7 @@ impl Universe {
         connection: rusqlite::Connection,
         constellation: Option<Vec<u32>>,
         invert_coordinates: bool,
-    ) -> Result<Vec<SolarSystem>, Error> {
+    ) -> Result<Vec<SolarSystem>, RusqliteError> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_solarsystem");
 
@@ -446,19 +602,19 @@ impl Universe {
                         object.id = row.get(0).unwrap();
                         object.name = row.get(1).unwrap();
                         object.constellation = row.get(8).unwrap();
-                        object.cords3d.x = row.get::<_, f64>(3).unwrap() as i64; //i64
-                        object.cords3d.y = row.get::<_, f64>(4).unwrap() as i64; //i64
-                        object.cords3d.z = row.get::<_, f64>(5).unwrap() as i64; //i64
-                        object.cords2d.x = row.get::<_, f64>(6).unwrap() as i64; //i64
-                        object.cords2d.y = row.get::<_, f64>(7).unwrap() as i64; //i64
+                        object.real_coords.x = row.get::<_, f64>(3).unwrap() as i64; //i64
+                        object.real_coords.y = row.get::<_, f64>(4).unwrap() as i64; //i64
+                        object.real_coords.z = row.get::<_, f64>(5).unwrap() as i64; //i64
+                        object.projected_coords.x = row.get::<_, f64>(6).unwrap() as i64; //i64
+                        object.projected_coords.y = row.get::<_, f64>(7).unwrap() as i64; //i64
 
                         // Invert coordinates if needed
                         if invert_coordinates {
-                            object.cords3d.x *= -1;
-                            object.cords3d.y *= -1;
-                            object.cords3d.z *= -1;
-                            object.cords2d.x *= -1;
-                            object.cords2d.y *= -1;
+                            object.real_coords.x *= -1;
+                            object.real_coords.y *= -1;
+                            object.real_coords.z *= -1;
+                            object.projected_coords.x *= -1;
+                            object.projected_coords.y *= -1;
                         }
                         object.region = row.get(2).unwrap();
                         temp_vec.push(object);
@@ -501,7 +657,7 @@ impl Universe {
         &self,
         connection: rusqlite::Connection,
         regions: Option<Vec<u32>>,
-    ) -> Result<Vec<Constellation>, Error> {
+    ) -> Result<Vec<Constellation>, RusqliteError> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_constellation");
         // preparing the connections that will be shared between threads
@@ -578,7 +734,7 @@ impl Universe {
         &self,
         connection: rusqlite::Connection,
         solar_systems: Option<Vec<u32>>,
-    ) -> Result<Vec<Planet>, Error> {
+    ) -> Result<Vec<Planet>, RusqliteError> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_planet");
         // preparing the connections that will be shared between threads
@@ -644,7 +800,7 @@ impl Universe {
         &self,
         connection: rusqlite::Connection,
         planets: Option<Vec<u32>>,
-    ) -> Result<Vec<Moon>, Error> {
+    ) -> Result<Vec<Moon>, RusqliteError> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_moon");
 

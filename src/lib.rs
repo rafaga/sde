@@ -6,7 +6,7 @@
 //! there are these advantages:
 //!
 //!
-use crate::objects::Universe;
+use crate::objects::{Coordinate, Universe};
 use egui_map::map::objects::{MapLine, MapPoint};
 use objects::EveRegionArea;
 use rusqlite::{params, Connection, Error, OpenFlags};
@@ -35,19 +35,16 @@ pub struct SdeManager<'a> {
     pub factor: u64,
     /// Invert the sign of all coordinate values
     pub invert_coordinates: bool,
-    /// Projected Axis number 0 for X, 1 for Y and 2 for Z
-    projected_axis:usize,
 }
 
 impl<'a> SdeManager<'a> {
     /// Creates a new SdeManager using a path to build the connection
-    pub fn new(path: &Path, factor: u64, projected_axis: usize) -> SdeManager {
+    pub fn new(path: &Path, factor: u64) -> SdeManager {
         SdeManager {
             path,
             universe: Universe::new(factor),
             factor, // 10000000000000
             invert_coordinates: true,
-            projected_axis,
         }
     }
 
@@ -139,24 +136,9 @@ impl<'a> SdeManager<'a> {
         Ok(true)
     }
 
-    /// Given a point in three axis covert it into a 2-axis coordinates, but this coordinate must be 
-    /// previously porjected using an algorithm
-   fn as_two_axis(&self, input:[f32;3]) -> [f32;2] {
-        let mut result = [0.00,0.00];
-        let mut last_index = 0;
-        for i in 0..3 {
-            if i == self.projected_axis {
-                continue;
-            } 
-            result[last_index] = input[i];
-            last_index+=1;
-        }
-        result
-    }
-
     /// Function to get all the K-Space solar systems coordinates from the SDE including data to build a map
     /// and search for basic stuff
-    pub fn get_systempoints(&self, dimentions: u8) -> Result<HashMap<usize, MapPoint>, Error> {
+    pub fn get_systempoints(&self) -> Result<HashMap<usize, MapPoint>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_systempoints");
 
@@ -166,9 +148,8 @@ impl<'a> SdeManager<'a> {
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
         let connection = Connection::open_with_flags(self.path, flags)?;
 
-        let mut query = String::from(
-            "SELECT SolarSystemId, centerX, centerY, centerZ, projX, projY, projZ, SolarSystemName ",
-        );
+        // centerX, centerY, centerZ,
+        let mut query = String::from("SELECT SolarSystemId, projX, projY, projZ, SolarSystemName ");
         query += " FROM mapSolarSystems WHERE SolarSystemId BETWEEN 30000000 AND 30999999;";
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows = statement.query([])?;
@@ -182,30 +163,13 @@ impl<'a> SdeManager<'a> {
                 min_id = id;
             }
             //we get the coordinate point and multiply with the adjust factor
-            let mut coords= Vec::new();
-            if dimentions == 2 {
-                for index in 4..7 {
-                    let mut val = row.get(index)?;
-                    val /= self.factor as f64;
-                    if self.invert_coordinates {
-                        val *= -1.0;
-                    }
-                    if val != 0.00 {
-                        coords.push(val);
-                    }
-                }
-            } else {
-                // if we had a third dimesion we add the Z axis coordinate
-                coords = vec![row.get(1)?, row.get(2)?, row.get(3)?];
-                for i in 0..3 {
-                    coords[i as usize] /= self.factor as f64;
-                    if self.invert_coordinates {
-                        coords[i as usize] *= -1.0;
-                    }
-                }
+            let mut coord = Coordinate::from([row.get::<usize,i64>(1)?, row.get::<usize,i64>(2)?, row.get::<usize,i64>(3)?]);
+            coord /= self.factor;
+            if self.invert_coordinates {
+                coord *= -1;
             }
-            let mut point = MapPoint::new(id, coords);
-            point.name = row.get(7)?;
+            let mut point = MapPoint::new(id, coord.try_into().unwrap());
+            point.set_name(row.get::<usize,String>(7)?);
             hash_map.insert(id, point);
         }
         Ok(hash_map)
@@ -236,17 +200,15 @@ impl<'a> SdeManager<'a> {
         let mut vec_lines = Vec::new();
         let ffactor = self.factor as f32;
         while let Some(row) = rows.next()? {
-            let mut coord1 = Self::three_to_two_axis([row.get(1)?,row.get(2)?,row.get(3)?], None); 
-            let mut coord2 = Self::three_to_two_axis([row.get(5)?, row.get(6)?, row.get(7)?], None);
-            for i in 0..2 {
-                coord1[i] /= ffactor;
-                coord2[i] /= ffactor;
-                if self.invert_coordinates {
-                    coord1[i] *= -1.0;
-                    coord2[i] *= -1.0;
-                }
+            let mut coord1 = Coordinate::from([row.get::<usize,i64>(1)?,row.get::<usize,i64>(2)?,row.get::<usize,i64>(3)?]);
+            let mut coord2 = Coordinate::from([row.get::<usize,i64>(5)?,row.get::<usize,i64>(6)?,row.get::<usize,i64>(7)?]);
+            coord1 /= ffactor;
+            coord2 /= ffactor;
+            if self.invert_coordinates {
+                coord1 *= -1.0;
+                coord2 *= -1.0;
             }
-            vec_lines.push(MapLine::new(coord1[0], coord1[1], coord2[0], coord2[1]));
+            vec_lines.push(MapLine::from((coord1.try_into().unwrap(),coord2.try_into().unwrap())));
         }
         Ok(vec_lines)
     }
@@ -340,10 +302,11 @@ impl<'a> SdeManager<'a> {
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
         let connection = Connection::open_with_flags(self.path, flags)?;
-        let mut query =
-            "SELECT reg.regionId, reg.regionName, MAX(reg.max_x) AS region_max_x,".to_string();
-        query += "MAX(reg.max_y) AS region_max_y, MIN(reg.min_x) AS region_min_x, ";
-        query += "MIN(reg.min_y) AS region_min_y FROM (SELECT mr.regionId, mr.regionName, ";
+        let mut query = String::from("SELECT reg.regionId, reg.regionName, ");
+        query += "AX(reg.max_x) AS region_max_x, MAX(reg.max_y) AS region_max_y, ";
+        query += "MAX(reg.max_z) AS region_max_z, MIN(reg.min_x) AS region_min_x, ";
+        query += "MIN(reg.min_y) AS region_min_y, MIN(reg.min_z) AS region_min_z ";
+        query += "FROM (SELECT mr.regionId, mr.regionName, ";
         query += "mc.constellationId, MAX(mss.projX) AS max_x, MAX(mss.projY) AS max_y, ";
         query += "MAX(mss.projZ) AS max_z, MIN(mss.projX) AS min_x, MIN(mss.projY) AS min_y, ";
         query += "MIN(mss.projZ) AS min_z FROM mapRegions AS mr ";
@@ -358,18 +321,16 @@ impl<'a> SdeManager<'a> {
             let mut region = EveRegionArea::new();
             region.region_id = row.get(0)?;
             region.region_id = row.get(1)?;
-            region.max.x = row.get(2)?;
-            region.max.y = row.get(3)?;
-            region.min.x = row.get(4)?;
-            region.min.y = row.get(5)?;
+            region.max = Coordinate::from([row.get::<usize,i64>(2)?,row.get::<usize,i64>(3)?,row.get::<usize,i64>(4)?]);
+            region.min = Coordinate::from([row.get::<usize,i64>(5)?,row.get::<usize,i64>(6)?,row.get::<usize,i64>(7)?]);
             // we invert the coordinates and swap the min with the max
-            /*if self.invert_coordinates {
-                let temp = (region.max.x * -1, -region.max.y * -1);
-                region.max.x = region.min.x * -1;
-                region.max.y = region.min.y * -1;
-                region.min.x = temp.0;
-                region.min.y = temp.1;
-            }*/
+            if self.invert_coordinates {
+                let temp = region.max;
+                region.max = region.min;
+                region.min = temp;
+                region.min *= -1;
+                region.max *= -1;
+            }
             areas.push(region);
         }
         Ok(areas)
@@ -399,7 +360,7 @@ impl<'a> SdeManager<'a> {
         Ok(results)
     }
 
-    pub fn get_system_coords(self, id_node: usize) -> Result<Option<(f64, f64)>, Error> {
+    pub fn get_system_coords(self, id_node: usize) -> Result<Option<Coordinate>, Error> {
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
@@ -412,14 +373,12 @@ impl<'a> SdeManager<'a> {
         let system_like_name = id_node.to_string();
         let mut rows = statement.query(params![system_like_name])?;
         if let Some(row) = rows.next()? {
-            let mut data = (
-                row.get::<usize, f64>(0)? / self.factor as f64,
-                row.get::<usize, f64>(1)? / self.factor as f64,
-            );
+            let mut coord = Coordinate::from([row.get::<usize, i64>(0)?,row.get::<usize, i64>(1)?,row.get::<usize, i64>(2)?]);
+            coord /= self.factor;
             if self.invert_coordinates {
-                data = (data.0 * -1.0, data.1 * -1.0);
+                coord *= -1;
             }
-            return Ok(Some(data));
+            return Ok(Some(coord));
         }
         Ok(None)
     }
