@@ -4,14 +4,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::{thread, vec, convert::{From,Into,TryInto}};
 use std::io::{ErrorKind,Error as GenericError};
-use std::ops::{Div, DivAssign, Mul, MulAssign};
+use std::ops::{Div, DivAssign, Mul, MulAssign, Add, Sub};
+use egui_map::map::objects::RawPoint;
 
 #[derive(Hash, PartialEq, Eq, Clone)]
 pub struct EveRegionArea {
     pub region_id: u32,
     pub name: String,
-    pub min: Coordinate,
-    pub max: Coordinate,
+    pub min: SdePoint,
+    pub max: SdePoint,
 }
 
 impl Default for EveRegionArea {
@@ -25,9 +26,37 @@ impl EveRegionArea {
         EveRegionArea {
             region_id: 0,
             name: String::new(),
-            min: Coordinate::new(),
-            max: Coordinate::new(),
+            min: SdePoint::default(),
+            max: SdePoint::default(),
         }
+    }
+}
+
+#[derive(Hash, PartialEq, Eq, Clone)]
+pub struct SdeLine {
+    points:[SdePoint;2],
+}
+
+impl SdeLine{
+    pub fn new(a:SdePoint ,b:SdePoint) -> Self {
+        Self{
+            points:[a,b]
+        }
+    }
+
+    pub fn distance(self) -> f32 {
+        let x = self.points[0].x - self.points[1].x;
+        let y = self.points[0].y - self.points[1].y;
+        let z = self.points[0].z - self.points[1].z;
+        let value = (x.pow(2)+y.pow(2)+z.pow(2)) as f32;
+        value.sqrt()
+    }
+
+    pub fn midpoint(self) -> SdePoint {
+        let x = (self.points[0].x + self.points[1].x)/2;
+        let y = (self.points[0].y + self.points[1].y)/2;
+        let z = (self.points[0].z + self.points[1].z)/2;
+        SdePoint::new(x,y,z)
     }
 }
 
@@ -37,7 +66,7 @@ impl EveRegionArea {
 /// 3d point coordinates that it is used in:
 ///
 /// - SolarSystems
-pub struct Coordinate {
+pub struct SdePoint {
     /// X coorddinate
     pub x: i64,
     /// Y coordinate
@@ -46,22 +75,20 @@ pub struct Coordinate {
     pub z: i64,
 }
 
-impl Coordinate {
+impl SdePoint {
     /// Creates a new Coordinates struct. ALl the coordinates are initialized.
-    pub fn new() -> Self {
-        Coordinate { x: 0, y: 0, z:0 }
+    pub fn new(x: i64, y:i64, z:i64) -> Self {
+        SdePoint { x, y, z }
     }
-
-
 }
 
-impl Default for Coordinate {
+impl Default for SdePoint {
     fn default() -> Self {
-        Self::new()
+        Self::new(0,0,0)
     }
 }
 
-impl From<[i64;3]> for Coordinate {
+impl From<[i64;3]> for SdePoint {
     fn from(value: [i64;3]) -> Self {
         Self{
             x: value[0],
@@ -71,19 +98,25 @@ impl From<[i64;3]> for Coordinate {
     }
 }
 
-impl Into<[i64;3]> for Coordinate {
+impl Into<[i64;3]> for SdePoint {
     fn into(self) -> [i64;3] {
         [self.x,self.y,self.z]
     }
 }
 
-impl Into<[f64;3]> for Coordinate {
+impl Into<[f64;3]> for SdePoint {
     fn into(self) -> [f64;3] {
         [self.x as f64,self.y as f64,self.z as f64]
     }
 }
 
-impl TryInto<[f32;2]> for Coordinate {
+impl Into<RawPoint> for SdePoint {
+    fn into(self) -> RawPoint {
+        RawPoint::new(self.x as f32,self.y as f32,self.z as f32)
+    }
+}
+
+impl TryInto<[f32;2]> for SdePoint {
     type Error = GenericError;
 
     fn try_into(self) -> Result<[f32; 2], <Self as TryInto<[f32; 2]>>::Error> {
@@ -103,7 +136,7 @@ impl TryInto<[f32;2]> for Coordinate {
     }
 }
 
-impl TryInto<[f32;3]> for Coordinate {
+impl TryInto<[f32;3]> for SdePoint {
     type Error = GenericError;
 
     fn try_into(self) -> Result<[f32; 3], <Self as TryInto<[f32; 3]>>::Error> {
@@ -114,7 +147,7 @@ impl TryInto<[f32;3]> for Coordinate {
     }
 }
 
-impl TryInto<[i64;2]> for Coordinate {
+impl TryInto<[i64;2]> for SdePoint {
     type Error = GenericError;
 
     fn try_into(self) -> Result<[i64; 2], <Self as TryInto<[i64; 2]>>::Error> {
@@ -137,7 +170,7 @@ impl TryInto<[i64;2]> for Coordinate {
     }
 }
 
-impl From<[f32;3]> for Coordinate {
+impl From<[f32;3]> for SdePoint {
     fn from(value: [f32;3]) -> Self {
         Self { 
             x: value[0].round() as i64, 
@@ -147,7 +180,7 @@ impl From<[f32;3]> for Coordinate {
     }
 }
 
-impl DivAssign<isize> for Coordinate {
+impl DivAssign<isize> for SdePoint {
     fn div_assign(&mut self, rhs: isize){
         self.x = self.x / rhs as i64;
         self.y = self.y / rhs as i64;
@@ -155,7 +188,7 @@ impl DivAssign<isize> for Coordinate {
     }
 }
 
-impl DivAssign<u64> for Coordinate {
+impl DivAssign<u64> for SdePoint {
     fn div_assign(&mut self, rhs: u64){
         self.x = self.x / rhs as i64;
         self.y = self.y / rhs as i64;
@@ -163,7 +196,7 @@ impl DivAssign<u64> for Coordinate {
     }
 }
 
-impl DivAssign<i32> for Coordinate {
+impl DivAssign<i32> for SdePoint {
     fn div_assign(&mut self, rhs: i32){
         self.x = self.x / rhs as i64;
         self.y = self.y / rhs as i64;
@@ -171,7 +204,7 @@ impl DivAssign<i32> for Coordinate {
     }
 }
 
-impl DivAssign<f32> for Coordinate {
+impl DivAssign<f32> for SdePoint {
     fn div_assign(&mut self, rhs: f32){
         self.x = self.x / rhs.round() as i64;
         self.y = self.y / rhs.round() as i64;
@@ -179,7 +212,7 @@ impl DivAssign<f32> for Coordinate {
     }
 }
 
-impl MulAssign<isize> for Coordinate {
+impl MulAssign<isize> for SdePoint {
     fn mul_assign(&mut self, rhs: isize) {
         self.x = self.x * rhs as i64;
         self.y = self.y * rhs as i64;
@@ -188,7 +221,7 @@ impl MulAssign<isize> for Coordinate {
 
 }
 
-impl MulAssign<u64> for Coordinate {
+impl MulAssign<u64> for SdePoint {
     fn mul_assign(&mut self, rhs: u64) {
         self.x = self.x * rhs as i64;
         self.y = self.y * rhs as i64;
@@ -197,7 +230,7 @@ impl MulAssign<u64> for Coordinate {
 
 }
 
-impl MulAssign<i32> for Coordinate {
+impl MulAssign<i32> for SdePoint {
     fn mul_assign(&mut self, rhs: i32) {
         self.x = self.x * rhs as i64;
         self.y = self.y * rhs as i64;
@@ -206,7 +239,7 @@ impl MulAssign<i32> for Coordinate {
 
 }
 
-impl MulAssign<f32> for Coordinate {
+impl MulAssign<f32> for SdePoint {
     fn mul_assign(&mut self, rhs: f32) {
         self.x = self.x * rhs.round() as i64;
         self.y = self.y * rhs.round() as i64;
@@ -215,7 +248,7 @@ impl MulAssign<f32> for Coordinate {
 
 }
 
-impl Mul<isize> for Coordinate {
+impl Mul<isize> for SdePoint {
     type Output = Self;
     fn mul(self, rhs: isize) -> Self::Output {
         Self {
@@ -226,13 +259,57 @@ impl Mul<isize> for Coordinate {
     }
 }
 
-impl Div<isize> for Coordinate {
+impl Div<isize> for SdePoint {
     type Output = Self;
     fn div(self, rhs: isize) -> Self::Output {
         Self {
             x: self.x / rhs as i64,
             y: self.y / rhs as i64,
             z: self.z / rhs as i64,
+        }
+    }
+}
+
+impl Add<SdePoint> for SdePoint{
+    type Output = SdePoint;
+    fn add(self, rhs: SdePoint) -> Self::Output {
+        SdePoint {
+            x: self.x + rhs.x,
+            y: self.y + rhs.y,
+            z: self.z + rhs.z,
+        }
+    }
+}
+
+impl Sub<SdePoint> for SdePoint{
+    type Output = SdePoint;
+    fn sub(self, rhs: SdePoint) -> Self::Output {
+        SdePoint {
+            x: self.x - rhs.x,
+            y: self.y - rhs.y,
+            z: self.z - rhs.z,
+        }
+    }
+}
+
+impl Add<&SdePoint> for SdePoint{
+    type Output = SdePoint;
+    fn add(self, rhs: &SdePoint) -> Self::Output {
+        SdePoint {
+            x: self.x + rhs.x,
+            y: self.y + rhs.y,
+            z: self.z + rhs.z,
+        }
+    }
+}
+
+impl Sub<&SdePoint> for SdePoint{
+    type Output = SdePoint;
+    fn sub(self, rhs: &SdePoint) -> Self::Output {
+        SdePoint {
+            x: self.x - rhs.x,
+            y: self.y - rhs.y,
+            z: self.z - rhs.z,
         }
     }
 }
@@ -312,9 +389,9 @@ pub struct SolarSystem {
     /// Vector with Solar system identifiers where this Solar system has connections via Stargates
     pub connections: Vec<u32>,
     /// Solar System 3D Coordinates
-    pub real_coords: Coordinate,
+    pub real_coords: SdePoint,
     /// Solar System 2D Coordinates with the propourse of representing the system in abstraction map.
-    pub projected_coords: Coordinate,
+    pub projected_coords: SdePoint,
     /// The factor that we need to adjust the coordinates
     pub factor: u64,
 }
@@ -329,8 +406,8 @@ impl SolarSystem {
             constellation: 0,
             planets: Vec::new(),
             connections: Vec::new(),
-            real_coords: Coordinate::new(),
-            projected_coords: Coordinate::new(),
+            real_coords: SdePoint::default(),
+            projected_coords: SdePoint::default(),
             factor,
         }
     }
@@ -371,7 +448,7 @@ pub struct Constellation {
     /// Solar System vector with Identifer numbers included in the constellation
     pub solar_systems: Vec<u32>,
     /// Solar System 2D Coordinates with the propourse of representing the system in abstraction map.
-    pub projected_coords: Coordinate,
+    pub projected_coords: SdePoint,
 }
 
 impl Constellation {
@@ -382,7 +459,7 @@ impl Constellation {
             name: String::new(),
             region: 0,
             solar_systems: Vec::new(),
-            projected_coords: Coordinate::new(),
+            projected_coords: SdePoint::default(),
         }
     }
 }
@@ -403,7 +480,7 @@ pub struct Region {
     /// Vector with Region's Constellationm Identifiers
     pub constellations: Vec<u32>,
     /// Region 2D Coordinates with the propourse of representing the system in abstraction map.
-    pub projected_coords: Coordinate,
+    pub projected_coords: SdePoint,
 }
 
 impl Region {
@@ -413,7 +490,7 @@ impl Region {
             id: 0,
             name: String::new(),
             constellations: Vec::new(),
-            projected_coords: Coordinate::new(),
+            projected_coords: SdePoint::default(),
         }
     }
 }
@@ -476,6 +553,8 @@ pub struct Universe {
     pub dicts: Dictionaries,
     /// Factor used to correct coordinates
     pub factor: u64,
+    /// List of system connections
+    pub connections: HashMap<String,SdeLine>,
 }
 
 impl Universe {
@@ -489,6 +568,7 @@ impl Universe {
             moons: HashMap::new(),
             dicts: Dictionaries::new(),
             factor,
+            connections: HashMap::new(),
         }
     }
 

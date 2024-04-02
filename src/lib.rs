@@ -6,8 +6,8 @@
 //! there are these advantages:
 //!
 //!
-use crate::objects::{Coordinate, Universe};
-use egui_map::map::objects::{MapLine, MapPoint};
+use crate::objects::{SdePoint, Universe};
+use egui_map::map::objects::{MapLine, MapPoint,RawPoint};
 use objects::EveRegionArea;
 use rusqlite::{params, Connection, Error, OpenFlags};
 use std::collections::HashMap;
@@ -150,147 +150,70 @@ impl<'a> SdeManager<'a> {
 
         // centerX, centerY, centerZ,
         let mut query = String::from("SELECT SolarSystemId, projX, projY, projZ, SolarSystemName ");
-        query += " FROM mapSolarSystems WHERE SolarSystemId BETWEEN 30000000 AND 30999999;";
+        query += " FROM mapSolarSystems WHERE SolarSystemId BETWEEN ?1 AND ?2;";
         let mut statement = connection.prepare(query.as_str())?;
-        let mut rows = statement.query([])?;
+        let mut rows = statement.query(params![30000000,30999999])?;
         let mut min_id = usize::MAX;
         while let Some(row) = rows.next()? {
-            #[cfg(feature = "puffin")]
-            puffin::profile_scope!("getting system points");
-
-            let id: usize = row.get(0)?;
+            let id= row.get(0)?;
             if id < min_id {
                 min_id = id;
             }
+            let x = row.get::<usize,f32>(1)?;
+            let y = row.get::<usize,f32>(2)?;
+            let z = row.get::<usize,f32>(3)?;
+
             //we get the coordinate point and multiply with the adjust factor
-            let mut coord = Coordinate::from([row.get::<usize,i64>(1)?, row.get::<usize,i64>(2)?, row.get::<usize,i64>(3)?]);
+            let mut coord = SdePoint::from([x as i64,y as i64,z as i64]);
             coord /= self.factor;
             if self.invert_coordinates {
                 coord *= -1;
             }
-            let mut point = MapPoint::new(id, coord.try_into().unwrap());
-            point.set_name(row.get::<usize,String>(7)?);
+            let mut point = MapPoint::new(id, coord.into());
+            point.set_name(row.get::<usize,String>(4)?);
             hash_map.insert(id, point);
         }
         Ok(hash_map)
     }
 
-    pub fn get_regional_connections(&self) -> Result<Vec<MapLine>, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_regional_connections");
-
-        let mut flags = OpenFlags::default();
-        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
-        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
-        let connection = Connection::open_with_flags(self.path, flags)?;
-
-        let mut query = String::from("SELECT msga.solarSystemId AS origin, mpsa.projX as originX, ");
-        query += "mpsa.projY as originY, mpsa.projZ as originZ, mpsb.SolarSystemId AS destination, ";
-        query += "mpsb.projX as destinationX, mpsb.projY as destinationY, mpsb.projZ as destinationZ ";
-        query += "FROM mapSystemGates AS msga ";
-        query += "INNER JOIN mapSystemGates AS msgb ON (msgb.systemGateId = msga.destination) ";
-        query += "INNER JOIN mapSolarSystems AS mpsa ON (mpsa.solarSystemId = msga.solarSystemId) ";
-        query += "INNER JOIN mapSolarSystems AS mpsb ON (mpsb.solarSystemId = msgb.solarSystemId) ";
-        query += "INNER JOIN mapConstellations AS mca ON (mca.constellationId = mpsa.constellationId) ";
-        query += "INNER JOIN mapConstellations AS mcb ON (mcb.constellationId = mpsb.constellationId) ";
-        query += "WHERE mca.regionId <> mcb.regionId AND mpsa.solarSystemId < mpsb.solarSystemId ";
-
-        let mut statement = connection.prepare(query.as_str())?;
-        let mut rows = statement.query([])?;
-        let mut vec_lines = Vec::new();
-        let ffactor = self.factor as f32;
-        while let Some(row) = rows.next()? {
-            let mut coord1 = Coordinate::from([row.get::<usize,i64>(1)?,row.get::<usize,i64>(2)?,row.get::<usize,i64>(3)?]);
-            let mut coord2 = Coordinate::from([row.get::<usize,i64>(5)?,row.get::<usize,i64>(6)?,row.get::<usize,i64>(7)?]);
-            coord1 /= ffactor;
-            coord2 /= ffactor;
-            if self.invert_coordinates {
-                coord1 *= -1.0;
-                coord2 *= -1.0;
-            }
-            vec_lines.push(MapLine::from((coord1.try_into().unwrap(),coord2.try_into().unwrap())));
-        }
-        Ok(vec_lines)
-    }
-
-    pub fn get_connections(
+    pub fn get_system_connections(
         &self,
         mut hash_map: HashMap<usize, MapPoint>,
-        dimentions: u8,
     ) -> Result<HashMap<usize, MapPoint>, Error> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_connections");
+        puffin::profile_scope!("get_system_connections");
 
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
         let connection = Connection::open_with_flags(self.path, flags)?;
 
-        let mut query = String::from("SELECT msga.solarSystemId AS origin, mps.SolarSystemId AS destination, ");
-        query += "mps.centerX, mps.centerY, mps.centerZ, mps.projX, mps.projY, mps.projZ ";
-        query += "FROM mapSystemGates AS msga ";
-        query += "INNER JOIN mapSystemGates AS msgb ON (msgb.systemGateId = msga.destination) ";
-        query += "INNER JOIN mapSolarSystems AS mps ON (mps.solarSystemId = msgb.solarSystemId)";
-        query += "ORDER BY 1 ASC";
+        let mut query = String::from("SELECT systemConnectionId, ");
+        query += "systemA, systemB FROM mapSystemConnections;";
 
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows = statement.query([])?;
-        let mut id: (usize, usize) = (0, 0);
-        let mut vec_coords: Vec<[f64; 3]> = Vec::new();
-        let mut mapped: HashMap<usize, usize> = HashMap::new();
         while let Some(row) = rows.next()? {
             // Optimization: to avoid printing twice the same line, we are just skipping coordinates
             // for SolarSystems that has an Id less than the current one printed. with the exception
             // of the lowest ID
-            let origin = row.get(0)?;
-            let destination = row.get::<usize, usize>(1)?;
-
-            // we store the first system
-            if id.1 == 0 {
-                mapped.entry(id.0).or_insert(1);
-                id.0 = origin;
-            }
+            let id  = row.get::<usize, String>(0)?;
+            let system_a = row.get::<usize, usize>(1)?;
+            let system_b = row.get::<usize, usize>(2)?;
 
             //we compare the current system with the first, if not the same then we add the coordinates to hashmap
-            if id.1 != origin {
-                hash_map
-                    .entry(id.1)
-                    .and_modify(|point| point.lines = vec_coords.clone());
-                vec_coords.clear();
-            }
 
-            // we add the current origin system
-            id.1 = origin;
-            // if destination point is already mapped and not the fist node then we skip it
-            if mapped.contains_key(&destination) && origin != id.0 {
-                continue;
-            }
-
-            // initialize a coordinate in
-            let mut coords;
-
-            //we get the coordinate point and multiply with the adjust factor
-            if dimentions == 2 {
-                coords = [row.get(5)?, 0.00, row.get(7)?];
-            } else {
-                // if we had a third dimesion we add the Z axis coordinate
-                coords = [row.get(2)?, row.get(3)?, row.get(4)?];
-            }
-            for i in 0..dimentions {
-                if self.invert_coordinates {
-                    coords[i as usize] *= -1.0;
-                }
-                coords[i as usize] /= self.factor as f64;
-            }
-
-            // we add the coordinates to the vector
-            vec_coords.push(coords);
-        }
-        // we add the last point to the hashmap
-        if id.1 != 0 {
             hash_map
-                .entry(id.1)
-                .and_modify(|point| point.lines = vec_coords);
+                .entry(system_a)
+                .and_modify(|point|{
+                    point.connections.push(id.clone());
+                });
+            
+            hash_map
+                .entry(system_b)
+                .and_modify(|point|{
+                    point.connections.push(id);
+                });
         }
         Ok(hash_map)
     }
@@ -321,8 +244,8 @@ impl<'a> SdeManager<'a> {
             let mut region = EveRegionArea::new();
             region.region_id = row.get(0)?;
             region.region_id = row.get(1)?;
-            region.max = Coordinate::from([row.get::<usize,i64>(2)?,row.get::<usize,i64>(3)?,row.get::<usize,i64>(4)?]);
-            region.min = Coordinate::from([row.get::<usize,i64>(5)?,row.get::<usize,i64>(6)?,row.get::<usize,i64>(7)?]);
+            region.max = SdePoint::from([row.get::<usize,i64>(2)?,row.get::<usize,i64>(3)?,row.get::<usize,i64>(4)?]);
+            region.min = SdePoint::from([row.get::<usize,i64>(5)?,row.get::<usize,i64>(6)?,row.get::<usize,i64>(7)?]);
             // we invert the coordinates and swap the min with the max
             if self.invert_coordinates {
                 let temp = region.max;
@@ -337,6 +260,8 @@ impl<'a> SdeManager<'a> {
     }
 
     pub fn get_system_id(self, name: String) -> Result<Vec<(usize, String, usize, String)>, Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("get_system_id");
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
@@ -360,7 +285,9 @@ impl<'a> SdeManager<'a> {
         Ok(results)
     }
 
-    pub fn get_system_coords(self, id_node: usize) -> Result<Option<Coordinate>, Error> {
+    pub fn get_system_coords(self, id_node: usize) -> Result<Option<SdePoint>, Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("get_system_coords");
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
@@ -373,7 +300,7 @@ impl<'a> SdeManager<'a> {
         let system_like_name = id_node.to_string();
         let mut rows = statement.query(params![system_like_name])?;
         if let Some(row) = rows.next()? {
-            let mut coord = Coordinate::from([row.get::<usize, i64>(0)?,row.get::<usize, i64>(1)?,row.get::<usize, i64>(2)?]);
+            let mut coord = SdePoint::from([row.get::<usize, i64>(0)?,row.get::<usize, i64>(1)?,row.get::<usize, i64>(2)?]);
             coord /= self.factor;
             if self.invert_coordinates {
                 coord *= -1;
@@ -381,5 +308,35 @@ impl<'a> SdeManager<'a> {
             return Ok(Some(coord));
         }
         Ok(None)
+    }
+
+    pub fn get_connections(self) -> Result<HashMap<String, MapLine>, Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("get_connections");
+
+        let mut flags = OpenFlags::default();
+        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
+        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
+        let connection = Connection::open_with_flags(self.path, flags)?;
+
+        let mut query = String::from("SELECT msc.systemConnectionId, ");
+        query += "mssa.projX, mssa.projY, mssa.projZ, mssb.projX, mssb.projY, mssb.projZ ";
+        query += "FROM mapSystemConnections AS msc INNER JOIN mapSolarSystems AS mssa ";
+        query += "ON(msc.systemA = mssa.solarSystemId) INNER JOIN mapSolarSystems AS mssb ";
+        query += "ON(msc.systemB = mssb.solarSystemId);";
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = statement.query([])?;
+        let mut hmap: HashMap<String, MapLine> = HashMap::new();
+        while let Some(row) = rows.next()? {
+            let point1 = RawPoint::from([row.get::<usize, f32>(1)? as i64, row.get::<usize, f32>(2)? as i64, row.get::<usize, f32>(3)? as i64]);
+            let point2 = RawPoint::from([row.get::<usize, f32>(4)? as i64, row.get::<usize, f32>(5)? as i64, row.get::<usize, f32>(6)? as i64]);
+            let mut line = MapLine::new(point1,point2);
+            line.id = Some(row.get::<usize, String>(0)?);
+            let id = row.get::<usize, String>(0)?;
+            hmap.entry(id).or_insert(line);
+        }
+        Ok(hmap)
+
     }
 }
