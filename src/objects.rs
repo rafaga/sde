@@ -80,6 +80,10 @@ impl SdePoint {
     pub fn new(x: i64, y:i64, z:i64) -> Self {
         SdePoint { x, y, z }
     }
+
+    pub fn to_rawpoint(self) -> RawPoint {
+        RawPoint::new(self.x as f32, self.z as f32)
+    }
 }
 
 impl Default for SdePoint {
@@ -107,12 +111,6 @@ impl Into<[i64;3]> for SdePoint {
 impl Into<[f64;3]> for SdePoint {
     fn into(self) -> [f64;3] {
         [self.x as f64,self.y as f64,self.z as f64]
-    }
-}
-
-impl Into<RawPoint> for SdePoint {
-    fn into(self) -> RawPoint {
-        RawPoint::new(self.x as f32,self.y as f32,self.z as f32)
     }
 }
 
