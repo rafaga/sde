@@ -329,8 +329,14 @@ impl<'a> SdeManager<'a> {
         let mut rows = statement.query([])?;
         let mut hmap: HashMap<String, MapLine> = HashMap::new();
         while let Some(row) = rows.next()? {
-            let point1 = RawPoint::from([row.get::<usize, f32>(1)? as i64, row.get::<usize, f32>(3)? as i64]);
-            let point2 = RawPoint::from([row.get::<usize, f32>(4)? as i64, row.get::<usize, f32>(6)? as i64]);
+            let mut point1 = RawPoint::from([row.get::<usize, f32>(1)? as i64, row.get::<usize, f32>(3)? as i64]);
+            let mut point2 = RawPoint::from([row.get::<usize, f32>(4)? as i64, row.get::<usize, f32>(6)? as i64]);
+            point1 /= self.factor;
+            point2 /= self.factor;
+            if self.invert_coordinates {
+                point1 *= -1;
+                point2 *= -1;
+            }
             let mut line = MapLine::new(point1,point2);
             line.id = Some(row.get::<usize, String>(0)?);
             let id = row.get::<usize, String>(0)?;
