@@ -46,11 +46,11 @@ puffin = { version = "0.19.0", optional = true, default-features = false}
 
 # Not Windows:
 [target.'cfg(not(windows))'.dependencies]
-rusqlite = { version = "0.31.0", features = ["bundled-sqlcipher", "backup", "blob"] }
+rusqlite = { version = "0.31.0", features = ["bundled-sqlcipher", "backup", "blob", "array"] }
 
 # Windows:
 [target.'cfg(windows)'.dependencies]
-rusqlite = { version = "0.31.0", features = ["bundled-sqlcipher-vendored-openssl", "backup", "blob"] }
+rusqlite = { version = "0.31.0", features = ["bundled-sqlcipher-vendored-openssl", "backup", "blob", "array"] }
 
 [dev-dependencies]
 # tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }

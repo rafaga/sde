@@ -9,9 +9,10 @@
 use crate::objects::{SdePoint, Universe};
 use egui_map::map::objects::{MapLine, MapPoint, RawPoint};
 use objects::EveRegionArea;
-use rusqlite::{params, Connection, Error, OpenFlags};
+use rusqlite::{params, vtab::array, Connection, Error, OpenFlags};
 use std::collections::HashMap;
 use std::path::Path;
+use std::rc::Rc;
 
 /// Module that has Data object abstractions to fill with the database data.
 pub mod objects;
@@ -60,10 +61,7 @@ impl<'a> SdeManager<'a> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_universe");
 
-        let mut flags = OpenFlags::default();
-        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
-        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
-        let connection = Connection::open_with_flags(self.path, flags)?;
+        let connection = self.get_standart_connection()?;
         //let connection = sqlite::Connection::open_with_full_mutex(self.path)?;
         // Getting all regions in the main process because is not very intensive
         let regions = self.universe.get_region(&connection, None)?;
@@ -110,10 +108,7 @@ impl<'a> SdeManager<'a> {
             _ => None,
         };
 
-        let mut flags = OpenFlags::default();
-        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
-        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
-        let connection = Connection::open_with_flags(self.path, flags)?;
+        let connection = self.get_standart_connection()?;
         let solar_systems =
             self.universe
                 .get_solarsystem(connection, parent_ids, self.invert_coordinates)?;
@@ -141,13 +136,9 @@ impl<'a> SdeManager<'a> {
     pub fn get_systempoints(&self) -> Result<HashMap<usize, MapPoint>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_systempoints");
+        let connection = self.get_standart_connection()?;
 
         let mut hash_map: HashMap<usize, MapPoint> = HashMap::new();
-        let mut flags = OpenFlags::default();
-        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
-        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
-        let connection = Connection::open_with_flags(self.path, flags)?;
-
         // centerX, centerY, centerZ,
         let mut query = String::from("SELECT SolarSystemId, projX, projY, projZ, SolarSystemName ");
         query += " FROM mapSolarSystems WHERE SolarSystemId BETWEEN ?1 AND ?2;";
@@ -183,10 +174,7 @@ impl<'a> SdeManager<'a> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_system_connections");
 
-        let mut flags = OpenFlags::default();
-        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
-        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
-        let connection = Connection::open_with_flags(self.path, flags)?;
+        let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT systemConnectionId, ");
         query += "systemA, systemB FROM mapSystemConnections;";
@@ -217,10 +205,8 @@ impl<'a> SdeManager<'a> {
     pub fn get_region_coordinates(&self) -> Result<Vec<EveRegionArea>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_region_coordinates");
-        let mut flags = OpenFlags::default();
-        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
-        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
-        let connection = Connection::open_with_flags(self.path, flags)?;
+        let connection = self.get_standart_connection()?;
+
         let mut query = String::from("SELECT reg.regionId, reg.regionName, ");
         query += "AX(reg.max_x) AS region_max_x, MAX(reg.max_y) AS region_max_y, ";
         query += "MAX(reg.max_z) AS region_max_z, MIN(reg.min_x) AS region_min_x, ";
@@ -264,10 +250,7 @@ impl<'a> SdeManager<'a> {
     pub fn get_system_id(self, name: String) -> Result<Vec<(usize, String, usize, String)>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_system_id");
-        let mut flags = OpenFlags::default();
-        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
-        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
-        let connection = Connection::open_with_flags(self.path, flags)?;
+        let connection = self.get_standart_connection()?;
 
         let mut query = String::from(
             "SELECT mss.SolarSystemId, mss.SolarSystemName, mr.RegionId, mr.regionName ",
@@ -291,10 +274,7 @@ impl<'a> SdeManager<'a> {
     pub fn get_system_coords(self, id_node: usize) -> Result<Option<SdePoint>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_system_coords");
-        let mut flags = OpenFlags::default();
-        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
-        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
-        let connection = Connection::open_with_flags(self.path, flags)?;
+        let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT mss.ProjX, mss.ProjY, mss.ProjZ ");
         query += "FROM mapSolarSystems AS mss WHERE mss.SolarSystemId = ?1; ";
@@ -321,10 +301,7 @@ impl<'a> SdeManager<'a> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_connections");
 
-        let mut flags = OpenFlags::default();
-        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
-        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
-        let connection = Connection::open_with_flags(self.path, flags)?;
+        let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT msc.systemConnectionId, ");
         query += "mssa.projX, mssa.projY, mssa.projZ, mssb.projX, mssb.projY, mssb.projZ ";
@@ -360,26 +337,31 @@ impl<'a> SdeManager<'a> {
 
     pub fn get_abstract_systems(
         self,
-        regions: Option<usize>,
+        regions: Vec<u32>,
     ) -> Result<HashMap<usize, MapPoint>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_abstract_systems");
 
-        let mut flags = OpenFlags::default();
-        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
-        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
-        let connection = Connection::open_with_flags(self.path, flags)?;
+        let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT mas.solarSystemId, ");
         query += "mas.x, mas.y, mas.regionId FROM mapAbstractSystems ";
-        query += " WHERE regionId = ?1;";
+        if !regions.is_empty() {
+            query += " WHERE regionId IN rarray(?1);";
+        }
 
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows;
-        if regions.is_some() {
-            rows = statement.query([regions.unwrap()])?;
-        } else {
+        if regions.is_empty() {
             rows = statement.query([])?;
+        } else {
+            let id_list: array::Array = Rc::new(
+                regions
+                    .into_iter()
+                    .map(rusqlite::types::Value::from)
+                    .collect::<Vec<rusqlite::types::Value>>(),
+            );
+            rows = statement.query([id_list])?;
         }
         let mut hash_map: HashMap<usize, MapPoint> = HashMap::new();
         while let Some(row) = rows.next()? {
@@ -390,5 +372,104 @@ impl<'a> SdeManager<'a> {
             hash_map.insert(row.get::<usize, usize>(0)?, point);
         }
         Ok(hash_map)
+    }
+
+    pub fn get_abstract_system_connections(
+        self,
+        mut hash_map: HashMap<usize, MapPoint>,
+        regions: Vec<u32>,
+    ) -> Result<HashMap<usize, MapPoint>, Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("get_abstract_system_connections");
+
+        let connection = self.get_standart_connection()?;
+
+        let mut query =
+            String::from("SELECT mas.solarSystemId, mas.regionId, msc.systemConnectionId ");
+        query += " FROM mapAbstractSystems AS mas INNER JOIN mapSystemConnections AS msc ";
+        query += " ON(msc.systemA = mas.solarSystemId OR msc.systemB = mas.solarSystemId) ";
+        if !regions.is_empty() {
+            query += " WHERE mas.regionId IN rarray(?1);";
+        }
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows;
+        if regions.is_empty() {
+            rows = statement.query([])?;
+        } else {
+            let id_list: array::Array = Rc::new(
+                regions
+                    .into_iter()
+                    .map(rusqlite::types::Value::from)
+                    .collect::<Vec<rusqlite::types::Value>>(),
+            );
+            rows = statement.query([id_list])?;
+        }
+        while let Some(row) = rows.next()? {
+            hash_map
+                .entry(row.get::<usize, usize>(0)?)
+                .and_modify(|map_point| {
+                    if let Ok(hash) = row.get::<usize, String>(2) {
+                        map_point.connections.push(hash);
+                    }
+                });
+        }
+        Ok(hash_map)
+    }
+
+    pub fn get_abstract_connections(
+        self,
+        regions: Vec<u32>,
+    ) -> Result<HashMap<String, MapLine>, Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("get_abstract_connections");
+
+        let connection = self.get_standart_connection()?;
+
+        let mut query = String::from("SELECT msc.systemConnectionId, ");
+        query += "masa.x, masa.y, masb.x, masb.y ";
+        query += "FROM mapSystemConnections AS msc INNER JOIN mapAbstractSystems AS masa ";
+        query += "ON(msc.systemA = masa.solarSystemId) INNER JOIN mapAbstractSystems AS masb ";
+        query += "ON(msc.systemB = masb.solarSystemId);";
+        if !regions.is_empty() {
+            query += " WHERE masa.regionId IN rarray(?1) OR masb.regionId IN rarray(?2);";
+        }
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows;
+        if regions.is_empty() {
+            rows = statement.query([])?;
+        } else {
+            let id_list: array::Array = Rc::new(
+                regions
+                    .into_iter()
+                    .map(rusqlite::types::Value::from)
+                    .collect::<Vec<rusqlite::types::Value>>(),
+            );
+            rows = statement.query([id_list.clone(), id_list])?;
+        }
+
+        let mut hash_map: HashMap<String, MapLine> = HashMap::new();
+        while let Some(row) = rows.next()? {
+            let mut line = MapLine::new(
+                RawPoint::new(row.get::<usize, f32>(1)?, row.get::<usize, f32>(2)?),
+                RawPoint::new(row.get::<usize, f32>(3)?, row.get::<usize, f32>(4)?),
+            );
+            line.id = Some(row.get::<usize, String>(0)?);
+            hash_map.entry(row.get::<usize, String>(0)?).or_insert(line);
+        }
+
+        Ok(hash_map)
+    }
+
+    fn get_standart_connection(&self) -> Result<Connection, Error> {
+        let mut flags = OpenFlags::default();
+        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
+        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
+        let connection = Connection::open_with_flags(self.path, flags)?;
+
+        // we add the carray module disguised as rarray in rusqlite
+        array::load_module(&connection)?;
+        Ok(connection)
     }
 }
