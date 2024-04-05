@@ -367,7 +367,6 @@ impl<'a> SdeManager<'a> {
         while let Some(row) = rows.next()? {
             
         }
-        todo!();
         Ok(hash_map)
     }
 }
