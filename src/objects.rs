@@ -1,11 +1,14 @@
 use super::consts;
+use egui_map::map::objects::RawPoint;
 use rusqlite::Error as RusqliteError;
 use std::collections::HashMap;
+use std::io::{Error as GenericError, ErrorKind};
+use std::ops::{Add, Div, DivAssign, Mul, MulAssign, Sub};
 use std::sync::{Arc, Mutex};
-use std::{thread, vec, convert::{From,Into,TryInto}};
-use std::io::{ErrorKind,Error as GenericError};
-use std::ops::{Div, DivAssign, Mul, MulAssign, Add, Sub};
-use egui_map::map::objects::RawPoint;
+use std::{
+    convert::{From, TryInto},
+    thread, vec,
+};
 
 #[derive(Hash, PartialEq, Eq, Clone)]
 pub struct EveRegionArea {
@@ -34,29 +37,27 @@ impl EveRegionArea {
 
 #[derive(Hash, PartialEq, Eq, Clone)]
 pub struct SdeLine {
-    points:[SdePoint;2],
+    points: [SdePoint; 2],
 }
 
-impl SdeLine{
-    pub fn new(a:SdePoint ,b:SdePoint) -> Self {
-        Self{
-            points:[a,b]
-        }
+impl SdeLine {
+    pub fn new(a: SdePoint, b: SdePoint) -> Self {
+        Self { points: [a, b] }
     }
 
     pub fn distance(self) -> f32 {
         let x = self.points[0].x - self.points[1].x;
         let y = self.points[0].y - self.points[1].y;
         let z = self.points[0].z - self.points[1].z;
-        let value = (x.pow(2)+y.pow(2)+z.pow(2)) as f32;
+        let value = (x.pow(2) + y.pow(2) + z.pow(2)) as f32;
         value.sqrt()
     }
 
     pub fn midpoint(self) -> SdePoint {
-        let x = (self.points[0].x + self.points[1].x)/2;
-        let y = (self.points[0].y + self.points[1].y)/2;
-        let z = (self.points[0].z + self.points[1].z)/2;
-        SdePoint::new(x,y,z)
+        let x = (self.points[0].x + self.points[1].x) / 2;
+        let y = (self.points[0].y + self.points[1].y) / 2;
+        let z = (self.points[0].z + self.points[1].z) / 2;
+        SdePoint::new(x, y, z)
     }
 }
 
@@ -77,7 +78,7 @@ pub struct SdePoint {
 
 impl SdePoint {
     /// Creates a new Coordinates struct. ALl the coordinates are initialized.
-    pub fn new(x: i64, y:i64, z:i64) -> Self {
+    pub fn new(x: i64, y: i64, z: i64) -> Self {
         SdePoint { x, y, z }
     }
 
@@ -88,13 +89,13 @@ impl SdePoint {
 
 impl Default for SdePoint {
     fn default() -> Self {
-        Self::new(0,0,0)
+        Self::new(0, 0, 0)
     }
 }
 
-impl From<[i64;3]> for SdePoint {
-    fn from(value: [i64;3]) -> Self {
-        Self{
+impl From<[i64; 3]> for SdePoint {
+    fn from(value: [i64; 3]) -> Self {
+        Self {
             x: value[0],
             y: value[1],
             z: value[2],
@@ -102,84 +103,88 @@ impl From<[i64;3]> for SdePoint {
     }
 }
 
-impl Into<[i64;3]> for SdePoint {
-    fn into(self) -> [i64;3] {
-        [self.x,self.y,self.z]
+impl From<SdePoint> for [i64; 3] {
+    fn from(val: SdePoint) -> Self {
+        [val.x, val.y, val.z]
     }
 }
 
-impl Into<[f64;3]> for SdePoint {
-    fn into(self) -> [f64;3] {
-        [self.x as f64,self.y as f64,self.z as f64]
+impl From<SdePoint> for [f64; 3] {
+    fn from(val: SdePoint) -> Self {
+        [val.x as f64, val.y as f64, val.z as f64]
     }
 }
 
-impl TryInto<[f32;2]> for SdePoint {
+impl TryInto<[f32; 2]> for SdePoint {
     type Error = GenericError;
 
     fn try_into(self) -> Result<[f32; 2], <Self as TryInto<[f32; 2]>>::Error> {
         if self.x == 0 {
-            Ok([self.y as f32,self.z as f32])
+            Ok([self.y as f32, self.z as f32])
+        } else if self.y == 0 {
+            Ok([self.x as f32, self.z as f32])
+        } else if self.z == 0 {
+            Ok([self.x as f32, self.y as f32])
         } else {
-            if self.y == 0 {
-                Ok([self.x as f32,self.z as f32])
-            } else {
-                if self.z == 0 {
-                    Ok([self.x as f32,self.y as f32])
-                } else {
-                    Err(GenericError::new(ErrorKind::NotFound,"projection pivot value not found, it is not possible to determine wich values to return."))
-                }
-            }
+            Err(GenericError::new(ErrorKind::NotFound,"projection pivot value not found, it is not possible to determine wich values to return."))
         }
     }
 }
 
-impl TryInto<[f32;3]> for SdePoint {
+impl TryInto<[f32; 3]> for SdePoint {
     type Error = GenericError;
 
     fn try_into(self) -> Result<[f32; 3], <Self as TryInto<[f32; 3]>>::Error> {
-        if self.x  > f32::MAX as i64 || self.x < f32::MIN as i64|| self.y > f32::MAX as i64 || self.y < f32::MIN as i64 || self.z > f32::MAX as i64|| self.z < f32::MIN as i64 {
-            return Err(GenericError::new(ErrorKind::InvalidData,"Value Overflow"));
+        if self.x > f32::MAX as i64
+            || self.x < f32::MIN as i64
+            || self.y > f32::MAX as i64
+            || self.y < f32::MIN as i64
+            || self.z > f32::MAX as i64
+            || self.z < f32::MIN as i64
+        {
+            return Err(GenericError::new(ErrorKind::InvalidData, "Value Overflow"));
         }
-        Ok([self.x as f32,self.y as f32,self.z as f32])
+        Ok([self.x as f32, self.y as f32, self.z as f32])
     }
 }
 
-impl TryInto<[i64;2]> for SdePoint {
+impl TryInto<[i64; 2]> for SdePoint {
     type Error = GenericError;
 
     fn try_into(self) -> Result<[i64; 2], <Self as TryInto<[i64; 2]>>::Error> {
-        if self.x  > f32::MAX as i64 || self.x < f32::MIN as i64|| self.y > f32::MAX as i64 || self.y < f32::MIN as i64 || self.z > f32::MAX as i64|| self.z < f32::MIN as i64 {
-            return Err(GenericError::new(ErrorKind::InvalidData,"Value Overflow"));
+        if self.x > f32::MAX as i64
+            || self.x < f32::MIN as i64
+            || self.y > f32::MAX as i64
+            || self.y < f32::MIN as i64
+            || self.z > f32::MAX as i64
+            || self.z < f32::MIN as i64
+        {
+            return Err(GenericError::new(ErrorKind::InvalidData, "Value Overflow"));
         }
         if self.x == 0 {
-            Ok([self.y,self.z])
+            Ok([self.y, self.z])
+        } else if self.y == 0 {
+            Ok([self.x, self.z])
+        } else if self.z == 0 {
+            Ok([self.x, self.y])
         } else {
-            if self.y == 0 {
-                Ok([self.x,self.z])
-            } else {
-                if self.z == 0 {
-                    Ok([self.x,self.y])
-                } else {
-                    Err(GenericError::new(ErrorKind::NotFound,"projection pivot value not found, it is not possible to determine wich values to return."))
-                }
-            }
+            Err(GenericError::new(ErrorKind::NotFound,"projection pivot value not found, it is not possible to determine wich values to return."))
         }
     }
 }
 
-impl From<[f32;3]> for SdePoint {
-    fn from(value: [f32;3]) -> Self {
-        Self { 
-            x: value[0].round() as i64, 
-            y: value[1].round() as i64, 
-            z: value[2].round() as i64, 
+impl From<[f32; 3]> for SdePoint {
+    fn from(value: [f32; 3]) -> Self {
+        Self {
+            x: value[0].round() as i64,
+            y: value[1].round() as i64,
+            z: value[2].round() as i64,
         }
     }
 }
 
 impl DivAssign<isize> for SdePoint {
-    fn div_assign(&mut self, rhs: isize){
+    fn div_assign(&mut self, rhs: isize) {
         self.x = self.x / rhs as i64;
         self.y = self.y / rhs as i64;
         self.z = self.z / rhs as i64;
@@ -187,7 +192,7 @@ impl DivAssign<isize> for SdePoint {
 }
 
 impl DivAssign<u64> for SdePoint {
-    fn div_assign(&mut self, rhs: u64){
+    fn div_assign(&mut self, rhs: u64) {
         self.x = self.x / rhs as i64;
         self.y = self.y / rhs as i64;
         self.z = self.z / rhs as i64;
@@ -195,7 +200,7 @@ impl DivAssign<u64> for SdePoint {
 }
 
 impl DivAssign<i32> for SdePoint {
-    fn div_assign(&mut self, rhs: i32){
+    fn div_assign(&mut self, rhs: i32) {
         self.x = self.x / rhs as i64;
         self.y = self.y / rhs as i64;
         self.z = self.z / rhs as i64;
@@ -203,7 +208,7 @@ impl DivAssign<i32> for SdePoint {
 }
 
 impl DivAssign<f32> for SdePoint {
-    fn div_assign(&mut self, rhs: f32){
+    fn div_assign(&mut self, rhs: f32) {
         self.x = self.x / rhs.round() as i64;
         self.y = self.y / rhs.round() as i64;
         self.z = self.z / rhs.round() as i64;
@@ -216,7 +221,6 @@ impl MulAssign<isize> for SdePoint {
         self.y = self.y * rhs as i64;
         self.z = self.z * rhs as i64;
     }
-
 }
 
 impl MulAssign<u64> for SdePoint {
@@ -225,7 +229,6 @@ impl MulAssign<u64> for SdePoint {
         self.y = self.y * rhs as i64;
         self.z = self.z * rhs as i64;
     }
-
 }
 
 impl MulAssign<i32> for SdePoint {
@@ -234,7 +237,6 @@ impl MulAssign<i32> for SdePoint {
         self.y = self.y * rhs as i64;
         self.z = self.z * rhs as i64;
     }
-
 }
 
 impl MulAssign<f32> for SdePoint {
@@ -243,7 +245,6 @@ impl MulAssign<f32> for SdePoint {
         self.y = self.y * rhs.round() as i64;
         self.z = self.z * rhs.round() as i64;
     }
-
 }
 
 impl Mul<isize> for SdePoint {
@@ -268,7 +269,7 @@ impl Div<isize> for SdePoint {
     }
 }
 
-impl Add<SdePoint> for SdePoint{
+impl Add<SdePoint> for SdePoint {
     type Output = SdePoint;
     fn add(self, rhs: SdePoint) -> Self::Output {
         SdePoint {
@@ -279,7 +280,7 @@ impl Add<SdePoint> for SdePoint{
     }
 }
 
-impl Sub<SdePoint> for SdePoint{
+impl Sub<SdePoint> for SdePoint {
     type Output = SdePoint;
     fn sub(self, rhs: SdePoint) -> Self::Output {
         SdePoint {
@@ -290,7 +291,7 @@ impl Sub<SdePoint> for SdePoint{
     }
 }
 
-impl Add<&SdePoint> for SdePoint{
+impl Add<&SdePoint> for SdePoint {
     type Output = SdePoint;
     fn add(self, rhs: &SdePoint) -> Self::Output {
         SdePoint {
@@ -301,7 +302,7 @@ impl Add<&SdePoint> for SdePoint{
     }
 }
 
-impl Sub<&SdePoint> for SdePoint{
+impl Sub<&SdePoint> for SdePoint {
     type Output = SdePoint;
     fn sub(self, rhs: &SdePoint) -> Self::Output {
         SdePoint {
@@ -413,8 +414,8 @@ impl SolarSystem {
     /// this function that correct the original 2d coordinates using the correction factor
     pub fn coord2d_to_f64(self) -> [f64; 2] {
         [
-            (self.projected_coords.x / self.factor as i64 ) as f64,
-            (self.real_coords.y / self.factor as i64 ) as f64,
+            (self.projected_coords.x / self.factor as i64) as f64,
+            (self.real_coords.y / self.factor as i64) as f64,
         ]
     }
 
@@ -552,7 +553,7 @@ pub struct Universe {
     /// Factor used to correct coordinates
     pub factor: u64,
     /// List of system connections
-    pub connections: HashMap<String,SdeLine>,
+    pub connections: HashMap<String, SdeLine>,
 }
 
 impl Universe {

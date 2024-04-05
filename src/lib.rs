@@ -7,7 +7,7 @@
 //!
 //!
 use crate::objects::{SdePoint, Universe};
-use egui_map::map::objects::{MapLine, MapPoint,RawPoint};
+use egui_map::map::objects::{MapLine, MapPoint, RawPoint};
 use objects::EveRegionArea;
 use rusqlite::{params, Connection, Error, OpenFlags};
 use std::collections::HashMap;
@@ -152,25 +152,25 @@ impl<'a> SdeManager<'a> {
         let mut query = String::from("SELECT SolarSystemId, projX, projY, projZ, SolarSystemName ");
         query += " FROM mapSolarSystems WHERE SolarSystemId BETWEEN ?1 AND ?2;";
         let mut statement = connection.prepare(query.as_str())?;
-        let mut rows = statement.query(params![30000000,30999999])?;
+        let mut rows = statement.query(params![30000000, 30999999])?;
         let mut min_id = usize::MAX;
         while let Some(row) = rows.next()? {
-            let id= row.get(0)?;
+            let id = row.get(0)?;
             if id < min_id {
                 min_id = id;
             }
-            let x = row.get::<usize,f32>(1)?;
-            let y = row.get::<usize,f32>(2)?;
-            let z = row.get::<usize,f32>(3)?;
+            let x = row.get::<usize, f32>(1)?;
+            let y = row.get::<usize, f32>(2)?;
+            let z = row.get::<usize, f32>(3)?;
 
             //we get the coordinate point and multiply with the adjust factor
-            let mut coord = SdePoint::from([x as i64,y as i64,z as i64]);
+            let mut coord = SdePoint::from([x as i64, y as i64, z as i64]);
             coord /= self.factor;
             if self.invert_coordinates {
                 coord *= -1;
             }
             let mut point = MapPoint::new(id, coord.to_rawpoint());
-            point.set_name(row.get::<usize,String>(4)?);
+            point.set_name(row.get::<usize, String>(4)?);
             hash_map.insert(id, point);
         }
         Ok(hash_map)
@@ -197,23 +197,19 @@ impl<'a> SdeManager<'a> {
             // Optimization: to avoid printing twice the same line, we are just skipping coordinates
             // for SolarSystems that has an Id less than the current one printed. with the exception
             // of the lowest ID
-            let id  = row.get::<usize, String>(0)?;
+            let id = row.get::<usize, String>(0)?;
             let system_a = row.get::<usize, usize>(1)?;
             let system_b = row.get::<usize, usize>(2)?;
 
             //we compare the current system with the first, if not the same then we add the coordinates to hashmap
 
-            hash_map
-                .entry(system_a)
-                .and_modify(|point|{
-                    point.connections.push(id.clone());
-                });
-            
-            hash_map
-                .entry(system_b)
-                .and_modify(|point|{
-                    point.connections.push(id);
-                });
+            hash_map.entry(system_a).and_modify(|point| {
+                point.connections.push(id.clone());
+            });
+
+            hash_map.entry(system_b).and_modify(|point| {
+                point.connections.push(id);
+            });
         }
         Ok(hash_map)
     }
@@ -244,13 +240,19 @@ impl<'a> SdeManager<'a> {
             let mut region = EveRegionArea::new();
             region.region_id = row.get(0)?;
             region.region_id = row.get(1)?;
-            region.max = SdePoint::from([row.get::<usize,i64>(2)?,row.get::<usize,i64>(3)?,row.get::<usize,i64>(4)?]);
-            region.min = SdePoint::from([row.get::<usize,i64>(5)?,row.get::<usize,i64>(6)?,row.get::<usize,i64>(7)?]);
+            region.max = SdePoint::from([
+                row.get::<usize, i64>(2)?,
+                row.get::<usize, i64>(3)?,
+                row.get::<usize, i64>(4)?,
+            ]);
+            region.min = SdePoint::from([
+                row.get::<usize, i64>(5)?,
+                row.get::<usize, i64>(6)?,
+                row.get::<usize, i64>(7)?,
+            ]);
             // we invert the coordinates and swap the min with the max
             if self.invert_coordinates {
-                let temp = region.max;
-                region.max = region.min;
-                region.min = temp;
+                std::mem::swap(&mut region.max, &mut region.min);
                 region.min *= -1;
                 region.max *= -1;
             }
@@ -271,7 +273,8 @@ impl<'a> SdeManager<'a> {
             "SELECT mss.SolarSystemId, mss.SolarSystemName, mr.RegionId, mr.regionName ",
         );
         query += "FROM mapSolarSystems AS mss ";
-        query += "INNER JOIN mapConstellations AS mc ON (mc.constellationId = mss.constellationId) ";
+        query +=
+            "INNER JOIN mapConstellations AS mc ON (mc.constellationId = mss.constellationId) ";
         query += "INNER JOIN mapRegions AS mr ON (mr.RegionId = mc.RegionId) ";
         query += "WHERE LOWER(mss.SolarSystemName) LIKE ?1; ";
 
@@ -300,7 +303,11 @@ impl<'a> SdeManager<'a> {
         let system_like_name = id_node.to_string();
         let mut rows = statement.query(params![system_like_name])?;
         if let Some(row) = rows.next()? {
-            let mut coord = SdePoint::from([row.get::<usize, f32>(0)?,row.get::<usize, f32>(1)?,row.get::<usize, f32>(2)?]);
+            let mut coord = SdePoint::from([
+                row.get::<usize, f32>(0)?,
+                row.get::<usize, f32>(1)?,
+                row.get::<usize, f32>(2)?,
+            ]);
             coord /= self.factor;
             if self.invert_coordinates {
                 coord *= -1;
@@ -329,24 +336,32 @@ impl<'a> SdeManager<'a> {
         let mut rows = statement.query([])?;
         let mut hmap: HashMap<String, MapLine> = HashMap::new();
         while let Some(row) = rows.next()? {
-            let mut point1 = RawPoint::from([row.get::<usize, f32>(1)? as i64, row.get::<usize, f32>(3)? as i64]);
-            let mut point2 = RawPoint::from([row.get::<usize, f32>(4)? as i64, row.get::<usize, f32>(6)? as i64]);
+            let mut point1 = RawPoint::from([
+                row.get::<usize, f32>(1)? as i64,
+                row.get::<usize, f32>(3)? as i64,
+            ]);
+            let mut point2 = RawPoint::from([
+                row.get::<usize, f32>(4)? as i64,
+                row.get::<usize, f32>(6)? as i64,
+            ]);
             point1 /= self.factor;
             point2 /= self.factor;
             if self.invert_coordinates {
                 point1 *= -1;
                 point2 *= -1;
             }
-            let mut line = MapLine::new(point1,point2);
+            let mut line = MapLine::new(point1, point2);
             line.id = Some(row.get::<usize, String>(0)?);
             let id = row.get::<usize, String>(0)?;
             hmap.entry(id).or_insert(line);
         }
         Ok(hmap)
-
     }
 
-    pub fn get_abstract_systems(self, regions: Vec<usize>) -> Result<HashMap<usize,MapPoint>,Error> {
+    pub fn get_abstract_systems(
+        self,
+        regions: Option<usize>,
+    ) -> Result<HashMap<usize, MapPoint>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_abstract_systems");
 
@@ -355,17 +370,24 @@ impl<'a> SdeManager<'a> {
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
         let connection = Connection::open_with_flags(self.path, flags)?;
 
-        let mut query = String::from("SELECT msc.systemConnectionId, ");
-        query += "mssa.projX, mssa.projY, mssa.projZ, mssb.projX, mssb.projY, mssb.projZ ";
-        query += "FROM mapSystemConnections AS msc INNER JOIN mapSolarSystems AS mssa ";
-        query += "ON(msc.systemA = mssa.solarSystemId) INNER JOIN mapSolarSystems AS mssb ";
-        query += "ON(msc.systemB = mssb.solarSystemId);";
-       
+        let mut query = String::from("SELECT mas.solarSystemId, ");
+        query += "mas.x, mas.y, mas.regionId FROM mapAbstractSystems ";
+        query += " WHERE regionId = ?1;";
+
         let mut statement = connection.prepare(query.as_str())?;
-        let mut rows = statement.query([])?;
-        let hash_map:HashMap<usize,MapPoint> = HashMap::new();
+        let mut rows;
+        if regions.is_some() {
+            rows = statement.query([regions.unwrap()])?;
+        } else {
+            rows = statement.query([])?;
+        }
+        let mut hash_map: HashMap<usize, MapPoint> = HashMap::new();
         while let Some(row) = rows.next()? {
-            
+            let point = MapPoint::new(
+                row.get::<usize, usize>(0)?,
+                RawPoint::new(row.get::<usize, f32>(1)?, row.get::<usize, f32>(2)?),
+            );
+            hash_map.insert(row.get::<usize, usize>(0)?, point);
         }
         Ok(hash_map)
     }
