@@ -345,4 +345,29 @@ impl<'a> SdeManager<'a> {
         Ok(hmap)
 
     }
+
+    pub fn get_abstract_systems(self, regions: Vec<usize>) -> Result<HashMap<usize,MapPoint>,Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("get_abstract_systems");
+
+        let mut flags = OpenFlags::default();
+        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
+        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
+        let connection = Connection::open_with_flags(self.path, flags)?;
+
+        let mut query = String::from("SELECT msc.systemConnectionId, ");
+        query += "mssa.projX, mssa.projY, mssa.projZ, mssb.projX, mssb.projY, mssb.projZ ";
+        query += "FROM mapSystemConnections AS msc INNER JOIN mapSolarSystems AS mssa ";
+        query += "ON(msc.systemA = mssa.solarSystemId) INNER JOIN mapSolarSystems AS mssb ";
+        query += "ON(msc.systemB = mssb.solarSystemId);";
+       
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = statement.query([])?;
+        let hash_map:HashMap<usize,MapPoint> = HashMap::new();
+        while let Some(row) = rows.next()? {
+            
+        }
+        todo!();
+        Ok(hash_map)
+    }
 }
