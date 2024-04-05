@@ -300,7 +300,7 @@ impl<'a> SdeManager<'a> {
         let system_like_name = id_node.to_string();
         let mut rows = statement.query(params![system_like_name])?;
         if let Some(row) = rows.next()? {
-            let mut coord = SdePoint::from([row.get::<usize, i64>(0)?,row.get::<usize, i64>(1)?,row.get::<usize, i64>(2)?]);
+            let mut coord = SdePoint::from([row.get::<usize, f32>(0)?,row.get::<usize, f32>(1)?,row.get::<usize, f32>(2)?]);
             coord /= self.factor;
             if self.invert_coordinates {
                 coord *= -1;
