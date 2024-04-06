@@ -247,7 +247,7 @@ impl<'a> SdeManager<'a> {
         Ok(areas)
     }
 
-    pub fn get_system_id(self, name: String) -> Result<Vec<(usize, String, usize, String)>, Error> {
+    pub fn get_system_id(&self, name: String) -> Result<Vec<(usize, String, usize, String)>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_system_id");
         let connection = self.get_standart_connection()?;
@@ -271,7 +271,7 @@ impl<'a> SdeManager<'a> {
         Ok(results)
     }
 
-    pub fn get_system_coords(self, id_node: usize) -> Result<Option<SdePoint>, Error> {
+    pub fn get_system_coords(&self, id_node: usize) -> Result<Option<SdePoint>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_system_coords");
         let connection = self.get_standart_connection()?;
@@ -297,7 +297,7 @@ impl<'a> SdeManager<'a> {
         Ok(None)
     }
 
-    pub fn get_connections(self) -> Result<HashMap<String, MapLine>, Error> {
+    pub fn get_connections(&self) -> Result<HashMap<String, MapLine>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_connections");
 
@@ -336,7 +336,7 @@ impl<'a> SdeManager<'a> {
     }
 
     pub fn get_abstract_systems(
-        self,
+        &self,
         regions: Vec<u32>,
     ) -> Result<HashMap<usize, MapPoint>, Error> {
         #[cfg(feature = "puffin")]
@@ -375,7 +375,7 @@ impl<'a> SdeManager<'a> {
     }
 
     pub fn get_abstract_system_connections(
-        self,
+        &self,
         mut hash_map: HashMap<usize, MapPoint>,
         regions: Vec<u32>,
     ) -> Result<HashMap<usize, MapPoint>, Error> {
@@ -418,7 +418,7 @@ impl<'a> SdeManager<'a> {
     }
 
     pub fn get_abstract_connections(
-        self,
+        &self,
         regions: Vec<u32>,
     ) -> Result<HashMap<String, MapLine>, Error> {
         #[cfg(feature = "puffin")]
