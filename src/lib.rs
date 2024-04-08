@@ -17,13 +17,6 @@ use std::rc::Rc;
 /// Module that has Data object abstractions to fill with the database data.
 pub mod objects;
 
-/// Module that contains some hardcoded values useful to the crate
-pub mod consts {
-
-    /// Maximum number of threads to invoke in a multithread routines
-    pub const MAX_THREADS: i8 = 8;
-}
-
 /// Manages the process of reading SDE data and putting into different data structures
 /// for easy in-memory access.
 #[derive(Clone)]
