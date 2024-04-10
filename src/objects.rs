@@ -494,34 +494,6 @@ impl Default for Region {
     }
 }
 
-#[derive(PartialEq, Eq, Clone)]
-/// Struct that contains Dictionary to search regions, constellations and solarsystems by name
-pub struct Dictionaries {
-    /// Solar system dictionary
-    pub system_names: HashMap<String, u32>,
-    /// Constellations dictionary
-    pub constellation_names: HashMap<String, u32>,
-    /// Region dictionary
-    pub region_names: HashMap<String, u32>,
-}
-
-impl Dictionaries {
-    /// Creates a new Dictionaries Strcut. ALl the values are initialized. Needs to be filled
-    pub fn new() -> Dictionaries {
-        Dictionaries {
-            system_names: HashMap::new(),
-            constellation_names: HashMap::new(),
-            region_names: HashMap::new(),
-        }
-    }
-}
-
-impl Default for Dictionaries {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[derive(Clone)]
 /// Struct that contains everything in EVE Onoline Universe
 ///
@@ -542,8 +514,6 @@ pub struct Universe {
     pub planets: HashMap<u32, Planet>,
     /// Moon objects you can access the data with their Identfiers
     pub moons: HashMap<u32, Moon>,
-    /// Dictionaries struct
-    pub dicts: Dictionaries,
     /// Factor used to correct coordinates
     pub factor: u64,
     /// List of system connections
@@ -559,7 +529,6 @@ impl Universe {
             solar_systems: HashMap::new(),
             planets: HashMap::new(),
             moons: HashMap::new(),
-            dicts: Dictionaries::new(),
             factor,
             connections: HashMap::new(),
         }

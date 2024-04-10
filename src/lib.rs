@@ -54,59 +54,10 @@ impl<'a> SdeManager<'a> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_universe");
 
-        // Getting all regions in the main process because is not very intensive
-        let regions = self.get_region(Vec::new())?;
-        let mut parent_ids = vec![];
-
-        // fill a vector with ids to get constellations, fill a Hashmap of regions and dictionary to find fast an id
-        for region in regions {
-            #[cfg(feature = "puffin")]
-            puffin::profile_scope!("hashmap_add_regions");
-            parent_ids.push(region.id);
-            self.universe
-                .dicts
-                .region_names
-                .entry(region.name.to_lowercase().clone())
-                .or_insert(region.id);
-            self.universe.regions.entry(region.id).or_insert(region);
-        }
-
-        let constellations = self.get_constellation(parent_ids)?;
-
-        let mut parent_ids = vec![];
-        for constel in constellations {
-            #[cfg(feature = "puffin")]
-            puffin::profile_scope!("hashmap_add_constellations");
-            parent_ids.push(constel.id);
-            self.universe
-                .dicts
-                .constellation_names
-                .entry(constel.name.to_lowercase().clone())
-                .or_insert(constel.id);
-            self.universe
-                .constellations
-                .entry(constel.id)
-                .or_insert(constel);
-        }
-
-        let solar_systems =
-            self.get_solarsystem( parent_ids)?;
-
-        let mut parent_ids = vec![];
-        for system in solar_systems {
-            #[cfg(feature = "puffin")]
-            puffin::profile_scope!("hashmap_add_planetary_systems");
-            parent_ids.push(system.id);
-            self.universe
-                .dicts
-                .constellation_names
-                .entry(system.name.to_lowercase().clone())
-                .or_insert(system.id);
-            self.universe
-                .solar_systems
-                .entry(system.id)
-                .or_insert(system);
-        }
+        let filter = Vec::new();
+        self.universe.regions = self.get_region(filter.clone())?;
+        self.universe.constellations = self.get_constellation(filter.clone())?;
+        self.universe.solar_systems = self.get_solarsystem( filter)?;
         Ok(true)
     }
 
@@ -441,7 +392,7 @@ impl<'a> SdeManager<'a> {
         Ok(hash_map)
     }
 
-    pub fn get_regions(&self, regions: Vec<u32>,) -> Result<Vec<(u32,String)>, Error>  {
+    pub fn get_regions(&self, regions: Vec<u32>) -> Result<Vec<(u32,String)>, Error>  {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_regions");
 
@@ -488,16 +439,44 @@ impl<'a> SdeManager<'a> {
     fn get_region(
         &self,
         regions: Vec<u32>,
-    ) -> Result<Vec<Region>, Error> {
+    ) -> Result<HashMap<u32,Region>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_region");
 
         let connection = self.get_standart_connection()?;
-        
+        let mut result = HashMap::new();
+
         let mut query = String::from("SELECT regionId, regionName FROM mapRegions");
         if !regions.is_empty() {
             query += " WHERE regionId IN rarray(?1)";
         }
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows;
+        if regions.is_empty() {
+            rows = statement.query([])?;
+        } else {
+            let id_list: array::Array = Rc::new(
+                regions
+                    .clone()
+                    .into_iter()
+                    .map(rusqlite::types::Value::from)
+                    .collect::<Vec<rusqlite::types::Value>>(),
+            );
+            rows = statement.query([id_list])?;
+        }
+        
+        while let Some(row) = rows.next()? {
+            let mut region = Region::new();
+            region.id = row.get(0)?;
+            region.name = row.get(1)?;
+            result.insert(row.get(0)?,region);
+        }
+
+        let mut query = String::from("SELECT regionId,constellationId FROM mapConstellations");
+        if !regions.is_empty() {
+            query += " WHERE regionId IN rarray(?1)";
+        }
+
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows;
         if regions.is_empty() {
@@ -511,23 +490,9 @@ impl<'a> SdeManager<'a> {
             );
             rows = statement.query([id_list])?;
         }
-        let mut result = vec![];
 
         while let Some(row) = rows.next()? {
-            let mut region = Region::new();
-            region.id = row.get(0)?;
-            region.name = row.get(1)?;
-            result.push(region);
-        }
-
-        let query = "SELECT constellationId FROM mapConstellations WHERE regionId=?";
-        
-        for index in 0..result.len() {
-            let mut statement = connection.prepare(query)?;
-            let mut rows = statement.query([result[index].id])?;
-            while let Some(row) = rows.next()? {
-                result[index].constellations.push(row.get(0)?);
-            }
+            result.entry(row.get(0)?).and_modify(|xregion| xregion.constellations.push(row.get(1).unwrap()));
         }
         Ok(result)
     }
@@ -535,13 +500,13 @@ impl<'a> SdeManager<'a> {
     fn get_solarsystem(
         &self,
         constellation: Vec<u32>
-    ) -> Result<Vec<SolarSystem>, Error> {
+    ) -> Result<HashMap<u32,SolarSystem>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_solarsystem");
 
         // preparing the connections that will be shared between threads
         let connection = self.get_standart_connection()?;
-        let mut result = vec![];
+        let mut result = HashMap::new();
 
         let mut query = String::from("SELECT mss.solarSystemId, mss.solarSystemName, mc.regionId, ");
         query += " mc.centerX, mc.centerY, mc.centerZ, mss.projX, mss.projY, mss.projZ, ";
@@ -560,7 +525,7 @@ impl<'a> SdeManager<'a> {
         );
 
         let mut rows = statement.query(params![id_list])?;
-
+        
         while let Some(row) = rows.next()?{
             let mut object = SolarSystem::new(self.factor);
             object.id = row.get(0)?;
@@ -581,18 +546,29 @@ impl<'a> SdeManager<'a> {
                 object.projected_coords.y *= -1;
             }
             object.region = row.get(2)?;
-            result.push(object);
+            result.insert(row.get(0)?, object);
         }
-        let mut query = String::from(" SELECT msg.solarSystemId FROM mapSystemGates ");
-        query += " AS msg WHERE msg.systemGateId ";
-        query += " IN (SELECT destination FROM mapSystemGates AS msg ";
-        query += " WHERE solarSystemId = ?1);";
-        for index in 0..result.len() {
-            let mut statement = connection.prepare(query.as_str())?;
-            let mut rows = statement.query([result[index].id])?;
-            while let Some(row) = rows.next()? {
-                result[index].connections.push(row.get(0)?);
-            }
+
+        let mut query = String::from("SELECT systemConnectionId, ");
+        query += "systemA, systemB FROM mapSystemConnections;";
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            // Optimization: to avoid printing twice the same line, we are just skipping coordinates
+            // for SolarSystems that has an Id less than the current one printed. with the exception
+            // of the lowest ID
+            let system_a = row.get::<usize, u32>(1)?;
+            let system_b = row.get::<usize, u32>(2)?;
+
+            //we compare the current system with the first, if not the same then we add the coordinates to hashmap
+            result.entry(system_a).and_modify(|point| {
+                point.connections.push(system_b as u32);
+            });
+
+            result.entry(system_b).and_modify(|point| {
+                point.connections.push(system_a as u32);
+            });
         }
         Ok(result)
     }
@@ -601,12 +577,13 @@ impl<'a> SdeManager<'a> {
     fn get_constellation(
         &self,
         regions: Vec<u32>,
-    ) -> Result<Vec<Constellation>, Error> {
+    ) -> Result<HashMap<u32,Constellation>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_constellation");
         // preparing the connections that will be shared between threads
         let connection =  self.get_standart_connection()?;
-        let mut result = vec![];
+        let mut result = HashMap::new();
+        let mut constellations = Vec::new();
 
         let mut query = String::from("SELECT constellationId, constellationName, regionId ");
         query += "FROM mapConstellations ";
@@ -629,17 +606,24 @@ impl<'a> SdeManager<'a> {
             object.id = row.get(0)?;
             object.name = row.get(1)?;
             object.region = row.get(2)?;
-            result.push(object);
+            constellations.push(row.get::<usize,u32>(0)?);
+            result.insert(row.get(0)?,object);
         }
 
-        let query = "SELECT solarSystemId FROM mapSolarSystems WHERE constellationId = ?1";
+        let mut query = String::from("SELECT constellationId, solarSystemId FROM mapSolarSystems");
+        query += " WHERE constellationId IN rarray(?1);";
         
-        for index in 0..result.len() {
-            let mut statement = connection.prepare(query)?;
-            let mut rows = statement.query([result[index].id])?;
-            while let Some(row) = rows.next()? {
-                result[index].solar_systems.push(row.get(0).unwrap());
-            }
+        let mut statement = connection.prepare(query.as_str())?;
+        let id_list = Rc::new(
+            constellations
+                .into_iter()
+                .map(rusqlite::types::Value::from)
+                .collect::<Vec<rusqlite::types::Value>>(),
+        );
+        let mut rows = statement.query(params![id_list])?;
+
+        while let Some(row) = rows.next()? {
+            result.entry(row.get(0)?).and_modify(|constel| constel.solar_systems.push(row.get(1).unwrap()));
         }
 
         Ok(result)
