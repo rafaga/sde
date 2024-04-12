@@ -275,9 +275,9 @@ impl<'a> SdeManager<'a> {
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT mas.solarSystemId, ");
-        query += "mas.x, mas.y, mas.regionId FROM mapAbstractSystems ";
+        query += "mas.x, mas.y, mas.regionId FROM mapAbstractSystems AS mas ";
         if !regions.is_empty() {
-            query += " WHERE regionId IN rarray(?1);";
+            query += "WHERE regionId IN rarray(?1);";
         }
 
         let mut statement = connection.prepare(query.as_str())?;
