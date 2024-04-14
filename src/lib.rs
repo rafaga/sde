@@ -362,7 +362,7 @@ impl<'a> SdeManager<'a> {
         query += "ON(msc.systemA = masa.solarSystemId) INNER JOIN mapAbstractSystems AS masb ";
         query += "ON(msc.systemB = masb.solarSystemId) ";
         if !regions.is_empty() {
-            query += " WHERE masa.regionId IN rarray(?1) OR masb.regionId IN rarray(?2);";
+            query += " WHERE masa.regionId IN rarray(?1) AND masb.regionId IN rarray(?2);";
         }
 
         let mut statement = connection.prepare(query.as_str())?;
