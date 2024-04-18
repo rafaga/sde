@@ -55,7 +55,7 @@ impl<'a> SdeManager<'a> {
         puffin::profile_scope!("get_universe");
 
         let filter = Vec::new();
-        self.universe.regions = self.get_region(filter.clone())?;
+        self.universe.regions = self.get_region(filter.clone(),None)?;
         self.universe.constellations = self.get_constellation(filter.clone())?;
         self.universe.solar_systems = self.get_solarsystem( filter)?;
         Ok(true)
@@ -439,6 +439,7 @@ impl<'a> SdeManager<'a> {
     fn get_region(
         &self,
         regions: Vec<u32>,
+        region_name: Option<String>,
     ) -> Result<HashMap<u32,Region>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_region");
@@ -446,10 +447,23 @@ impl<'a> SdeManager<'a> {
         let connection = self.get_standart_connection()?;
         let mut result = HashMap::new();
 
-        let mut query = String::from("SELECT regionId, regionName FROM mapRegions");
-        if !regions.is_empty() {
-            query += " WHERE regionId IN rarray(?1)";
+        let mut query = String::from("SELECT regionId, regionName FROM mapRegions ");
+        if !regions.is_empty() || region_name.is_some() {
+            let mut params = String::new();
+            if !regions.is_empty() {
+                params += "regionId IN rarray(?1) ";
+            }
+            if !params.is_empty() {
+                params += " AND ";
+            }
+            if region_name.is_some() {
+                params += "regionName LIKE %?1% ";
+            }
+            if !params.is_empty() {
+                query += &(" WHERE ".to_owned() + &params);
+            }
         }
+        query += "ORDER BY regionName";
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows;
         if regions.is_empty() {
