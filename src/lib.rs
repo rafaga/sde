@@ -463,9 +463,10 @@ impl<'a> SdeManager<'a> {
     ) -> Result<HashMap<u32,Region>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_region");
-        let id_list: array::Array;
+        let mut id_list: array::Array;
         let mut params:Vec<&dyn ToSql> = Vec::new();
         let mut _temp_value= String::new();
+        let mut region_ids:Vec<u32> = Vec::new();
 
         let connection = self.get_standart_connection()?;
         let mut result = HashMap::new();
@@ -473,7 +474,6 @@ impl<'a> SdeManager<'a> {
         let mut query = String::from("SELECT regionId, regionName FROM mapRegions ");
         if !regions.is_empty() || region_name.is_some() {
             let mut query_p = String::new();
-            
 
             if !regions.is_empty() {
                 query_p += "regionId IN rarray(?) ";
@@ -484,15 +484,14 @@ impl<'a> SdeManager<'a> {
                         .map(rusqlite::types::Value::from)
                         .collect::<Vec<rusqlite::types::Value>>(),
                 );
-                params.push(&id_list);
-                
+                params.push(&id_list);  
             }
             if region_name.is_some() {
                 if !query_p.is_empty() {
                     query_p += " AND ";
                 }
-                query_p += "regionName LIKE ? ";
-                _temp_value = ("%".to_string() + region_name.unwrap().as_str() + "%").clone();
+                query_p += "LOWER(regionName) LIKE ? ";
+                _temp_value = ("%".to_string() + region_name.clone().unwrap().as_str() + "%").clone();
                 params.push(&_temp_value);
             }
             if !query_p.is_empty() {
@@ -513,25 +512,28 @@ impl<'a> SdeManager<'a> {
             let mut region = Region::new();
             region.id = row.get(0)?;
             region.name = row.get(1)?;
+            region_ids.push(row.get(0)?);
             result.insert(row.get(0)?,region);
         }
 
         let mut query = String::from("SELECT regionId,constellationId FROM mapConstellations");
-        if !regions.is_empty() {
-            query += " WHERE regionId IN rarray(?1)";
+        if !regions.is_empty() || region_name.is_some() {
+            query += " WHERE regionId IN rarray(?1) "; 
         }
 
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows;
-        if regions.is_empty() {
+
+        if regions.is_empty() && region_name.is_none() {
             rows = statement.query([])?;
         } else {
-            let id_list: array::Array = Rc::new(
-                regions
+            id_list = Rc::new(
+                region_ids
+                    .clone()
                     .into_iter()
                     .map(rusqlite::types::Value::from)
                     .collect::<Vec<rusqlite::types::Value>>(),
-            );
+            ); 
             rows = statement.query([id_list])?;
         }
 
