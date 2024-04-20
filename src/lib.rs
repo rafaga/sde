@@ -9,6 +9,7 @@
 use crate::objects::{SdePoint, Universe, Region, SolarSystem, Constellation, Planet, Moon};
 use egui_map::map::objects::{MapLine, MapPoint, RawPoint};
 use objects::EveRegionArea;
+use rusqlite::ToSql;
 use rusqlite::{params, vtab::array, Connection, Error, OpenFlags};
 use std::collections::HashMap;
 use std::path::Path;
@@ -392,30 +393,49 @@ impl<'a> SdeManager<'a> {
         Ok(hash_map)
     }
 
-    pub fn get_regions(&self, regions: Vec<u32>) -> Result<Vec<(u32,String)>, Error>  {
+    /*pub fn get_regions(&self, regions: Vec<u32>, region_name: Option<String>) -> Result<Vec<(u32,String)>, Error>  {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_regions");
+        let id_list: array::Array;
+        let mut params:Vec<&dyn ToSql> = Vec::new();
 
         let connection = self.get_standart_connection()?;
-
+        
         let mut query = String::from("SELECT regionName, regionId ");
         query += "FROM mapRegions ";
-        if !regions.is_empty() {
-            query += " WHERE regionId IN rarray(?1)";
+
+        if !regions.is_empty() || region_name.is_some() {
+            let mut query_p = String::new();
+            if !regions.is_empty() {
+                query_p += "regionId IN rarray(?) ";
+                id_list = Rc::new(
+                    regions
+                        .into_iter()
+                        .map(rusqlite::types::Value::from)
+                        .collect::<Vec<rusqlite::types::Value>>(),
+                );
+                params.push(&id_list);
+                
+            }
+            if !query_p.is_empty() {
+                query_p += " AND ";
+            }
+            if region_name.is_some() {
+                query_p += "regionName LIKE %?% ";
+                params.push(&region_name);
+            }
+            if !query_p.is_empty() {
+                query += &(" WHERE ".to_owned() + &query_p);
+            }
         }
+        query += "ORDER BY regionName ";
 
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows;
-        if regions.is_empty() {
+        if params.is_empty() {
             rows = statement.query([])?;
         } else {
-            let id_list: array::Array = Rc::new(
-                regions
-                    .into_iter()
-                    .map(rusqlite::types::Value::from)
-                    .collect::<Vec<rusqlite::types::Value>>(),
-            );
-            rows = statement.query([id_list])?;
+            rows = statement.query(params.as_slice())?;
         }
         let mut result = vec![];
         while let Some(row) = rows.next()? {
@@ -423,7 +443,7 @@ impl<'a> SdeManager<'a> {
             result.push(value);
         }
         Ok(result)
-    }
+    }*/
 
     fn get_standart_connection(&self) -> Result<Connection, Error> {
         let mut flags = OpenFlags::default();
@@ -436,47 +456,57 @@ impl<'a> SdeManager<'a> {
         Ok(connection)
     }
 
-    fn get_region(
+    pub fn get_region(
         &self,
         regions: Vec<u32>,
         region_name: Option<String>,
     ) -> Result<HashMap<u32,Region>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_region");
+        let id_list: array::Array;
+        let mut params:Vec<&dyn ToSql> = Vec::new();
+        let mut _temp_value= String::new();
 
         let connection = self.get_standart_connection()?;
         let mut result = HashMap::new();
 
         let mut query = String::from("SELECT regionId, regionName FROM mapRegions ");
         if !regions.is_empty() || region_name.is_some() {
-            let mut params = String::new();
+            let mut query_p = String::new();
+            
+
             if !regions.is_empty() {
-                params += "regionId IN rarray(?1) ";
-            }
-            if !params.is_empty() {
-                params += " AND ";
+                query_p += "regionId IN rarray(?) ";
+                id_list = Rc::new(
+                    regions
+                        .clone()
+                        .into_iter()
+                        .map(rusqlite::types::Value::from)
+                        .collect::<Vec<rusqlite::types::Value>>(),
+                );
+                params.push(&id_list);
+                
             }
             if region_name.is_some() {
-                params += "regionName LIKE %?1% ";
+                if !query_p.is_empty() {
+                    query_p += " AND ";
+                }
+                query_p += "regionName LIKE ? ";
+                _temp_value = ("%".to_string() + region_name.unwrap().as_str() + "%").clone();
+                params.push(&_temp_value);
             }
-            if !params.is_empty() {
-                query += &(" WHERE ".to_owned() + &params);
+            if !query_p.is_empty() {
+                query += &(" WHERE ".to_owned() + &query_p);
             }
         }
-        query += "ORDER BY regionName";
+        query += "ORDER BY regionName ";
+
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows;
-        if regions.is_empty() {
+        if params.is_empty() {
             rows = statement.query([])?;
         } else {
-            let id_list: array::Array = Rc::new(
-                regions
-                    .clone()
-                    .into_iter()
-                    .map(rusqlite::types::Value::from)
-                    .collect::<Vec<rusqlite::types::Value>>(),
-            );
-            rows = statement.query([id_list])?;
+            rows = statement.query(params.as_slice())?;
         }
         
         while let Some(row) = rows.next()? {
