@@ -393,58 +393,6 @@ impl<'a> SdeManager<'a> {
         Ok(hash_map)
     }
 
-    /*pub fn get_regions(&self, regions: Vec<u32>, region_name: Option<String>) -> Result<Vec<(u32,String)>, Error>  {
-        #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_regions");
-        let id_list: array::Array;
-        let mut params:Vec<&dyn ToSql> = Vec::new();
-
-        let connection = self.get_standart_connection()?;
-        
-        let mut query = String::from("SELECT regionName, regionId ");
-        query += "FROM mapRegions ";
-
-        if !regions.is_empty() || region_name.is_some() {
-            let mut query_p = String::new();
-            if !regions.is_empty() {
-                query_p += "regionId IN rarray(?) ";
-                id_list = Rc::new(
-                    regions
-                        .into_iter()
-                        .map(rusqlite::types::Value::from)
-                        .collect::<Vec<rusqlite::types::Value>>(),
-                );
-                params.push(&id_list);
-                
-            }
-            if !query_p.is_empty() {
-                query_p += " AND ";
-            }
-            if region_name.is_some() {
-                query_p += "regionName LIKE %?% ";
-                params.push(&region_name);
-            }
-            if !query_p.is_empty() {
-                query += &(" WHERE ".to_owned() + &query_p);
-            }
-        }
-        query += "ORDER BY regionName ";
-
-        let mut statement = connection.prepare(query.as_str())?;
-        let mut rows;
-        if params.is_empty() {
-            rows = statement.query([])?;
-        } else {
-            rows = statement.query(params.as_slice())?;
-        }
-        let mut result = vec![];
-        while let Some(row) = rows.next()? {
-            let value = (row.get::<usize, u32>(1)?,row.get::<usize, String>(0)?);
-            result.push(value);
-        }
-        Ok(result)
-    }*/
-
     fn get_standart_connection(&self) -> Result<Connection, Error> {
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
