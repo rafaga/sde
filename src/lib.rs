@@ -316,9 +316,11 @@ impl<'a> SdeManager<'a> {
         let connection = self.get_standart_connection()?;
 
         let mut query =
-            String::from("SELECT mas.solarSystemId, mas.regionId, msc.systemConnectionId ");
+            String::from("SELECT mas.solarSystemId, mas.regionId, msc.systemConnectionId, ");
+        query += " mss.solarSystemName ";
         query += " FROM mapAbstractSystems AS mas INNER JOIN mapSystemConnections AS msc ";
         query += " ON(msc.systemA = mas.solarSystemId OR msc.systemB = mas.solarSystemId) ";
+        query += " INNER JOIN mapSolarSystems AS mss ON (mss.solarSystemId = mas.solarSystemId) ";
         if !regions.is_empty() {
             query += " WHERE mas.regionId IN rarray(?1);";
         }
@@ -340,6 +342,7 @@ impl<'a> SdeManager<'a> {
             hash_map
                 .entry(row.get::<usize, usize>(0)?)
                 .and_modify(|map_point| {
+                    map_point.set_name(row.get::<usize, String>(3).unwrap());
                     if let Ok(hash) = row.get::<usize, String>(2) {
                         map_point.connections.push(hash);
                     }
