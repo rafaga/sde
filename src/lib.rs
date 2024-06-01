@@ -27,14 +27,14 @@ pub struct SdeManager<'a> {
     /// The universe Object that contains all the data
     pub universe: Universe,
     /// Adjusting factor for coordinates (because are very large numbers)
-    pub factor: u64,
+    pub factor: i64,
     /// Invert the sign of all coordinate values
     pub invert_coordinates: bool,
 }
 
 impl<'a> SdeManager<'a> {
     /// Creates a new SdeManager using a path to build the connection
-    pub fn new(path: &Path, factor: u64) -> SdeManager {
+    pub fn new(path: &Path, factor: i64) -> SdeManager {
         SdeManager {
             path,
             universe: Universe::new(factor),
@@ -87,7 +87,11 @@ impl<'a> SdeManager<'a> {
 
             //we get the coordinate point and multiply with the adjust factor
             let mut coord = SdePoint::from([x as i64, y as i64, z as i64]);
-            coord /= self.factor;
+            if self.factor > 1 {
+                coord /= self.factor;
+            } else if self.factor < -1 {
+                coord *= self.factor.abs();
+            }
             if self.invert_coordinates {
                 coord *= -1;
             }
@@ -219,7 +223,11 @@ impl<'a> SdeManager<'a> {
                 row.get::<usize, f32>(1)?,
                 row.get::<usize, f32>(2)?,
             ]);
-            coord /= self.factor;
+            if self.factor > 1 {
+                coord /= self.factor;
+            } else if self.factor < -1 {
+                coord *= self.factor.abs();
+            }
             if self.invert_coordinates {
                 coord *= -1;
             }
@@ -252,8 +260,13 @@ impl<'a> SdeManager<'a> {
                 row.get::<usize, f32>(4)? as i64,
                 row.get::<usize, f32>(6)? as i64,
             ]);
-            point1 /= self.factor;
-            point2 /= self.factor;
+            if self.factor > 1 {
+                point1 /= self.factor;
+                point2 /= self.factor;
+            } else if self.factor < -1 {
+                point1 *= self.factor.abs();
+                point2 *= self.factor.abs();
+            }
             if self.invert_coordinates {
                 point1 *= -1;
                 point2 *= -1;
@@ -296,9 +309,15 @@ impl<'a> SdeManager<'a> {
         }
         let mut hash_map: HashMap<usize, MapPoint> = HashMap::new();
         while let Some(row) = rows.next()? {
+            let mut raw_point = RawPoint::new(row.get::<usize, f32>(1)?, row.get::<usize, f32>(2)?);
+            if self.factor > 1 {
+                raw_point /= self.factor;
+            } else if self.factor < -1 {
+                raw_point *= self.factor.abs();
+            }
             let point = MapPoint::new(
                 row.get::<usize, usize>(0)?,
-                RawPoint::new(row.get::<usize, f32>(1)?, row.get::<usize, f32>(2)?),
+                raw_point,
             );
             hash_map.insert(row.get::<usize, usize>(0)?, point);
         }
@@ -385,10 +404,16 @@ impl<'a> SdeManager<'a> {
 
         let mut hash_map: HashMap<String, MapLine> = HashMap::new();
         while let Some(row) = rows.next()? {
-            let mut line = MapLine::new(
-                RawPoint::new(row.get::<usize, f32>(1)?, row.get::<usize, f32>(2)?),
-                RawPoint::new(row.get::<usize, f32>(3)?, row.get::<usize, f32>(4)?),
-            );
+            let mut point1 = RawPoint::new(row.get::<usize, f32>(1)?, row.get::<usize, f32>(2)?);
+            let mut point2 = RawPoint::new(row.get::<usize, f32>(3)?, row.get::<usize, f32>(4)?);
+            if self.factor > 1 {
+                point1 /= self.factor;
+                point2 /= self.factor;
+            } else if self.factor < -1 {
+                point1 *= self.factor.abs();
+                point2 *= self.factor.abs();
+            }
+            let mut line = MapLine::new(point1,point2);
             line.id = Some(row.get::<usize, String>(0)?);
             hash_map.entry(row.get::<usize, String>(0)?).or_insert(line);
         }

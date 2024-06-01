@@ -193,6 +193,14 @@ impl DivAssign<u64> for SdePoint {
     }
 }
 
+impl DivAssign<i64> for SdePoint {
+    fn div_assign(&mut self, rhs: i64) {
+        self.x = self.x / rhs;
+        self.y = self.y / rhs;
+        self.z = self.z / rhs;
+    }
+}
+
 impl DivAssign<i32> for SdePoint {
     fn div_assign(&mut self, rhs: i32) {
         self.x = self.x / rhs as i64;
@@ -222,6 +230,14 @@ impl MulAssign<u64> for SdePoint {
         self.x = self.x * rhs as i64;
         self.y = self.y * rhs as i64;
         self.z = self.z * rhs as i64;
+    }
+}
+
+impl MulAssign<i64> for SdePoint {
+    fn mul_assign(&mut self, rhs: i64) {
+        self.x = self.x * rhs;
+        self.y = self.y * rhs;
+        self.z = self.z * rhs;
     }
 }
 
@@ -386,12 +402,12 @@ pub struct SolarSystem {
     /// Solar System 2D Coordinates with the propourse of representing the system in abstraction map.
     pub projected_coords: SdePoint,
     /// The factor that we need to adjust the coordinates
-    pub factor: u64,
+    pub factor: i64,
 }
 
 impl SolarSystem {
     /// Creates a new Solar System Strcut. ALl the values are initialized. Needs to be filled
-    pub fn new(factor: u64) -> Self {
+    pub fn new(factor: i64) -> Self {
         SolarSystem {
             id: 0,
             name: String::new(),
@@ -515,14 +531,14 @@ pub struct Universe {
     /// Moon objects you can access the data with their Identfiers
     pub moons: HashMap<u32, Moon>,
     /// Factor used to correct coordinates
-    pub factor: u64,
+    pub factor: i64,
     /// List of system connections
     pub connections: HashMap<String, SdeLine>,
 }
 
 impl Universe {
     /// Creates a new Universe Strcut. ALl the values are initialized. Needs to be filled
-    pub fn new(factor: u64) -> Universe {
+    pub fn new(factor: i64) -> Universe {
         Universe {
             regions: HashMap::new(),
             constellations: HashMap::new(),
