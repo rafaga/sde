@@ -1,8 +1,8 @@
 use egui_map::map::objects::RawPoint;
 use std::collections::HashMap;
+use std::convert::{From, TryInto};
 use std::io::{Error as GenericError, ErrorKind};
 use std::ops::{Add, Div, DivAssign, Mul, MulAssign, Sub};
-use std::convert::{From, TryInto};
 
 #[derive(Hash, PartialEq, Eq, Clone)]
 pub struct EveRegionArea {
@@ -424,17 +424,17 @@ impl SolarSystem {
     /// this function that correct the original 2d coordinates using the correction factor
     pub fn coord2d_to_f64(self) -> [f64; 2] {
         [
-            (self.projected_coords.x / self.factor as i64) as f64,
-            (self.real_coords.y / self.factor as i64) as f64,
+            (self.projected_coords.x / self.factor) as f64,
+            (self.real_coords.y / self.factor) as f64,
         ]
     }
 
     /// this function that correct the original 3d coordinates using the correction factor
     pub fn coord3d_to_f64(self) -> [f64; 3] {
         [
-            (self.projected_coords.x / self.factor as i64) as f64,
-            (self.real_coords.y / self.factor as i64) as f64,
-            (self.real_coords.z / self.factor as i64) as f64,
+            (self.projected_coords.x / self.factor) as f64,
+            (self.real_coords.y / self.factor) as f64,
+            (self.real_coords.z / self.factor) as f64,
         ]
     }
 }
