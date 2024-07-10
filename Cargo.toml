@@ -2,7 +2,7 @@
 name = "sde"
 version = "0.0.18"
 edition = "2021"
-authors = ["Rafael Amador <rafaga@duck.com"]
+authors = ["Rafael Amador <rafaga@duck.com>"]
 description = "A library to read Eve Online's SDE data from sqlite database."
 readme = "README.md"
 repository = "https://github.com/rafaga/sde/"
@@ -51,9 +51,6 @@ rusqlite = { version = "0.31.0", features = ["bundled-sqlcipher", "backup", "blo
 # Windows:
 [target.'cfg(windows)'.dependencies]
 rusqlite = { version = "0.31.0", features = ["bundled-sqlcipher-vendored-openssl", "backup", "blob", "array"] }
-
-[dev-dependencies]
-# tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 
 [patch.crates-io]
 # If you want to use the bleeding edge version of egui and eframe:
