@@ -35,6 +35,9 @@ pub struct SdeManager<'a> {
 impl<'a> SdeManager<'a> {
     /// Creates a new SdeManager using a path to build the connection
     pub fn new(path: &Path, factor: i64) -> SdeManager {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         SdeManager {
             path,
             universe: Universe::new(factor),
@@ -53,7 +56,7 @@ impl<'a> SdeManager<'a> {
     /// - Solar Systems
     pub fn get_universe(&mut self) -> Result<bool, Error> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_universe");
+        puffin::profile_function!();
 
         let filter = Vec::new();
         self.universe.regions = self.get_region(filter.clone(), None)?;
@@ -66,7 +69,7 @@ impl<'a> SdeManager<'a> {
     /// and search for basic stuff
     pub fn get_systempoints(&self) -> Result<HashMap<usize, MapPoint>, Error> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_systempoints");
+        puffin::profile_function!();
         let connection = self.get_standart_connection()?;
 
         let mut hash_map: HashMap<usize, MapPoint> = HashMap::new();
@@ -107,7 +110,7 @@ impl<'a> SdeManager<'a> {
         mut hash_map: HashMap<usize, MapPoint>,
     ) -> Result<HashMap<usize, MapPoint>, Error> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_system_connections");
+        puffin::profile_function!();
 
         let connection = self.get_standart_connection()?;
 
@@ -139,7 +142,7 @@ impl<'a> SdeManager<'a> {
 
     pub fn get_region_coordinates(&self) -> Result<Vec<EveRegionArea>, Error> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_region_coordinates");
+        puffin::profile_function!();
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT reg.regionId, reg.regionName, ");
@@ -187,7 +190,7 @@ impl<'a> SdeManager<'a> {
         name: String,
     ) -> Result<Vec<(usize, String, usize, String)>, Error> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_system_id");
+        puffin::profile_function!();
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from(
@@ -211,7 +214,7 @@ impl<'a> SdeManager<'a> {
 
     pub fn get_system_coords(&self, id_node: usize) -> Result<Option<SdePoint>, Error> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_system_coords");
+        puffin::profile_function!();
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT mss.ProjX, mss.ProjY, mss.ProjZ ");
@@ -241,7 +244,7 @@ impl<'a> SdeManager<'a> {
 
     pub fn get_connections(&self) -> Result<HashMap<String, MapLine>, Error> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_connections");
+        puffin::profile_function!();
 
         let connection = self.get_standart_connection()?;
 
@@ -287,8 +290,7 @@ impl<'a> SdeManager<'a> {
         regions: Vec<u32>,
     ) -> Result<HashMap<usize, MapPoint>, Error> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_abstract_systems");
-
+        puffin::profile_function!();
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT mas.solarSystemId, ");
@@ -330,7 +332,7 @@ impl<'a> SdeManager<'a> {
         regions: Vec<u32>,
     ) -> Result<HashMap<usize, MapPoint>, Error> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_abstract_system_connections");
+        puffin::profile_function!();
 
         let connection = self.get_standart_connection()?;
 
@@ -375,7 +377,7 @@ impl<'a> SdeManager<'a> {
         regions: Vec<u32>,
     ) -> Result<HashMap<String, MapLine>, Error> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_abstract_connections");
+        puffin::profile_function!();
 
         let connection = self.get_standart_connection()?;
 
@@ -422,6 +424,9 @@ impl<'a> SdeManager<'a> {
     }
 
     fn get_standart_connection(&self) -> Result<Connection, Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
@@ -444,7 +449,8 @@ impl<'a> SdeManager<'a> {
         region_name: Option<String>,
     ) -> Result<HashMap<u32, Region>, Error> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_region");
+        puffin::profile_function!();
+
         let mut id_list: array::Array;
         let mut params: Vec<&dyn ToSql> = Vec::new();
         let mut _temp_value = String::new();
@@ -530,7 +536,7 @@ impl<'a> SdeManager<'a> {
 
     fn get_solarsystem(&self, constellation: Vec<u32>) -> Result<HashMap<u32, SolarSystem>, Error> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_solarsystem");
+        puffin::profile_function!();
 
         // preparing the connections that will be shared between threads
         let connection = self.get_standart_connection()?;
@@ -606,7 +612,8 @@ impl<'a> SdeManager<'a> {
     /// Function to get every Constellation or a Constellation based on an specific Region
     fn get_constellation(&self, regions: Vec<u32>) -> Result<HashMap<u32, Constellation>, Error> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_constellation");
+        puffin::profile_function!();
+
         // preparing the connections that will be shared between threads
         let connection = self.get_standart_connection()?;
         let mut result = HashMap::new();
@@ -661,7 +668,8 @@ impl<'a> SdeManager<'a> {
     /// Function to get every Planet or all Planets for a specific Solar System
     pub fn get_planet(&self, solar_systems: Vec<u32>) -> Result<Vec<Planet>, Error> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_planet");
+        puffin::profile_function!();
+
         // preparing the connections that will be shared between threads
         let connection = self.get_standart_connection()?;
         let mut result = vec![];
@@ -696,7 +704,7 @@ impl<'a> SdeManager<'a> {
     /// Function to get every Moon or all Moons for a specific planet
     pub fn get_moon(&self, planets: Vec<u32>) -> Result<Vec<Moon>, Error> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_moon");
+        puffin::profile_function!();
 
         // preparing the connections that will be shared between threads
         let connection = self.get_standart_connection()?;

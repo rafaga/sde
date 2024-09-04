@@ -14,12 +14,18 @@ pub struct EveRegionArea {
 
 impl Default for EveRegionArea {
     fn default() -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Self::new()
     }
 }
 
 impl EveRegionArea {
     pub fn new() -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         EveRegionArea {
             region_id: 0,
             name: String::new(),
@@ -36,10 +42,16 @@ pub struct SdeLine {
 
 impl SdeLine {
     pub fn new(a: SdePoint, b: SdePoint) -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Self { points: [a, b] }
     }
 
     pub fn distance(self) -> f32 {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         let x = self.points[0].x - self.points[1].x;
         let y = self.points[0].y - self.points[1].y;
         let z = self.points[0].z - self.points[1].z;
@@ -48,6 +60,9 @@ impl SdeLine {
     }
 
     pub fn midpoint(self) -> SdePoint {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         let x = (self.points[0].x + self.points[1].x) / 2;
         let y = (self.points[0].y + self.points[1].y) / 2;
         let z = (self.points[0].z + self.points[1].z) / 2;
@@ -73,22 +88,34 @@ pub struct SdePoint {
 impl SdePoint {
     /// Creates a new Coordinates struct. ALl the coordinates are initialized.
     pub fn new(x: i64, y: i64, z: i64) -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         SdePoint { x, y, z }
     }
 
     pub fn to_rawpoint(self) -> RawPoint {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         RawPoint::new(self.x as f32, self.z as f32)
     }
 }
 
 impl Default for SdePoint {
     fn default() -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Self::new(0, 0, 0)
     }
 }
 
 impl From<[i64; 3]> for SdePoint {
     fn from(value: [i64; 3]) -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Self {
             x: value[0],
             y: value[1],
@@ -99,12 +126,18 @@ impl From<[i64; 3]> for SdePoint {
 
 impl From<SdePoint> for [i64; 3] {
     fn from(val: SdePoint) -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         [val.x, val.y, val.z]
     }
 }
 
 impl From<SdePoint> for [f64; 3] {
     fn from(val: SdePoint) -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         [val.x as f64, val.y as f64, val.z as f64]
     }
 }
@@ -113,6 +146,9 @@ impl TryInto<[f32; 2]> for SdePoint {
     type Error = GenericError;
 
     fn try_into(self) -> Result<[f32; 2], <Self as TryInto<[f32; 2]>>::Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         if self.x == 0 {
             Ok([self.y as f32, self.z as f32])
         } else if self.y == 0 {
@@ -129,6 +165,9 @@ impl TryInto<[f32; 3]> for SdePoint {
     type Error = GenericError;
 
     fn try_into(self) -> Result<[f32; 3], <Self as TryInto<[f32; 3]>>::Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         if self.x > f32::MAX as i64
             || self.x < f32::MIN as i64
             || self.y > f32::MAX as i64
@@ -146,6 +185,9 @@ impl TryInto<[i64; 2]> for SdePoint {
     type Error = GenericError;
 
     fn try_into(self) -> Result<[i64; 2], <Self as TryInto<[i64; 2]>>::Error> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         if self.x > f32::MAX as i64
             || self.x < f32::MIN as i64
             || self.y > f32::MAX as i64
@@ -169,6 +211,9 @@ impl TryInto<[i64; 2]> for SdePoint {
 
 impl From<[f32; 3]> for SdePoint {
     fn from(value: [f32; 3]) -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Self {
             x: value[0].round() as i64,
             y: value[1].round() as i64,
@@ -179,6 +224,9 @@ impl From<[f32; 3]> for SdePoint {
 
 impl DivAssign<isize> for SdePoint {
     fn div_assign(&mut self, rhs: isize) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.x = self.x / rhs as i64;
         self.y = self.y / rhs as i64;
         self.z = self.z / rhs as i64;
@@ -187,6 +235,9 @@ impl DivAssign<isize> for SdePoint {
 
 impl DivAssign<u64> for SdePoint {
     fn div_assign(&mut self, rhs: u64) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.x = self.x / rhs as i64;
         self.y = self.y / rhs as i64;
         self.z = self.z / rhs as i64;
@@ -195,6 +246,9 @@ impl DivAssign<u64> for SdePoint {
 
 impl DivAssign<i64> for SdePoint {
     fn div_assign(&mut self, rhs: i64) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.x = self.x / rhs;
         self.y = self.y / rhs;
         self.z = self.z / rhs;
@@ -203,6 +257,9 @@ impl DivAssign<i64> for SdePoint {
 
 impl DivAssign<i32> for SdePoint {
     fn div_assign(&mut self, rhs: i32) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.x = self.x / rhs as i64;
         self.y = self.y / rhs as i64;
         self.z = self.z / rhs as i64;
@@ -211,6 +268,9 @@ impl DivAssign<i32> for SdePoint {
 
 impl DivAssign<f32> for SdePoint {
     fn div_assign(&mut self, rhs: f32) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.x = self.x / rhs.round() as i64;
         self.y = self.y / rhs.round() as i64;
         self.z = self.z / rhs.round() as i64;
@@ -219,6 +279,9 @@ impl DivAssign<f32> for SdePoint {
 
 impl MulAssign<isize> for SdePoint {
     fn mul_assign(&mut self, rhs: isize) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.x = self.x * rhs as i64;
         self.y = self.y * rhs as i64;
         self.z = self.z * rhs as i64;
@@ -227,6 +290,9 @@ impl MulAssign<isize> for SdePoint {
 
 impl MulAssign<u64> for SdePoint {
     fn mul_assign(&mut self, rhs: u64) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.x = self.x * rhs as i64;
         self.y = self.y * rhs as i64;
         self.z = self.z * rhs as i64;
@@ -235,6 +301,9 @@ impl MulAssign<u64> for SdePoint {
 
 impl MulAssign<i64> for SdePoint {
     fn mul_assign(&mut self, rhs: i64) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.x = self.x * rhs;
         self.y = self.y * rhs;
         self.z = self.z * rhs;
@@ -243,6 +312,9 @@ impl MulAssign<i64> for SdePoint {
 
 impl MulAssign<i32> for SdePoint {
     fn mul_assign(&mut self, rhs: i32) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.x = self.x * rhs as i64;
         self.y = self.y * rhs as i64;
         self.z = self.z * rhs as i64;
@@ -251,6 +323,9 @@ impl MulAssign<i32> for SdePoint {
 
 impl MulAssign<f32> for SdePoint {
     fn mul_assign(&mut self, rhs: f32) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.x = self.x * rhs.round() as i64;
         self.y = self.y * rhs.round() as i64;
         self.z = self.z * rhs.round() as i64;
@@ -260,6 +335,9 @@ impl MulAssign<f32> for SdePoint {
 impl Mul<isize> for SdePoint {
     type Output = Self;
     fn mul(self, rhs: isize) -> Self::Output {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Self {
             x: self.x * rhs as i64,
             y: self.y * rhs as i64,
@@ -271,6 +349,9 @@ impl Mul<isize> for SdePoint {
 impl Div<isize> for SdePoint {
     type Output = Self;
     fn div(self, rhs: isize) -> Self::Output {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Self {
             x: self.x / rhs as i64,
             y: self.y / rhs as i64,
@@ -282,6 +363,9 @@ impl Div<isize> for SdePoint {
 impl Add<SdePoint> for SdePoint {
     type Output = SdePoint;
     fn add(self, rhs: SdePoint) -> Self::Output {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         SdePoint {
             x: self.x + rhs.x,
             y: self.y + rhs.y,
@@ -293,6 +377,9 @@ impl Add<SdePoint> for SdePoint {
 impl Sub<SdePoint> for SdePoint {
     type Output = SdePoint;
     fn sub(self, rhs: SdePoint) -> Self::Output {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         SdePoint {
             x: self.x - rhs.x,
             y: self.y - rhs.y,
@@ -304,6 +391,9 @@ impl Sub<SdePoint> for SdePoint {
 impl Add<&SdePoint> for SdePoint {
     type Output = SdePoint;
     fn add(self, rhs: &SdePoint) -> Self::Output {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         SdePoint {
             x: self.x + rhs.x,
             y: self.y + rhs.y,
@@ -315,6 +405,9 @@ impl Add<&SdePoint> for SdePoint {
 impl Sub<&SdePoint> for SdePoint {
     type Output = SdePoint;
     fn sub(self, rhs: &SdePoint) -> Self::Output {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         SdePoint {
             x: self.x - rhs.x,
             y: self.y - rhs.y,
@@ -339,6 +432,9 @@ pub struct Moon {
 impl Moon {
     /// Creates a new Moon Strcut. ALl the values are initialized. Needs to be filled
     pub fn new() -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Moon {
             id: 0,
             planet: 0,
@@ -350,6 +446,9 @@ impl Moon {
 
 impl Default for Moon {
     fn default() -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Self::new()
     }
 }
@@ -368,6 +467,9 @@ pub struct Planet {
 impl Planet {
     /// Creates a new Planet Strcut. ALl the values are initialized. Needs to be filled
     pub fn new() -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Planet {
             id: 0,
             solar_system: 0,
@@ -378,6 +480,9 @@ impl Planet {
 
 impl Default for Planet {
     fn default() -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Self::new()
     }
 }
@@ -408,6 +513,9 @@ pub struct SolarSystem {
 impl SolarSystem {
     /// Creates a new Solar System Strcut. ALl the values are initialized. Needs to be filled
     pub fn new(factor: i64) -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         SolarSystem {
             id: 0,
             name: String::new(),
@@ -423,6 +531,9 @@ impl SolarSystem {
 
     /// this function that correct the original 2d coordinates using the correction factor
     pub fn coord2d_to_f64(self) -> [f64; 2] {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         [
             (self.projected_coords.x / self.factor) as f64,
             (self.real_coords.y / self.factor) as f64,
@@ -431,6 +542,9 @@ impl SolarSystem {
 
     /// this function that correct the original 3d coordinates using the correction factor
     pub fn coord3d_to_f64(self) -> [f64; 3] {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         [
             (self.projected_coords.x / self.factor) as f64,
             (self.real_coords.y / self.factor) as f64,
@@ -441,6 +555,9 @@ impl SolarSystem {
 
 impl Default for SolarSystem {
     fn default() -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Self::new(1)
     }
 }
@@ -463,6 +580,9 @@ pub struct Constellation {
 impl Constellation {
     /// Creates a new Constellation Strcut. ALl the values are initialized. Needs to be filled
     pub fn new() -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Constellation {
             id: 0,
             name: String::new(),
@@ -475,6 +595,9 @@ impl Constellation {
 
 impl Default for Constellation {
     fn default() -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Self::new()
     }
 }
@@ -495,6 +618,9 @@ pub struct Region {
 impl Region {
     /// Creates a new Region Strcut. ALl the values are initialized. Needs to be filled
     pub fn new() -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Region {
             id: 0,
             name: String::new(),
@@ -506,6 +632,9 @@ impl Region {
 
 impl Default for Region {
     fn default() -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Self::new()
     }
 }
@@ -539,6 +668,9 @@ pub struct Universe {
 impl Universe {
     /// Creates a new Universe Strcut. ALl the values are initialized. Needs to be filled
     pub fn new(factor: i64) -> Universe {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Universe {
             regions: HashMap::new(),
             constellations: HashMap::new(),
@@ -553,6 +685,9 @@ impl Universe {
 
 impl Default for Universe {
     fn default() -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Self::new(1)
     }
 }
