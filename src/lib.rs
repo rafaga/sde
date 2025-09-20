@@ -34,7 +34,7 @@ pub struct SdeManager<'a> {
 
 impl<'a> SdeManager<'a> {
     /// Creates a new SdeManager using a path to build the connection
-    pub fn new(path: &Path, factor: i64) -> SdeManager {
+    pub fn new(path: &Path, factor: i64) -> SdeManager<'_> {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 

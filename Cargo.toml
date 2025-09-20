@@ -46,11 +46,11 @@ puffin = { version = "0.19.1", optional = true, default-features = false}
 
 # Not Windows:
 [target.'cfg(not(windows))'.dependencies]
-rusqlite = { version = "0.32.1", features = ["bundled-sqlcipher", "backup", "blob", "array"] }
+rusqlite = { version = "0.37.0", features = ["bundled-sqlcipher", "backup", "blob", "array"] }
 
 # Windows:
 [target.'cfg(windows)'.dependencies]
-rusqlite = { version = "0.32.1", features = ["bundled-sqlcipher-vendored-openssl", "backup", "blob", "array"] }
+rusqlite = { version = "0.37.0", features = ["bundled-sqlcipher-vendored-openssl", "backup", "blob", "array"] }
 
 [patch.crates-io]
 # If you want to use the bleeding edge version of egui and eframe:
