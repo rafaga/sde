@@ -1,5 +1,7 @@
 [package]
 name = "sde"
+version = "0.0.19"
+edition = "2024"
 authors = ["Rafael Amador <rafaga@duck.com>"]
 description = "A library to read Eve Online's SDE data from sqlite database."
 readme = "README.md"
@@ -11,6 +13,14 @@ rust-version.workspace = true
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[lib]
+name = "sde"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sde"
+path = "src/bin/main.rs"
 
 [badges]
 # The `maintenance` table indicates the status of the maintenance of
@@ -37,16 +47,18 @@ maintenance = { status = "actively-developed" }
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[features]
-default = []
-puffin = ["dep:puffin"]
-
 [dependencies]
-egui-map = { version = "0.0.16" }
+egui-map = { version = "0.2" }
 # egui-map = { path = "../../../egui-map/" }
-puffin = { version = "0.20.0", optional = true, default-features = false}
-rusqlite = { version = "0.40.1", features = ["bundled-sqlcipher", "backup", "blob", "array"] }
+rstar = "0.13.0"
+
+[dev-dependencies]
+rusqlite = { version = "0.40.0" }
+
+# Not Windows:
+[target.'cfg(not(windows))'.dependencies]
+rusqlite = { version = "0.40.0", features = ["bundled-sqlcipher", "backup", "blob", "array"] }
 
 # Windows:
 [target.'cfg(windows)'.dependencies]
-rusqlite = { version = "0.40.1", features = ["bundled-sqlcipher-vendored-openssl", "backup", "blob", "array"] }
+rusqlite = { version = "0.40.0", features = ["bundled-sqlcipher-vendored-openssl", "backup", "blob", "array"] }

@@ -4,7 +4,7 @@ use std::convert::{From, TryInto};
 use std::io::{Error as GenericError, ErrorKind};
 use std::ops::{Add, Div, DivAssign, Mul, MulAssign, Sub};
 
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct EveRegionArea {
     pub region_id: i64,
     pub name: String,
@@ -14,18 +14,12 @@ pub struct EveRegionArea {
 
 impl Default for EveRegionArea {
     fn default() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Self::new()
     }
 }
 
 impl EveRegionArea {
     pub fn new() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         EveRegionArea {
             region_id: 0,
             name: String::new(),
@@ -35,23 +29,17 @@ impl EveRegionArea {
     }
 }
 
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct SdeLine {
     points: [SdePoint; 2],
 }
 
 impl SdeLine {
     pub fn new(a: SdePoint, b: SdePoint) -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Self { points: [a, b] }
     }
 
     pub fn distance(self) -> f32 {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         let x = self.points[0].x - self.points[1].x;
         let y = self.points[0].y - self.points[1].y;
         let z = self.points[0].z - self.points[1].z;
@@ -60,9 +48,6 @@ impl SdeLine {
     }
 
     pub fn midpoint(self) -> SdePoint {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         let x = (self.points[0].x + self.points[1].x) / 2;
         let y = (self.points[0].y + self.points[1].y) / 2;
         let z = (self.points[0].z + self.points[1].z) / 2;
@@ -70,7 +55,7 @@ impl SdeLine {
     }
 }
 
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 // This can by any object or point with its associated metadata
 /// Struct that contains coordinates to help calculate nearest point in space
 /// 3d point coordinates that it is used in:
@@ -88,34 +73,22 @@ pub struct SdePoint {
 impl SdePoint {
     /// Creates a new Coordinates struct. ALl the coordinates are initialized.
     pub fn new(x: i64, y: i64, z: i64) -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         SdePoint { x, y, z }
     }
 
     pub fn to_rawpoint(self) -> RawPoint {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         RawPoint::new(self.x as f32, self.z as f32)
     }
 }
 
 impl Default for SdePoint {
     fn default() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Self::new(0, 0, 0)
     }
 }
 
 impl From<[i64; 3]> for SdePoint {
     fn from(value: [i64; 3]) -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Self {
             x: value[0],
             y: value[1],
@@ -126,18 +99,12 @@ impl From<[i64; 3]> for SdePoint {
 
 impl From<SdePoint> for [i64; 3] {
     fn from(val: SdePoint) -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         [val.x, val.y, val.z]
     }
 }
 
 impl From<SdePoint> for [f64; 3] {
     fn from(val: SdePoint) -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         [val.x as f64, val.y as f64, val.z as f64]
     }
 }
@@ -146,9 +113,6 @@ impl TryInto<[f32; 2]> for SdePoint {
     type Error = GenericError;
 
     fn try_into(self) -> Result<[f32; 2], <Self as TryInto<[f32; 2]>>::Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         if self.x == 0 {
             Ok([self.y as f32, self.z as f32])
         } else if self.y == 0 {
@@ -168,9 +132,6 @@ impl TryInto<[f32; 3]> for SdePoint {
     type Error = GenericError;
 
     fn try_into(self) -> Result<[f32; 3], <Self as TryInto<[f32; 3]>>::Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         if self.x > f32::MAX as i64
             || self.x < f32::MIN as i64
             || self.y > f32::MAX as i64
@@ -188,9 +149,6 @@ impl TryInto<[i64; 2]> for SdePoint {
     type Error = GenericError;
 
     fn try_into(self) -> Result<[i64; 2], <Self as TryInto<[i64; 2]>>::Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         if self.x > f32::MAX as i64
             || self.x < f32::MIN as i64
             || self.y > f32::MAX as i64
@@ -217,9 +175,6 @@ impl TryInto<[i64; 2]> for SdePoint {
 
 impl From<[f32; 3]> for SdePoint {
     fn from(value: [f32; 3]) -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Self {
             x: value[0].round() as i64,
             y: value[1].round() as i64,
@@ -230,9 +185,6 @@ impl From<[f32; 3]> for SdePoint {
 
 impl DivAssign<isize> for SdePoint {
     fn div_assign(&mut self, rhs: isize) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         self.x = self.x / rhs as i64;
         self.y = self.y / rhs as i64;
         self.z = self.z / rhs as i64;
@@ -241,9 +193,6 @@ impl DivAssign<isize> for SdePoint {
 
 impl DivAssign<u64> for SdePoint {
     fn div_assign(&mut self, rhs: u64) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         self.x = self.x / rhs as i64;
         self.y = self.y / rhs as i64;
         self.z = self.z / rhs as i64;
@@ -252,9 +201,6 @@ impl DivAssign<u64> for SdePoint {
 
 impl DivAssign<i64> for SdePoint {
     fn div_assign(&mut self, rhs: i64) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         self.x = self.x / rhs;
         self.y = self.y / rhs;
         self.z = self.z / rhs;
@@ -263,9 +209,6 @@ impl DivAssign<i64> for SdePoint {
 
 impl DivAssign<i32> for SdePoint {
     fn div_assign(&mut self, rhs: i32) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         self.x = self.x / rhs as i64;
         self.y = self.y / rhs as i64;
         self.z = self.z / rhs as i64;
@@ -274,9 +217,6 @@ impl DivAssign<i32> for SdePoint {
 
 impl DivAssign<f32> for SdePoint {
     fn div_assign(&mut self, rhs: f32) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         self.x = self.x / rhs.round() as i64;
         self.y = self.y / rhs.round() as i64;
         self.z = self.z / rhs.round() as i64;
@@ -285,9 +225,6 @@ impl DivAssign<f32> for SdePoint {
 
 impl MulAssign<isize> for SdePoint {
     fn mul_assign(&mut self, rhs: isize) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         self.x = self.x * rhs as i64;
         self.y = self.y * rhs as i64;
         self.z = self.z * rhs as i64;
@@ -296,9 +233,6 @@ impl MulAssign<isize> for SdePoint {
 
 impl MulAssign<u64> for SdePoint {
     fn mul_assign(&mut self, rhs: u64) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         self.x = self.x * rhs as i64;
         self.y = self.y * rhs as i64;
         self.z = self.z * rhs as i64;
@@ -307,9 +241,6 @@ impl MulAssign<u64> for SdePoint {
 
 impl MulAssign<i64> for SdePoint {
     fn mul_assign(&mut self, rhs: i64) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         self.x = self.x * rhs;
         self.y = self.y * rhs;
         self.z = self.z * rhs;
@@ -318,9 +249,6 @@ impl MulAssign<i64> for SdePoint {
 
 impl MulAssign<i32> for SdePoint {
     fn mul_assign(&mut self, rhs: i32) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         self.x = self.x * rhs as i64;
         self.y = self.y * rhs as i64;
         self.z = self.z * rhs as i64;
@@ -329,9 +257,6 @@ impl MulAssign<i32> for SdePoint {
 
 impl MulAssign<f32> for SdePoint {
     fn mul_assign(&mut self, rhs: f32) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         self.x = self.x * rhs.round() as i64;
         self.y = self.y * rhs.round() as i64;
         self.z = self.z * rhs.round() as i64;
@@ -341,9 +266,6 @@ impl MulAssign<f32> for SdePoint {
 impl Mul<isize> for SdePoint {
     type Output = Self;
     fn mul(self, rhs: isize) -> Self::Output {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Self {
             x: self.x * rhs as i64,
             y: self.y * rhs as i64,
@@ -355,9 +277,6 @@ impl Mul<isize> for SdePoint {
 impl Div<isize> for SdePoint {
     type Output = Self;
     fn div(self, rhs: isize) -> Self::Output {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Self {
             x: self.x / rhs as i64,
             y: self.y / rhs as i64,
@@ -369,9 +288,6 @@ impl Div<isize> for SdePoint {
 impl Add<SdePoint> for SdePoint {
     type Output = SdePoint;
     fn add(self, rhs: SdePoint) -> Self::Output {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         SdePoint {
             x: self.x + rhs.x,
             y: self.y + rhs.y,
@@ -383,9 +299,6 @@ impl Add<SdePoint> for SdePoint {
 impl Sub<SdePoint> for SdePoint {
     type Output = SdePoint;
     fn sub(self, rhs: SdePoint) -> Self::Output {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         SdePoint {
             x: self.x - rhs.x,
             y: self.y - rhs.y,
@@ -397,9 +310,6 @@ impl Sub<SdePoint> for SdePoint {
 impl Add<&SdePoint> for SdePoint {
     type Output = SdePoint;
     fn add(self, rhs: &SdePoint) -> Self::Output {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         SdePoint {
             x: self.x + rhs.x,
             y: self.y + rhs.y,
@@ -411,9 +321,6 @@ impl Add<&SdePoint> for SdePoint {
 impl Sub<&SdePoint> for SdePoint {
     type Output = SdePoint;
     fn sub(self, rhs: &SdePoint) -> Self::Output {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         SdePoint {
             x: self.x - rhs.x,
             y: self.y - rhs.y,
@@ -423,7 +330,7 @@ impl Sub<&SdePoint> for SdePoint {
 }
 
 /// Abstraction for a Planet Moons. It store data relevant to this entity
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct Moon {
     /// Moon Identifier
     pub id: u32,
@@ -438,9 +345,6 @@ pub struct Moon {
 impl Moon {
     /// Creates a new Moon Strcut. ALl the values are initialized. Needs to be filled
     pub fn new() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Moon {
             id: 0,
             planet: 0,
@@ -452,15 +356,12 @@ impl Moon {
 
 impl Default for Moon {
     fn default() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Self::new()
     }
 }
 
 /// Abstraction for a Planet. It store data relevant to this entity
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct Planet {
     /// Planet identifier
     pub id: u32,
@@ -473,9 +374,6 @@ pub struct Planet {
 impl Planet {
     /// Creates a new Planet Strcut. ALl the values are initialized. Needs to be filled
     pub fn new() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Planet {
             id: 0,
             solar_system: 0,
@@ -486,15 +384,12 @@ impl Planet {
 
 impl Default for Planet {
     fn default() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Self::new()
     }
 }
 
 /// Abstraction for a Solar System. It store data relevant to this entity
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct SolarSystem {
     /// Solar System identifier
     pub id: u32,
@@ -519,9 +414,6 @@ pub struct SolarSystem {
 impl SolarSystem {
     /// Creates a new Solar System Strcut. ALl the values are initialized. Needs to be filled
     pub fn new(factor: i64) -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         SolarSystem {
             id: 0,
             name: String::new(),
@@ -537,9 +429,6 @@ impl SolarSystem {
 
     /// this function that correct the original 2d coordinates using the correction factor
     pub fn coord2d_to_f64(self) -> [f64; 2] {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         [
             (self.projected_coords.x / self.factor) as f64,
             (self.real_coords.y / self.factor) as f64,
@@ -548,9 +437,6 @@ impl SolarSystem {
 
     /// this function that correct the original 3d coordinates using the correction factor
     pub fn coord3d_to_f64(self) -> [f64; 3] {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         [
             (self.projected_coords.x / self.factor) as f64,
             (self.real_coords.y / self.factor) as f64,
@@ -561,15 +447,12 @@ impl SolarSystem {
 
 impl Default for SolarSystem {
     fn default() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Self::new(1)
     }
 }
 
 /// Abstraction for a Constellation. It store data relevant to this entity
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct Constellation {
     /// Constellation Identifier
     pub id: u32,
@@ -586,9 +469,6 @@ pub struct Constellation {
 impl Constellation {
     /// Creates a new Constellation Strcut. ALl the values are initialized. Needs to be filled
     pub fn new() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Constellation {
             id: 0,
             name: String::new(),
@@ -601,15 +481,12 @@ impl Constellation {
 
 impl Default for Constellation {
     fn default() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Self::new()
     }
 }
 
 /// Abstraction for a Region. It store data relevant to this entity
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct Region {
     /// Region Identifier
     pub id: u32,
@@ -624,9 +501,6 @@ pub struct Region {
 impl Region {
     /// Creates a new Region Strcut. ALl the values are initialized. Needs to be filled
     pub fn new() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Region {
             id: 0,
             name: String::new(),
@@ -638,9 +512,6 @@ impl Region {
 
 impl Default for Region {
     fn default() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Self::new()
     }
 }
@@ -674,9 +545,6 @@ pub struct Universe {
 impl Universe {
     /// Creates a new Universe Strcut. ALl the values are initialized. Needs to be filled
     pub fn new(factor: i64) -> Universe {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Universe {
             regions: HashMap::new(),
             constellations: HashMap::new(),
@@ -691,9 +559,364 @@ impl Universe {
 
 impl Default for Universe {
     fn default() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Self::new(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---------------------------------------------------------------------
+    // SdePoint
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn sdepoint_new_sets_coordinates() {
+        let point = SdePoint::new(10, -20, 30);
+        assert_eq!(point.x, 10);
+        assert_eq!(point.y, -20);
+        assert_eq!(point.z, 30);
+    }
+
+    #[test]
+    fn sdepoint_default_is_origin() {
+        let point = SdePoint::default();
+        assert_eq!(point.x, 0);
+        assert_eq!(point.y, 0);
+        assert_eq!(point.z, 0);
+        assert_eq!(point, SdePoint::new(0, 0, 0));
+    }
+
+    #[test]
+    fn sdepoint_from_i64_array() {
+        let point = SdePoint::from([1, 2, 3]);
+        assert_eq!(point, SdePoint::new(1, 2, 3));
+    }
+
+    #[test]
+    fn sdepoint_from_f32_array_rounds_values() {
+        let point = SdePoint::from([1.4, 1.5, -1.5]);
+        // f32::round rounds half away from zero
+        assert_eq!(point, SdePoint::new(1, 2, -2));
+    }
+
+    #[test]
+    fn sdepoint_into_i64_array() {
+        let values: [i64; 3] = SdePoint::new(7, 8, 9).into();
+        assert_eq!(values, [7, 8, 9]);
+    }
+
+    #[test]
+    fn sdepoint_into_f64_array() {
+        let values: [f64; 3] = SdePoint::new(7, 8, 9).into();
+        assert_eq!(values, [7.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    fn sdepoint_to_rawpoint_uses_x_and_z() {
+        let raw = SdePoint::new(11, 22, 33).to_rawpoint();
+        assert_eq!(raw.components, [11.0, 33.0]);
+    }
+
+    #[test]
+    fn sdepoint_try_into_f32_pair_pivot_on_x() {
+        let result: [f32; 2] = SdePoint::new(0, 20, 30).try_into().unwrap();
+        assert_eq!(result, [20.0, 30.0]);
+    }
+
+    #[test]
+    fn sdepoint_try_into_f32_pair_pivot_on_y() {
+        let result: [f32; 2] = SdePoint::new(10, 0, 30).try_into().unwrap();
+        assert_eq!(result, [10.0, 30.0]);
+    }
+
+    #[test]
+    fn sdepoint_try_into_f32_pair_pivot_on_z() {
+        let result: [f32; 2] = SdePoint::new(10, 20, 0).try_into().unwrap();
+        assert_eq!(result, [10.0, 20.0]);
+    }
+
+    #[test]
+    fn sdepoint_try_into_f32_pair_fails_without_pivot() {
+        let result: Result<[f32; 2], GenericError> = SdePoint::new(10, 20, 30).try_into();
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn sdepoint_try_into_f32_trio_converts_values() {
+        let result: [f32; 3] = SdePoint::new(10, -20, 30).try_into().unwrap();
+        assert_eq!(result, [10.0, -20.0, 30.0]);
+    }
+
+    #[test]
+    fn sdepoint_try_into_f32_trio_never_overflows() {
+        // The guard compares against `f32::MAX as i64`, and float-to-int casts
+        // saturate in Rust, so the check can never trigger: even the most
+        // extreme i64 values convert successfully.
+        let result: Result<[f32; 3], GenericError> =
+            SdePoint::new(i64::MAX, i64::MIN, 0).try_into();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn sdepoint_try_into_i64_pair_pivot_on_x() {
+        let result: [i64; 2] = SdePoint::new(0, 20, 30).try_into().unwrap();
+        assert_eq!(result, [20, 30]);
+    }
+
+    #[test]
+    fn sdepoint_try_into_i64_pair_pivot_on_y() {
+        let result: [i64; 2] = SdePoint::new(10, 0, 30).try_into().unwrap();
+        assert_eq!(result, [10, 30]);
+    }
+
+    #[test]
+    fn sdepoint_try_into_i64_pair_pivot_on_z() {
+        let result: [i64; 2] = SdePoint::new(10, 20, 0).try_into().unwrap();
+        assert_eq!(result, [10, 20]);
+    }
+
+    #[test]
+    fn sdepoint_try_into_i64_pair_fails_without_pivot() {
+        let result: Result<[i64; 2], GenericError> = SdePoint::new(10, 20, 30).try_into();
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn sdepoint_add_owned() {
+        let sum = SdePoint::new(1, 2, 3) + SdePoint::new(10, 20, 30);
+        assert_eq!(sum, SdePoint::new(11, 22, 33));
+    }
+
+    #[test]
+    fn sdepoint_add_reference() {
+        let sum = SdePoint::new(1, 2, 3) + &SdePoint::new(-1, -2, -3);
+        assert_eq!(sum, SdePoint::new(0, 0, 0));
+    }
+
+    #[test]
+    fn sdepoint_sub_owned() {
+        let diff = SdePoint::new(10, 20, 30) - SdePoint::new(1, 2, 3);
+        assert_eq!(diff, SdePoint::new(9, 18, 27));
+    }
+
+    #[test]
+    fn sdepoint_sub_reference() {
+        let diff = SdePoint::new(10, 20, 30) - &SdePoint::new(10, 20, 30);
+        assert_eq!(diff, SdePoint::new(0, 0, 0));
+    }
+
+    #[test]
+    fn sdepoint_mul_isize() {
+        let product = SdePoint::new(1, -2, 3) * 3isize;
+        assert_eq!(product, SdePoint::new(3, -6, 9));
+    }
+
+    #[test]
+    fn sdepoint_div_isize_truncates() {
+        let quotient = SdePoint::new(7, -7, 10) / 2isize;
+        assert_eq!(quotient, SdePoint::new(3, -3, 5));
+    }
+
+    #[test]
+    fn sdepoint_mul_assign_variants() {
+        let mut point = SdePoint::new(1, 2, 3);
+        point *= 2isize;
+        assert_eq!(point, SdePoint::new(2, 4, 6));
+        point *= 2u64;
+        assert_eq!(point, SdePoint::new(4, 8, 12));
+        point *= -1i64;
+        assert_eq!(point, SdePoint::new(-4, -8, -12));
+        point *= -1i32;
+        assert_eq!(point, SdePoint::new(4, 8, 12));
+    }
+
+    #[test]
+    fn sdepoint_mul_assign_f32_rounds_factor() {
+        let mut point = SdePoint::new(1, 1, 1);
+        point *= 2.5f32; // rounds to 3
+        assert_eq!(point, SdePoint::new(3, 3, 3));
+    }
+
+    #[test]
+    fn sdepoint_div_assign_variants() {
+        let mut point = SdePoint::new(24, 48, 96);
+        point /= 2isize;
+        assert_eq!(point, SdePoint::new(12, 24, 48));
+        point /= 2u64;
+        assert_eq!(point, SdePoint::new(6, 12, 24));
+        point /= 2i64;
+        assert_eq!(point, SdePoint::new(3, 6, 12));
+        point /= 3i32;
+        assert_eq!(point, SdePoint::new(1, 2, 4));
+    }
+
+    #[test]
+    fn sdepoint_div_assign_f32_rounds_divisor() {
+        let mut point = SdePoint::new(10, 20, 30);
+        point /= 2.4f32; // rounds to 2
+        assert_eq!(point, SdePoint::new(5, 10, 15));
+    }
+
+    // ---------------------------------------------------------------------
+    // SdeLine
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn sdeline_distance_345_triangle() {
+        let line = SdeLine::new(SdePoint::new(0, 0, 0), SdePoint::new(3, 4, 0));
+        assert_eq!(line.distance(), 5.0);
+    }
+
+    #[test]
+    fn sdeline_distance_zero_for_same_point() {
+        let line = SdeLine::new(SdePoint::new(5, 5, 5), SdePoint::new(5, 5, 5));
+        assert_eq!(line.distance(), 0.0);
+    }
+
+    #[test]
+    fn sdeline_midpoint() {
+        let line = SdeLine::new(SdePoint::new(0, 0, 0), SdePoint::new(4, 6, 8));
+        assert_eq!(line.midpoint(), SdePoint::new(2, 3, 4));
+    }
+
+    #[test]
+    fn sdeline_midpoint_truncates_odd_values() {
+        let line = SdeLine::new(SdePoint::new(0, 0, 0), SdePoint::new(3, 3, 3));
+        assert_eq!(line.midpoint(), SdePoint::new(1, 1, 1));
+    }
+
+    // ---------------------------------------------------------------------
+    // EveRegionArea
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn everegionarea_new_is_empty() {
+        let area = EveRegionArea::new();
+        assert_eq!(area.region_id, 0);
+        assert_eq!(area.name, String::new());
+        assert_eq!(area.min, SdePoint::default());
+        assert_eq!(area.max, SdePoint::default());
+        assert_eq!(area, EveRegionArea::default());
+    }
+
+    // ---------------------------------------------------------------------
+    // Moon / Planet
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn moon_new_is_zeroed() {
+        let moon = Moon::new();
+        assert_eq!(moon.id, 0);
+        assert_eq!(moon.planet, 0);
+        assert_eq!(moon.index, 0);
+        assert_eq!(moon.solar_system, 0);
+        assert_eq!(moon, Moon::default());
+    }
+
+    #[test]
+    fn planet_new_is_zeroed() {
+        let planet = Planet::new();
+        assert_eq!(planet.id, 0);
+        assert_eq!(planet.solar_system, 0);
+        assert_eq!(planet.index, 0);
+        assert_eq!(planet, Planet::default());
+    }
+
+    // ---------------------------------------------------------------------
+    // SolarSystem
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn solarsystem_new_initializes_with_factor() {
+        let system = SolarSystem::new(1000);
+        assert_eq!(system.id, 0);
+        assert_eq!(system.name, String::new());
+        assert_eq!(system.region, 0);
+        assert_eq!(system.constellation, 0);
+        assert!(system.planets.is_empty());
+        assert!(system.connections.is_empty());
+        assert_eq!(system.real_coords, SdePoint::default());
+        assert_eq!(system.projected_coords, SdePoint::default());
+        assert_eq!(system.factor, 1000);
+    }
+
+    #[test]
+    fn solarsystem_default_factor_is_one() {
+        assert_eq!(SolarSystem::default().factor, 1);
+    }
+
+    #[test]
+    fn solarsystem_coord2d_divides_by_factor() {
+        let mut system = SolarSystem::new(1000);
+        system.projected_coords.x = 2000;
+        system.real_coords.y = 4000;
+        assert_eq!(system.coord2d_to_f64(), [2.0, 4.0]);
+    }
+
+    #[test]
+    fn solarsystem_coord3d_divides_by_factor() {
+        let mut system = SolarSystem::new(1000);
+        system.projected_coords.x = 2000;
+        system.real_coords.y = 4000;
+        system.real_coords.z = 6000;
+        assert_eq!(system.coord3d_to_f64(), [2.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn solarsystem_coords_use_integer_division() {
+        // Coordinates are divided as integers before being cast to f64,
+        // so any fractional part is truncated.
+        let mut system = SolarSystem::new(1000);
+        system.projected_coords.x = 1500;
+        system.real_coords.y = 2500;
+        system.real_coords.z = 3500;
+        assert_eq!(system.clone().coord2d_to_f64(), [1.0, 2.0]);
+        assert_eq!(system.coord3d_to_f64(), [1.0, 2.0, 3.0]);
+    }
+
+    // ---------------------------------------------------------------------
+    // Constellation / Region / Universe
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn constellation_new_is_empty() {
+        let constellation = Constellation::new();
+        assert_eq!(constellation.id, 0);
+        assert_eq!(constellation.name, String::new());
+        assert_eq!(constellation.region, 0);
+        assert!(constellation.solar_systems.is_empty());
+        assert_eq!(constellation.projected_coords, SdePoint::default());
+        assert_eq!(constellation, Constellation::default());
+    }
+
+    #[test]
+    fn region_new_is_empty() {
+        let region = Region::new();
+        assert_eq!(region.id, 0);
+        assert_eq!(region.name, String::new());
+        assert!(region.constellations.is_empty());
+        assert_eq!(region.projected_coords, SdePoint::default());
+        assert_eq!(region, Region::default());
+    }
+
+    #[test]
+    fn universe_new_initializes_with_factor() {
+        let universe = Universe::new(42);
+        assert!(universe.regions.is_empty());
+        assert!(universe.constellations.is_empty());
+        assert!(universe.solar_systems.is_empty());
+        assert!(universe.planets.is_empty());
+        assert!(universe.moons.is_empty());
+        assert!(universe.connections.is_empty());
+        assert_eq!(universe.factor, 42);
+    }
+
+    #[test]
+    fn universe_default_factor_is_one() {
+        assert_eq!(Universe::default().factor, 1);
     }
 }
