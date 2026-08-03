@@ -18,6 +18,11 @@ use std::rc::Rc;
 /// Module that has Data object abstractions to fill with the database data.
 pub mod objects;
 
+/// Lógica para (re)generar `sde.db` (feature `builder`, deshabilitada por
+/// default). Ver `src/builder/mod.rs` para el detalle.
+#[cfg(feature = "builder")]
+pub mod builder;
+
 /// Manages the process of reading SDE data and putting into different data structures
 /// for easy in-memory access.
 #[derive(Clone)]
