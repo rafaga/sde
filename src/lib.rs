@@ -123,7 +123,7 @@ impl<'a> SdeManager<'a> {
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT reg.regionId, reg.regionName, ");
-        query += "AX(reg.max_x) AS region_max_x, MAX(reg.max_y) AS region_max_y, ";
+        query += "MAX(reg.max_x) AS region_max_x, MAX(reg.max_y) AS region_max_y, ";
         query += "MAX(reg.max_z) AS region_max_z, MIN(reg.min_x) AS region_min_x, ";
         query += "MIN(reg.min_y) AS region_min_y, MIN(reg.min_z) AS region_min_z ";
         query += "FROM (SELECT mr.regionId, mr.regionName, ";
@@ -140,16 +140,21 @@ impl<'a> SdeManager<'a> {
         while let Some(row) = rows.next()? {
             let mut region = EveRegionArea::new();
             region.region_id = row.get(0)?;
-            region.region_id = row.get(1)?;
+            region.name = row.get(1)?;
+            // mapSolarSystems.projX/Y/Z have REAL affinity, so MAX()/MIN()
+            // over them (even doubly-aggregated through the subquery) also
+            // yield REAL storage class -- rusqlite's `i64` FromSql impl does
+            // NOT coerce a SQLite REAL into an integer, so this has to be
+            // read as f64 first and cast explicitly.
             region.max = SdePoint::from([
-                row.get::<usize, i64>(2)?,
-                row.get::<usize, i64>(3)?,
-                row.get::<usize, i64>(4)?,
+                row.get::<usize, f64>(2)? as i64,
+                row.get::<usize, f64>(3)? as i64,
+                row.get::<usize, f64>(4)? as i64,
             ]);
             region.min = SdePoint::from([
-                row.get::<usize, i64>(5)?,
-                row.get::<usize, i64>(6)?,
-                row.get::<usize, i64>(7)?,
+                row.get::<usize, f64>(5)? as i64,
+                row.get::<usize, f64>(6)? as i64,
+                row.get::<usize, f64>(7)? as i64,
             ]);
             // we invert the coordinates and swap the min with the max
             if self.invert_coordinates {
@@ -626,13 +631,18 @@ impl<'a> SdeManager<'a> {
         }
 
         let mut statement = connection.prepare(query.as_str())?;
-        let id_list = Rc::new(
-            solar_systems
-                .into_iter()
-                .map(rusqlite::types::Value::from)
-                .collect::<Vec<rusqlite::types::Value>>(),
-        );
-        let mut rows = statement.query(params![id_list])?;
+        let mut rows;
+        if solar_systems.is_empty() {
+            rows = statement.query([])?;
+        } else {
+            let id_list: array::Array = Rc::new(
+                solar_systems
+                    .into_iter()
+                    .map(rusqlite::types::Value::from)
+                    .collect::<Vec<rusqlite::types::Value>>(),
+            );
+            rows = statement.query([id_list])?;
+        }
 
         //while there are regions left to consume
         while let Some(row) = rows.next()? {
@@ -656,17 +666,22 @@ impl<'a> SdeManager<'a> {
         query += "FROM mapMoons ";
 
         if !planets.is_empty() {
-            query += " WHERE planetId=?";
+            query += " WHERE planetId IN rarray(?1)";
         };
 
-        let mut statement = connection.prepare(query.as_str()).unwrap();
-        let id_list = Rc::new(
-            planets
-                .into_iter()
-                .map(rusqlite::types::Value::from)
-                .collect::<Vec<rusqlite::types::Value>>(),
-        );
-        let mut rows = statement.query(params![id_list])?;
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows;
+        if planets.is_empty() {
+            rows = statement.query([])?;
+        } else {
+            let id_list: array::Array = Rc::new(
+                planets
+                    .into_iter()
+                    .map(rusqlite::types::Value::from)
+                    .collect::<Vec<rusqlite::types::Value>>(),
+            );
+            rows = statement.query([id_list])?;
+        }
         //while there are regions left to consume
         while let Some(row) = rows.next()? {
             let mut object = Moon::new();

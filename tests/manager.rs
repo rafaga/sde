@@ -380,30 +380,42 @@ fn planet_filtered_by_solar_system() {
 }
 
 #[test]
-fn planet_with_empty_filter_currently_fails() {
-    // Documents the current behavior: an rarray parameter is passed although
-    // the query has no placeholders (Error::InvalidParameterCount).
+fn planet_with_empty_filter_returns_all() {
+    // Regression test: get_planet() used to always bind an rarray parameter
+    // even when solar_systems was empty and the query had no placeholder,
+    // so rusqlite rejected the call (Error::InvalidParameterCount).
     let fixture = Fixture::new("planet_empty");
     let manager = fixture.manager();
-    assert!(manager.get_planet(vec![]).is_err());
+    let planets = manager.get_planet(vec![]).unwrap();
+    assert_eq!(planets.len(), 3);
 }
 
 #[test]
-fn moon_with_empty_filter_currently_fails() {
-    // Documents the current behavior: an rarray parameter is passed although
-    // the query has no placeholders (Error::InvalidParameterCount).
+fn moon_with_empty_filter_returns_all() {
+    // Regression test: same rarray/no-placeholder bug as get_planet() above.
     let fixture = Fixture::new("moon_empty");
     let manager = fixture.manager();
-    assert!(manager.get_moon(vec![]).is_err());
+    let moons = manager.get_moon(vec![]).unwrap();
+    assert_eq!(moons.len(), 1);
+    assert_eq!(moons[0].id, 50000001);
 }
 
 #[test]
-fn moon_filtered_by_planet_currently_returns_nothing() {
-    // Documents the current behavior: the query binds the carray pointer to a
-    // scalar comparison (`planetId = ?`), which never matches any row.
+fn moon_filtered_by_planet_returns_matching_moons() {
+    // Regression test: the query used to compare the rarray pointer against
+    // a scalar (`WHERE planetId=?`), which never matched any row. It now
+    // uses `WHERE planetId IN rarray(?1)`.
     let fixture = Fixture::new("moon_filtered");
     let manager = fixture.manager();
     let moons = manager.get_moon(vec![40000001]).unwrap();
+    assert_eq!(moons.len(), 1);
+    assert_eq!(moons[0].id, 50000001);
+    assert_eq!(moons[0].planet, 40000001);
+    assert_eq!(moons[0].solar_system, 30000001);
+
+    // A planet with no moons in the fixture must return an empty result --
+    // not an error, and not every moon in the table.
+    let moons = manager.get_moon(vec![40000002]).unwrap();
     assert!(moons.is_empty());
 }
 
@@ -520,10 +532,33 @@ fn abstract_connections_filtered_by_region_requires_both_ends_inside() {
 // -------------------------------------------------------------------------
 
 #[test]
-fn region_coordinates_currently_fails() {
-    // Documents the current behavior: the query contains a typo
-    // (`AX(reg.max_x)` instead of `MAX(reg.max_x)`) so SQLite rejects it.
+fn region_coordinates_returns_bounding_box_per_region() {
+    // Regression test for get_region_coordinates(): it had a typo
+    // (`AX(reg.max_x)` instead of `MAX(reg.max_x)`, so SQLite rejected the
+    // query outright), assigned `region.region_id` twice instead of ever
+    // setting `region.name`, and read MAX()/MIN() over `REAL` columns as
+    // `i64` (rusqlite doesn't coerce that; it now reads `f64` and casts).
     let fixture = Fixture::new("region_coordinates");
     let manager = fixture.manager();
-    assert!(manager.get_region_coordinates().is_err());
+    let mut areas = manager.get_region_coordinates().unwrap();
+    areas.sort_by_key(|area| area.region_id);
+
+    assert_eq!(areas.len(), 2);
+
+    let alpha = &areas[0];
+    assert_eq!(alpha.region_id, 10000001);
+    assert_eq!(alpha.name, "Region Alpha");
+    // Region Alpha's fixture systems are (1000,2000,3000) and
+    // (-1000,-2000,-3000); coordinate inversion (swap + negate) maps this
+    // symmetric bounding box back onto itself.
+    assert_eq!(alpha.max, SdePoint::new(1000, 2000, 3000));
+    assert_eq!(alpha.min, SdePoint::new(-1000, -2000, -3000));
+
+    let beta = &areas[1];
+    assert_eq!(beta.region_id, 10000002);
+    assert_eq!(beta.name, "Region Beta");
+    // Region Beta's fixture systems are (5000,5000,5000) and
+    // (9000,9000,9000); after inversion new_max = -old_min, new_min = -old_max.
+    assert_eq!(beta.max, SdePoint::new(-5000, -5000, -5000));
+    assert_eq!(beta.min, SdePoint::new(-9000, -9000, -9000));
 }
