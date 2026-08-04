@@ -73,7 +73,7 @@ impl<'a> SdeManager<'a> {
         let mut results = Vec::new();
         // centerX, centerY, centerZ,
         let mut query = String::from(
-            "SELECT sos.SolarSystemId, sos.projX, sos.projY, sos.projZ, sos.SolarSystemName, msc.systemConnectionId ",
+            "SELECT sos.SolarSystemId, sos.projX, sos.projY, sos.projZ, sos.SolarSystemName, msc.systemA, msc.systemB ",
         );
         query += " FROM mapSolarSystems AS sos RIGHT OUTER JOIN mapSystemConnections AS msc";
         query += " ON (msc.systemA = sos.SolarSystemId OR msc.systemB = sos.SolarSystemId)";
@@ -107,7 +107,10 @@ impl<'a> SdeManager<'a> {
                 point.set_name(row.get::<usize, String>(4)?);
                 //hash_map.insert(id.try_into().unwrap(), point);
             }
-            point.connections.push(row.get::<usize, String>(5)?);
+            point.connections.push((
+                row.get::<usize, i64>(5)? as usize,
+                row.get::<usize, i64>(6)? as usize,
+            ));
 
         }
         if last_id != isize::MIN {
@@ -215,7 +218,7 @@ impl<'a> SdeManager<'a> {
     pub fn get_connections(&self) -> Result<Vec<MapSegment>, Error> {
         let connection = self.get_standart_connection()?;
 
-        let mut query = String::from("SELECT msc.systemConnectionId, ");
+        let mut query = String::from("SELECT msc.systemA, msc.systemB, ");
         query += "mssa.projX, mssa.projY, mssa.projZ, mssb.projX, mssb.projY, mssb.projZ ";
         query += "FROM mapSystemConnections AS msc INNER JOIN mapSolarSystems AS mssa ";
         query += "ON(msc.systemA = mssa.solarSystemId) INNER JOIN mapSolarSystems AS mssb ";
@@ -226,12 +229,12 @@ impl<'a> SdeManager<'a> {
         let mut results = vec![];
         while let Some(row) = rows.next()? {
             let mut point1 = RawPoint::from([
-                row.get::<usize, f32>(1)? as i64,
-                row.get::<usize, f32>(3)? as i64,
+                row.get::<usize, f32>(2)? as i64,
+                row.get::<usize, f32>(4)? as i64,
             ]);
             let mut point2 = RawPoint::from([
-                row.get::<usize, f32>(4)? as i64,
-                row.get::<usize, f32>(6)? as i64,
+                row.get::<usize, f32>(5)? as i64,
+                row.get::<usize, f32>(7)? as i64,
             ]);
             if self.factor > 1 {
                 point1 /= self.factor;
@@ -244,8 +247,11 @@ impl<'a> SdeManager<'a> {
                 point1 *= -1;
                 point2 *= -1;
             }
-            let id = row.get::<usize, String>(0)?;
-            let segment = MapSegment::new(Rc::from(id), point1, point2);
+            let id = (
+                row.get::<usize, i64>(0)? as usize,
+                row.get::<usize, i64>(1)? as usize,
+            );
+            let segment = MapSegment::new(id, point1, point2);
             results.push(segment);
         }
         Ok(results)
@@ -255,7 +261,7 @@ impl<'a> SdeManager<'a> {
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT mas.solarSystemId, mas.x, mas.y, mas.regionId, ");
-        query += "  msc.systemConnectionId, mss.solarSystemName ";
+        query += "  msc.systemA, msc.systemB, mss.solarSystemName ";
         query += " FROM mapAbstractSystems AS mas RIGHT OUTER JOIN mapSystemConnections AS msc ";
         query += " ON(msc.systemA = mas.solarSystemId OR msc.systemB = mas.solarSystemId) ";
         query += " INNER JOIN mapSolarSystems AS mss ON (mss.solarSystemId = mas.solarSystemId) ";
@@ -297,9 +303,12 @@ impl<'a> SdeManager<'a> {
                     raw_point *= self.factor.abs();
                 }
                 point = MapPoint::new(id.try_into().unwrap(), raw_point);
-                point.set_name(row.get::<usize, String>(5)?);
+                point.set_name(row.get::<usize, String>(6)?);
             }
-            point.connections.push(row.get::<usize, String>(4)?);
+            point.connections.push((
+                row.get::<usize, i64>(4)? as usize,
+                row.get::<usize, i64>(5)? as usize,
+            ));
         }
         if current_index != isize::MIN {
             result.push(point.clone());
@@ -310,7 +319,7 @@ impl<'a> SdeManager<'a> {
     pub fn get_abstract_connections(&self, regions: Vec<u32>) -> Result<Vec<MapSegment>, Error> {
         let connection = self.get_standart_connection()?;
 
-        let mut query = String::from("SELECT msc.systemConnectionId, ");
+        let mut query = String::from("SELECT msc.systemA, msc.systemB, ");
         query += "masa.x, masa.y, masb.x, masb.y ";
         query += "FROM mapSystemConnections AS msc INNER JOIN mapAbstractSystems AS masa ";
         query += "ON(msc.systemA = masa.solarSystemId) INNER JOIN mapAbstractSystems AS masb ";
@@ -335,8 +344,8 @@ impl<'a> SdeManager<'a> {
 
         let mut results = vec![];
         while let Some(row) = rows.next()? {
-            let mut point1 = RawPoint::new(row.get::<usize, f32>(1)?, row.get::<usize, f32>(2)?);
-            let mut point2 = RawPoint::new(row.get::<usize, f32>(3)?, row.get::<usize, f32>(4)?);
+            let mut point1 = RawPoint::new(row.get::<usize, f32>(2)?, row.get::<usize, f32>(3)?);
+            let mut point2 = RawPoint::new(row.get::<usize, f32>(4)?, row.get::<usize, f32>(5)?);
             if self.factor > 1 {
                 point1 /= self.factor;
                 point2 /= self.factor;
@@ -344,8 +353,11 @@ impl<'a> SdeManager<'a> {
                 point1 *= self.factor.abs();
                 point2 *= self.factor.abs();
             }
-            let name = row.get::<usize, String>(0)?;
-            let line = MapSegment::new(Rc::from(name), point1, point2);
+            let id = (
+                row.get::<usize, i64>(0)? as usize,
+                row.get::<usize, i64>(1)? as usize,
+            );
+            let line = MapSegment::new(id, point1, point2);
             results.push(line);
         }
         Ok(results)
@@ -360,13 +372,22 @@ impl<'a> SdeManager<'a> {
         // we add the carray module disguised as rarray in rusqlite
         array::load_module(&connection)?;
 
-        let query = ["PRAGMA journey_mode=WAL;","PRAGMA foreign_keys = ON;"].concat();
-        let mut statement = connection.prepare(query.as_str())?;
-        let _ = statement.execute([])?;
-        /*query = "PRAGMA foreign_keys = ON;".to_string();
-        let mut statement = connection.prepare(query.as_str())?;
-        let _ = statement.execute([])?;*/
-        statement.finalize()?;
+        // `SdeManager` only ever runs SELECTs, so `foreign_keys = ON` doesn't
+        // change query results (FK enforcement only applies to writes), but
+        // it's harmless to enable and keeps the connection consistent with
+        // the rest of the codebase. `execute_batch` (unlike `prepare`, which
+        // only compiles the *first* statement in the string) runs every
+        // statement it's given, so this actually takes effect.
+        //
+        // NOTE: this used to also set `PRAGMA journal_mode=WAL` (with a typo,
+        // "journey_mode", so it silently never ran). WAL is intentionally
+        // NOT enabled here: it persists a mode change into the database file
+        // itself and requires write access to the containing directory (to
+        // create the `-wal`/`-shm` siblings) on *every* call to this method,
+        // which would break any consumer shipping a read-only `sde.db`. If
+        // you need WAL for a specific deployment, set it once out-of-band
+        // (e.g. as part of the builder) rather than on every read connection.
+        connection.execute_batch("PRAGMA foreign_keys = ON;")?;
 
         Ok(connection)
     }
@@ -475,14 +496,18 @@ impl<'a> SdeManager<'a> {
         }
         let mut statement = connection.prepare(query.as_str())?;
 
-        let id_list = Rc::new(
-            constellation
-                .into_iter()
-                .map(rusqlite::types::Value::from)
-                .collect::<Vec<rusqlite::types::Value>>(),
-        );
-
-        let mut rows = statement.query(params![id_list])?;
+        let mut rows;
+        if constellation.is_empty() {
+            rows = statement.query([])?;
+        } else {
+            let id_list: array::Array = Rc::new(
+                constellation
+                    .into_iter()
+                    .map(rusqlite::types::Value::from)
+                    .collect::<Vec<rusqlite::types::Value>>(),
+            );
+            rows = statement.query([id_list])?;
+        }
 
         while let Some(row) = rows.next()? {
             let mut object = SolarSystem::new(self.factor);
@@ -507,8 +532,7 @@ impl<'a> SdeManager<'a> {
             result.insert(row.get(0)?, object);
         }
 
-        let mut query = String::from("SELECT systemConnectionId, ");
-        query += "systemA, systemB FROM mapSystemConnections;";
+        let query = String::from("SELECT systemA, systemB FROM mapSystemConnections;");
 
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows = statement.query([])?;
@@ -516,8 +540,8 @@ impl<'a> SdeManager<'a> {
             // Optimization: to avoid printing twice the same line, we are just skipping coordinates
             // for SolarSystems that has an Id less than the current one printed. with the exception
             // of the lowest ID
-            let system_a = row.get::<usize, u32>(1)?;
-            let system_b = row.get::<usize, u32>(2)?;
+            let system_a = row.get::<usize, u32>(0)?;
+            let system_b = row.get::<usize, u32>(1)?;
 
             //we compare the current system with the first, if not the same then we add the coordinates to hashmap
             result.entry(system_a).and_modify(|point| {
@@ -545,13 +569,18 @@ impl<'a> SdeManager<'a> {
         }
 
         let mut statement = connection.prepare(query.as_str())?;
-        let id_list = Rc::new(
-            regions
-                .into_iter()
-                .map(rusqlite::types::Value::from)
-                .collect::<Vec<rusqlite::types::Value>>(),
-        );
-        let mut rows = statement.query(params![id_list])?;
+        let mut rows;
+        if regions.is_empty() {
+            rows = statement.query([])?;
+        } else {
+            let id_list: array::Array = Rc::new(
+                regions
+                    .into_iter()
+                    .map(rusqlite::types::Value::from)
+                    .collect::<Vec<rusqlite::types::Value>>(),
+            );
+            rows = statement.query([id_list])?;
+        }
 
         //while there are regions left to consume
         while let Some(row) = rows.next()? {

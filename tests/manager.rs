@@ -9,12 +9,11 @@
 //! - 3 planets and 1 moon
 //! - 3 abstract systems (2 in Region Alpha, 1 in Region Beta)
 
-use egui_map::map::objects::{MapSegment, RawPoint};
+use egui_map::map::objects::RawPoint;
 use rusqlite::Connection;
 use sde::SdeManager;
 use sde::objects::SdePoint;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Factor used by most tests: coordinates are divided by 100.
@@ -53,9 +52,9 @@ impl Fixture {
                 projX REAL, projY REAL, projZ REAL
             );
             CREATE TABLE mapSystemConnections (
-                systemConnectionId TEXT PRIMARY KEY,
                 systemA INTEGER NOT NULL,
-                systemB INTEGER NOT NULL
+                systemB INTEGER NOT NULL,
+                PRIMARY KEY (systemA, systemB)
             );
             CREATE TABLE mapPlanets (
                 planetId INTEGER PRIMARY KEY,
@@ -85,9 +84,9 @@ impl Fixture {
                 (30000002, 'Sys Two',   20000001, -1000.0, -2000.0, -3000.0),
                 (30000003, 'Sys Three', 20000002,  5000.0,  5000.0,  5000.0),
                 (31000001, 'W-Sys',     20000002,  9000.0,  9000.0,  9000.0);
-            INSERT INTO mapSystemConnections (systemConnectionId, systemA, systemB) VALUES
-                ('conn-1-2', 30000001, 30000002),
-                ('conn-2-3', 30000002, 30000003);
+            INSERT INTO mapSystemConnections (systemA, systemB) VALUES
+                (30000001, 30000002),
+                (30000002, 30000003);
             INSERT INTO mapPlanets (planetId, planetaryIndex, solarSystemId) VALUES
                 (40000001, 1, 30000001),
                 (40000002, 2, 30000001),
@@ -198,7 +197,7 @@ fn system_connections_are_added_bidirectionally() {
         .unwrap()
         .connections
         .iter()
-        .find(|conn| conn.as_str() == "conn-2-3");
+        .find(|&&conn| conn == (30000002, 30000003));
     assert!(connection.is_some());
 }
 
@@ -212,18 +211,14 @@ fn connections_returns_lines_with_scaled_inverted_coords() {
     let manager = fixture.manager();
     let vec_segments = manager.get_connections().unwrap();
     let rtree_segments = rstar::RTree::bulk_load(vec_segments);
-    let test_segment = MapSegment::new(
-        Rc::from("conn-1-2"),
-        RawPoint::new(-10.0, -30.0),
-        RawPoint::new(10.0, 30.0),
-    );
+    let expected_id = (30000001, 30000002);
 
     assert_eq!(rtree_segments.size(), 2);
     let line = rtree_segments
         .iter()
-        .find(|item| item.id == Rc::from("conn-1-2"))
+        .find(|item| item.id == expected_id)
         .expect("conn-1-2 not found");
-    assert_eq!(line.id, test_segment.id);
+    assert_eq!(line.id, expected_id);
     // point1 = system A (30000001): (x, z) scaled and inverted
     assert_eq!(line.raw_line.points[0].components, [-10.0, -30.0]);
     // point2 = system B (30000002)
@@ -290,14 +285,35 @@ fn region_name_filter_is_case_insensitive() {
 // -------------------------------------------------------------------------
 
 #[test]
-fn universe_with_empty_filters_currently_fails() {
-    // Documents the current behavior: get_constellation/get_solarsystem pass
-    // an rarray parameter even when the filter is empty and the query has no
-    // placeholders, and rusqlite rejects the extra parameter
-    // (Error::InvalidParameterCount).
+fn universe_with_empty_filters_returns_everything() {
+    // Regression test: get_constellation()/get_solarsystem() used to always
+    // bind an rarray parameter even when the filter was empty and the query
+    // had no placeholder for it, so rusqlite rejected the call
+    // (Error::InvalidParameterCount). Both now follow the same
+    // `if filter.is_empty() { query([]) } else { query([rarray]) }` pattern
+    // that `get_region` already used correctly.
     let fixture = Fixture::new("universe_empty");
     let mut manager = fixture.manager();
-    assert!(manager.get_universe().is_err());
+    assert!(manager.get_universe().is_ok());
+
+    assert_eq!(manager.universe.regions.len(), 2);
+    assert_eq!(manager.universe.constellations.len(), 2);
+    // get_solarsystem has no K-space filter of its own (unlike
+    // get_systempoints), so all 4 fixture systems come back, including the
+    // out-of-range W-Sys.
+    assert_eq!(manager.universe.solar_systems.len(), 4);
+
+    let const_one = &manager.universe.constellations[&20000001];
+    assert_eq!(const_one.name, "Const One");
+    assert_eq!(const_one.region, 10000001);
+    let mut systems = const_one.solar_systems.clone();
+    systems.sort();
+    assert_eq!(systems, vec![30000001, 30000002]);
+
+    let const_two = &manager.universe.constellations[&20000002];
+    let mut systems = const_two.solar_systems.clone();
+    systems.sort();
+    assert_eq!(systems, vec![30000003, 31000001]);
 }
 
 // -------------------------------------------------------------------------
@@ -474,13 +490,13 @@ fn abstract_connections_without_filter_returns_all_lines() {
     assert_eq!(lines.size(), 2);
     let found = lines
         .iter()
-        .find(|item| item.id == Rc::from("conn-1-2"))
+        .find(|item| item.id == (30000001, 30000002))
         .expect("conn-1-2 not found");
     assert_eq!(found.raw_line.points[0], RawPoint::new(0.1, 0.2));
     assert_eq!(found.raw_line.points[1], RawPoint::new(0.3, 0.4));
     let found = lines
         .iter()
-        .find(|item| item.id == Rc::from("conn-2-3"))
+        .find(|item| item.id == (30000002, 30000003))
         .expect("conn-2-3 not found");
     assert_eq!(found.raw_line.points[0], RawPoint::new(0.3, 0.4));
     assert_eq!(found.raw_line.points[1], RawPoint::new(0.5, 0.6));
@@ -493,14 +509,10 @@ fn abstract_connections_filtered_by_region_requires_both_ends_inside() {
     let lines = manager.get_abstract_connections(vec![10000001]).unwrap();
     // conn-2-3 spans Region Alpha and Region Beta, so it is excluded
     assert_eq!(lines.len(), 1);
-    let segment_test = MapSegment::new(
-        Rc::from("conn-1-2"),
-        RawPoint::new(0.1, 0.2),
-        RawPoint::new(0.3, 0.4),
-    );
-    assert!(lines.iter().any(|line| line.id == segment_test.id
-        && line.raw_line.points[0].components == segment_test.raw_line.points[0].components
-        && line.raw_line.points[1].components == segment_test.raw_line.points[1].components));
+    let expected_id = (30000001, 30000002);
+    assert!(lines.iter().any(|line| line.id == expected_id
+        && line.raw_line.points[0].components == [0.1, 0.2]
+        && line.raw_line.points[1].components == [0.3, 0.4]));
 }
 
 // -------------------------------------------------------------------------

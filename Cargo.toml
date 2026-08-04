@@ -66,8 +66,8 @@ builder = [
 gui = ["builder", "dep:eframe"]
 
 [dependencies]
-egui-map = { version = "0.2" }
-# egui-map = { path = "../../../egui-map/" }
+egui-map = { path = "../egui-map/" }
+# egui-map = { version = "0.3" } # descomentar y borrar la línea de arriba cuando 0.3.0 esté publicado
 rstar = "0.13.0"
 rusqlite = { version = "0.40.1", features = ["bundled", "backup", "blob", "array"] }
 
