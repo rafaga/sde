@@ -107,10 +107,11 @@ impl<'a> SdeManager<'a> {
                 point.set_name(row.get::<usize, String>(4)?);
                 //hash_map.insert(id.try_into().unwrap(), point);
             }
-            point.connections.push((
+            // TODO: Implement correct connection handling
+            /*point.connections.push((
                 row.get::<usize, i64>(5)? as usize,
                 row.get::<usize, i64>(6)? as usize,
-            ));
+            ));*/
 
         }
         if last_id != isize::MIN {
@@ -256,8 +257,9 @@ impl<'a> SdeManager<'a> {
                 row.get::<usize, i64>(0)? as usize,
                 row.get::<usize, i64>(1)? as usize,
             );
-            let segment = MapSegment::new(id, point1, point2);
-            results.push(segment);
+            // TODO: implement correct connection handling
+            //let segment = MapSegment::new(id, point1, point2);
+            //results.push(segment);
         }
         Ok(results)
     }
@@ -310,10 +312,11 @@ impl<'a> SdeManager<'a> {
                 point = MapPoint::new(id.try_into().unwrap(), raw_point);
                 point.set_name(row.get::<usize, String>(6)?);
             }
-            point.connections.push((
+            // TODO: Implement correct connection handling
+            /*point.connections.push((
                 row.get::<usize, i64>(4)? as usize,
                 row.get::<usize, i64>(5)? as usize,
-            ));
+            ));*/
         }
         if current_index != isize::MIN {
             result.push(point.clone());
@@ -362,8 +365,9 @@ impl<'a> SdeManager<'a> {
                 row.get::<usize, i64>(0)? as usize,
                 row.get::<usize, i64>(1)? as usize,
             );
-            let line = MapSegment::new(id, point1, point2);
-            results.push(line);
+            // TODO: implement correct connection handling
+            /*let line = MapSegment::new(id, point1, point2);
+            results.push(line);*/
         }
         Ok(results)
     }

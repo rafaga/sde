@@ -9,6 +9,7 @@
 
 pub mod http;
 pub mod manifest;
+pub mod parser;
 pub mod schema;
 
 // Próximos submódulos (aún no portados desde el prototipo en Python):
@@ -16,9 +17,10 @@ pub mod schema;
 // pub mod dotlan;     // descarga + parseo de mapas SVG (roxmltree)
 //
 // `schema` (DDL STRICT) ya está portado -- ver builder::schema::create_schema().
-// Pendiente por separado y bastante más grande: la escritura final de datos
-// reales del SDE a las tablas que `schema` crea (equivalente a los ~15
-// métodos `_parse_*` de `sde_parser.py` en el prototipo Python).
+// `parser` (escritura de datos) está parcialmente portado -- ver el
+// docstring de builder::parser para el alcance exacto de lo que ya cubre
+// y lo que falta (regiones/constelaciones/sistemas/gates/estrellas/
+// planetas/lunas/conexiones, npcCorporations, factions).
 
 /// Errores del proceso de build. Sin `thiserror` a propósito: es el mismo
 /// patrón "sin abstracción" que ya usa `SdeManager` (propaga los errores de
@@ -31,6 +33,15 @@ pub enum BuilderError {
     Http(reqwest::Error),
     /// El servidor respondió, pero con un status HTTP que no es 2xx.
     HttpStatus { url: String, status: u16 },
+    /// Error al ejecutar una consulta SQL (creación de schema, inserts del
+    /// parser, etc.).
+    Sqlite(rusqlite::Error),
+    /// Un registro del SDE no tiene la forma esperada (campo requerido
+    /// ausente, o de un tipo distinto al esperado). No es un error de
+    /// sintaxis JSON (`Json` ya cubre eso, cuando el archivo ni siquiera
+    /// parsea) ni de E/S (`Io`) -- el archivo se leyó y parseó bien, el
+    /// contenido simplemente no calza con lo que el parser necesita.
+    Data(String),
 }
 
 impl std::fmt::Display for BuilderError {
@@ -41,7 +52,9 @@ impl std::fmt::Display for BuilderError {
             BuilderError::Http(err) => write!(f, "HTTP error: {err}"),
             BuilderError::HttpStatus { url, status } => {
                 write!(f, "{url} responded with status {status}")
-            }
+            },
+            BuilderError::Sqlite(err) => write!(f, "SQLite error: {err}"),
+            BuilderError::Data(message) => write!(f, "malformed SDE record: {message}"),
         }
     }
 }
@@ -51,6 +64,12 @@ impl std::error::Error for BuilderError {}
 impl From<std::io::Error> for BuilderError {
     fn from(err: std::io::Error) -> Self {
         BuilderError::Io(err)
+    }
+}
+
+impl From<rusqlite::Error> for BuilderError {
+    fn from(err: rusqlite::Error) -> Self {
+        BuilderError::Sqlite(err)
     }
 }
 
