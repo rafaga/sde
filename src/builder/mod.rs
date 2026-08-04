@@ -9,11 +9,16 @@
 
 pub mod http;
 pub mod manifest;
+pub mod schema;
 
 // Próximos submódulos (aún no portados desde el prototipo en Python):
 // pub mod sde_index;  // parseo de latest.jsonl y comparación de build number
 // pub mod dotlan;     // descarga + parseo de mapas SVG (roxmltree)
-// pub mod schema;     // DDL STRICT y la escritura final a sqlite (rusqlite)
+//
+// `schema` (DDL STRICT) ya está portado -- ver builder::schema::create_schema().
+// Pendiente por separado y bastante más grande: la escritura final de datos
+// reales del SDE a las tablas que `schema` crea (equivalente a los ~15
+// métodos `_parse_*` de `sde_parser.py` en el prototipo Python).
 
 /// Errores del proceso de build. Sin `thiserror` a propósito: es el mismo
 /// patrón "sin abstracción" que ya usa `SdeManager` (propaga los errores de
