@@ -13,7 +13,7 @@
 //! -- el id del grupo "Sun" y el mapeo `typeId -> starTypeId` que detecta
 //! `parse_types()` -- se pasa explícitamente vía [`StarTypeState`].
 //!
-//! ## Alcance de este archivo (fase 1 + fase 2 + fase 3)
+//! ## Alcance de este archivo (fase 1 + fase 2 + fase 3 + fase 4)
 //!
 //! Cubre las tablas "base" que el resto de entidades referencian por FK y
 //! que no dependen de ninguna tabla de mapa: `invCategories`, `invGroups`,
@@ -28,18 +28,14 @@
 //! `mapRegions` y `mapConstellations`. Equivalen a `_parse_regions` y
 //! `_parse_constellations` en Python.
 //!
-//! Deliberadamente NO incluye todavía (quedan para una siguiente fase):
-//! `mapSolarSystems` (con la proyección isométrica/dimétrica y el filtro
-//! k-space/w-space/abyssal/void), `mapSystemGates`, `mapStars`,
-//! `mapPlanets`, `mapMoons` ni `mapSystemConnections`.
+//! La fase 4 suma `mapSolarSystems`, con el filtro de alcance
+//! k-space/w-space/abyssal/void ([`system_in_scope`]) y la proyección
+//! isométrica ([`isometric_projection_2d`]). Equivale a
+//! `_parse_solar_systems()` en Python.
 //!
-//! Como adelanto de esa fase, ya está portada la fórmula de proyección
-//! isométrica de Python (`calculate_isometric_projection()`) como
-//! [`isometric_projection_2d`], junto con el flag de configuración
-//! [`ParserConfig::force_isometric_position_2d`] que va a controlar si
-//! `parse_solar_systems()` la usa en vez del `position2D` que ya trae CCP
-//! precalculado. Por ahora es una pieza suelta, sin ningún `parse_*` que
-//! la consuma todavía.
+//! Deliberadamente NO incluye todavía (quedan para una siguiente fase):
+//! `mapSystemGates`, `mapStars`, `mapPlanets`, `mapMoons` ni
+//! `mapSystemConnections`.
 //!
 //! ## Formato de archivo soportado
 //!
@@ -110,6 +106,21 @@
 //!   (y probablemente fallaría más abajo al insertar). [`parse_constellations`]
 //!   en cambio cae a `_key` en ambos casos (ausente o presente-pero-no-entero)
 //!   -- más tolerante, mismo resultado con datos bien formados.
+//! - `_parse_solar_systems()` en Python soporta tres algoritmos para
+//!   `projX`/`projY`/`projZ` según `self._config.projection_algorithm`:
+//!   `'isometric'` (`calculate_isometric_projection()`), `'dimetric'`
+//!   (`calculate_dimetric_projection()`, no portado) y cualquier otro
+//!   valor (passthrough crudo de `position.x/y/z` sin transformar,
+//!   tampoco portado). [`parse_solar_systems`] solo cubre el caso
+//!   `'isometric'` -- que es, confirmado contra `database_builder.py`, el
+//!   default real usado hoy -- reusando [`isometric_projection_2d`]. Si
+//!   hace falta soportar `'dimetric'` o el passthrough crudo, hay que
+//!   sumarlos como opciones adicionales de proyección.
+//! - `self._system_names` en Python (poblado en `_parse_solar_systems`,
+//!   junto a `_systems_in_scope`) nunca se lee en ningún lado del
+//!   prototipo -- ni siquiera para un print de progreso, a diferencia de
+//!   `_region_names`/`_constellation_names`. Es dead code puro. Este
+//!   puerto no lo replica.
 
 use crate::builder::BuilderError;
 use rusqlite::Connection;
@@ -148,6 +159,20 @@ pub struct ParserConfig {
     /// `SdeConfig.projected_axis = 1` en Python (`0` para X, `1` para Y,
     /// `2` para Z).
     pub isometric_projected_axis: ProjectedAxis,
+    /// Incluir sistemas k-space (sin `wormholeClassID`). Default `true`,
+    /// igual que `SdeConfig.map_kspace` en Python.
+    pub map_kspace: bool,
+    /// Incluir sistemas de wormhole space. Default `true`, igual que
+    /// `SdeConfig.map_wspace` en Python.
+    pub map_wspace: bool,
+    /// Incluir sistemas de abyssal deadspace. Default `true`, igual que
+    /// `SdeConfig.map_abyssal` en Python.
+    pub map_abyssal: bool,
+    /// Incluir sistemas "void". Default `false`, igual que
+    /// `SdeConfig.map_void` en Python. Ver [`system_in_scope`] para la
+    /// nota sobre por qué, hoy, `map_wspace`/`map_abyssal`/`map_void`
+    /// terminan gateando sobre el mismo chequeo.
+    pub map_void: bool,
 }
 
 impl Default for ParserConfig {
@@ -156,6 +181,10 @@ impl Default for ParserConfig {
             language: "en".to_string(),
             force_isometric_position_2d: false,
             isometric_projected_axis: ProjectedAxis::default(),
+            map_kspace: true,
+            map_wspace: true,
+            map_abyssal: true,
+            map_void: false,
         }
     }
 }
@@ -197,6 +226,24 @@ pub fn isometric_projection_2d(x: f64, y: f64, z: f64, axis: ProjectedAxis) -> (
     }
 }
 
+/// Decide si un sistema solar debe importarse, según los flags
+/// `map_kspace`/`map_wspace`/`map_abyssal`/`map_void`. Puerto exacto de
+/// `_system_in_scope()` en Python.
+///
+/// El SDE reworkeado ya no separa k-space/w-space/abyssal/void por
+/// directorio como el viejo; el único discriminador confirmado en el
+/// propio registro es `wormholeClassID` (solo presente en sistemas que
+/// NO son k-space). CCP no expone un flag más fino para distinguir
+/// abyssal de void a este nivel, así que -- igual que en Python --
+/// `map_wspace`/`map_abyssal`/`map_void` hoy comparten el mismo chequeo
+/// ("¿tiene `wormholeClassID`?").
+fn system_in_scope(wormhole_class_id: Option<i64>, config: &ParserConfig) -> bool {
+    match wormhole_class_id {
+        None => config.map_kspace,
+        Some(_) => config.map_wspace || config.map_abyssal || config.map_void,
+    }
+}
+
 /// Estado compartido entre [`parse_groups`] y [`parse_types`], equivalente
 /// a `SdeParser._stars` (`DataBrigde`) en Python.
 #[derive(Debug, Default)]
@@ -209,6 +256,18 @@ pub struct StarTypeState {
     /// `parse_stars()` en una fase futura del builder (no portada
     /// todavía).
     pub star_type_ids: std::collections::HashMap<i64, i64>,
+}
+
+/// Ids de sistema solar que pasaron el filtro de [`system_in_scope`],
+/// poblado por [`parse_solar_systems`]. Equivalente a
+/// `self._systems_in_scope` en Python, que usan `_parse_stargates`,
+/// `_parse_stars`, `_parse_planets` y `_parse_moons` para filtrar sus
+/// propios registros por `solarSystemID` -- ninguna de esas cuatro está
+/// portada todavía, pero este estado es lo que van a necesitar cuando se
+/// porten.
+#[derive(Debug, Default)]
+pub struct SystemScopeState {
+    pub systems_in_scope: std::collections::HashSet<i64>,
 }
 
 // ---------------------------------------------------------------------
@@ -368,6 +427,22 @@ fn required_position(record: &Value) -> Result<(f64, f64, f64), BuilderError> {
     let y = required_f64(position, "y")?;
     let z = required_f64(position, "z")?;
     Ok((x, y, z))
+}
+
+/// Extrae un campo string plano opcional. Equivalente a `dict.get(key)`
+/// en Python (`None` si falta, sin error).
+fn optional_str<'a>(record: &'a Value, field: &str) -> Option<&'a str> {
+    record.get(field).and_then(Value::as_str)
+}
+
+/// Extrae `record[outer][inner]` como `f64`, devolviendo `None` si falta
+/// cualquiera de los dos niveles (o no es numérico). Equivalente al
+/// patrón `outer_val = record.get(outer); outer_val.get(inner) if
+/// outer_val else None` en Python -- usado para `position2D.x`/`.y`, que
+/// a diferencia de `position` (ver [`required_position`]) es opcional en
+/// ambos niveles.
+fn optional_nested_f64(record: &Value, outer: &str, inner: &str) -> Option<f64> {
+    record.get(outer)?.get(inner).and_then(Value::as_f64)
 }
 
 // ---------------------------------------------------------------------
@@ -721,6 +796,139 @@ pub fn parse_constellations(
 }
 
 // ---------------------------------------------------------------------
+// mapSolarSystems
+// ---------------------------------------------------------------------
+
+/// Puebla `mapSolarSystems` desde
+/// `<sde_directory>/mapSolarSystems.jsonl`, filtrando por
+/// [`system_in_scope`] y acumulando los ids que pasan el filtro en
+/// `state.systems_in_scope`. Requiere que `mapConstellations` ya esté
+/// poblada (FK `mapSolarSystems.constellationId -> mapConstellations.
+/// constellationId`). Devuelve la cantidad de filas insertadas (los
+/// sistemas fuera de alcance NO cuentan). Equivalente a
+/// `_parse_solar_systems()` en Python.
+///
+/// `projX`/`projY`/`projZ`: de las tres, solo las dos que corresponden a
+/// `config.isometric_projected_axis` reciben el valor calculado por
+/// [`isometric_projection_2d`] -- la tercera (la del eje colapsado, que
+/// no aporta información) queda fuera del `INSERT` por completo y toma el
+/// `DEFAULT(0.0)` que ya tienen las tres columnas en el schema STRICT, en
+/// vez de que este código la rellene a mano con un `0.0` explícito.
+/// Mismo resultado numérico que Python con sus defaults reales
+/// (`projection_algorithm='isometric'`). Los algoritmos `'dimetric'` y
+/// `'none'` (passthrough crudo) que Python también soporta ahí no están
+/// portados todavía; si hacen falta, hay que sumarlos como una tercera
+/// opción de proyección aparte de esta.
+///
+/// `position2DX`/`position2DY` usan el `position2D` que ya trae CCP
+/// precalculado, salvo que `config.force_isometric_position_2d` esté
+/// activo -- en cuyo caso se recalculan siempre vía
+/// [`isometric_projection_2d`] (mismo eje configurado), **ignorando** el
+/// valor de CCP, tal como se decidió explícitamente para este flag (ver
+/// su docstring en [`ParserConfig`]).
+pub fn parse_solar_systems(
+    connection: &Connection,
+    sde_directory: &Path,
+    config: &ParserConfig,
+    state: &mut SystemScopeState,
+) -> Result<usize, BuilderError> {
+    // De las tres columnas `projX`/`projY`/`projZ`, solo dos reciben un
+    // valor calculado -- la correspondiente al eje colapsado no aporta
+    // información (ver el docstring de `isometric_projection_2d`, que ya
+    // solo devuelve esos dos componentes). En vez de rellenarla con un
+    // `0.0` calculado a mano en Rust, se deja fuera del INSERT por
+    // completo y se apoya en el propio `DEFAULT(0.0)` que ya tienen las
+    // tres columnas en el schema STRICT -- mismo resultado numérico, pero
+    // sin lógica de reconstrucción de tupla en este archivo. Los nombres
+    // de columna salen de un `match` sobre el enum [`ProjectedAxis`] (no
+    // de un dato externo), así que construir la query con `format!` acá
+    // es seguro.
+    let (proj_col_a, proj_col_b) = match config.isometric_projected_axis {
+        ProjectedAxis::X => ("projY", "projZ"),
+        ProjectedAxis::Y => ("projX", "projZ"),
+        ProjectedAxis::Z => ("projX", "projY"),
+    };
+    let query = format!(
+        "INSERT INTO mapSolarSystems (solarSystemId, solarSystemName, constellationId, \
+         corridor, fringe, hub, international, luminosity, radius, centerX, centerY, centerZ, \
+         regional, security, securityClass, {proj_col_a}, {proj_col_b}, position2DX, position2DY) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)"
+    );
+    let mut insert_system = connection.prepare(&query)?;
+
+    let mut count = 0usize;
+    for record in iter_jsonl_records(sde_directory, "mapSolarSystems")? {
+        let record = record?;
+        let system_id = required_i64(&record, "_key")?;
+        let wormhole_class_id = optional_i64(&record, "wormholeClassID");
+        if !system_in_scope(wormhole_class_id, config) {
+            continue;
+        }
+        state.systems_in_scope.insert(system_id);
+
+        let name = required_localized(&record, "name", config)?;
+        let constellation_id = required_i64(&record, "constellationID")?;
+        let corridor = optional_bool(&record, "corridor");
+        let fringe = optional_bool(&record, "fringe");
+        let hub = optional_bool(&record, "hub");
+        let international = optional_bool(&record, "international");
+        let luminosity = optional_f64(&record, "luminosity");
+        let radius = required_f64(&record, "radius")?;
+        let (center_x, center_y, center_z) = required_position(&record)?;
+
+        let (proj_a, proj_b) = isometric_projection_2d(
+            center_x,
+            center_y,
+            center_z,
+            config.isometric_projected_axis,
+        );
+
+        let regional = optional_bool(&record, "regional");
+        let security = required_f64(&record, "securityStatus")?;
+        let security_class = optional_str(&record, "securityClass");
+
+        let (position_2d_x, position_2d_y) = if config.force_isometric_position_2d {
+            let (x2d, y2d) = isometric_projection_2d(
+                center_x,
+                center_y,
+                center_z,
+                config.isometric_projected_axis,
+            );
+            (Some(x2d), Some(y2d))
+        } else {
+            (
+                optional_nested_f64(&record, "position2D", "x"),
+                optional_nested_f64(&record, "position2D", "y"),
+            )
+        };
+
+        insert_system.execute(rusqlite::params![
+            system_id,
+            name,
+            constellation_id,
+            corridor,
+            fringe,
+            hub,
+            international,
+            luminosity,
+            radius,
+            center_x,
+            center_y,
+            center_z,
+            regional,
+            security,
+            security_class,
+            proj_a,
+            proj_b,
+            position_2d_x,
+            position_2d_y,
+        ])?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+// ---------------------------------------------------------------------
 // Orquestador
 // ---------------------------------------------------------------------
 
@@ -739,6 +947,7 @@ pub struct ParseSummary {
     pub star_types: usize,
     pub regions: usize,
     pub constellations: usize,
+    pub solar_systems: usize,
 }
 
 /// Corre el pipeline de parseo completo sobre `sde_directory`, en el mismo
@@ -761,13 +970,13 @@ pub struct ParseSummary {
 ///
 /// ## Alcance actual
 ///
-/// Hoy en día cubre las 8 funciones ya portadas (fase 1 + fase 2 + fase
-/// 3): categorías, grupos, tipos (+ `typeStar`), razas, corporaciones
-/// NPC, facciones (+ `factionRace`), regiones y constelaciones. A medida
-/// que se porten más fases (`_parse_solar_systems`, stargates, estrellas,
-/// planetas, lunas, conexiones) se van agregando más llamadas aquí, en el
-/// mismo orden que Python, hasta llegar a paridad completa con
-/// `parse_data()`.
+/// Hoy en día cubre las 9 funciones ya portadas (fase 1 + fase 2 + fase 3
+/// + fase 4): categorías, grupos, tipos (+ `typeStar`), razas,
+/// corporaciones NPC, facciones (+ `factionRace`), regiones,
+/// constelaciones y sistemas solares. A medida que se porten más fases
+/// (stargates, estrellas, planetas, lunas, conexiones) se van agregando
+/// más llamadas aquí, en el mismo orden que Python, hasta llegar a
+/// paridad completa con `parse_data()`.
 pub fn parse_data(
     connection: &mut Connection,
     sde_directory: &Path,
@@ -784,6 +993,8 @@ pub fn parse_data(
     let factions = parse_factions(&tx, sde_directory, config)?;
     let regions = parse_regions(&tx, sde_directory, config)?;
     let constellations = parse_constellations(&tx, sde_directory, config)?;
+    let mut scope = SystemScopeState::default();
+    let solar_systems = parse_solar_systems(&tx, sde_directory, config, &mut scope)?;
 
     tx.commit()?;
 
@@ -797,6 +1008,7 @@ pub fn parse_data(
         star_types: state.star_type_ids.len(),
         regions,
         constellations,
+        solar_systems,
     })
 }
 
@@ -1412,6 +1624,240 @@ mod tests {
     }
 
     #[test]
+    fn system_in_scope_kspace_gates_on_map_kspace() {
+        let mut config = ParserConfig::default();
+        assert!(system_in_scope(None, &config)); // default: map_kspace=true
+        config.map_kspace = false;
+        assert!(!system_in_scope(None, &config));
+    }
+
+    #[test]
+    fn system_in_scope_wormhole_gates_on_any_of_three_flags() {
+        let mut config = ParserConfig {
+            map_wspace: false,
+            map_abyssal: false,
+            map_void: false,
+            ..Default::default()
+        };
+        assert!(!system_in_scope(Some(5), &config));
+        config.map_wspace = true;
+        assert!(system_in_scope(Some(5), &config));
+    }
+
+    #[test]
+    fn parse_solar_systems_inserts_kspace_system_with_ccp_position2d() {
+        let dir = TempSdeDir::new(
+            "solar_systems_kspace",
+            &[(
+                "mapSolarSystems.jsonl",
+                "{\"_key\": 30000142, \"name\": {\"en\": \"Jita\"}, \"constellationID\": 20000020, \
+                 \"radius\": 999999999.0, \"position\": {\"x\": -100.0, \"y\": 200.0, \"z\": -300.0}, \
+                 \"securityStatus\": 0.9459, \"securityClass\": \"B\", \"corridor\": false, \
+                 \"fringe\": false, \"hub\": true, \"international\": true, \"regional\": true, \
+                 \"luminosity\": 0.049, \"position2D\": {\"x\": 12.5, \"y\": -7.25}}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapRegions \
+                 (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
+                 VALUES (10000002, 'The Forge', NULL, 0, 0, 0, 5, NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapConstellations \
+                 (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
+                 VALUES (20000020, 'Kimotoro', 10000002, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        let config = ParserConfig::default();
+        let mut scope = SystemScopeState::default();
+
+        let count = parse_solar_systems(&connection, &dir.path, &config, &mut scope).unwrap();
+        assert_eq!(count, 1);
+        assert!(scope.systems_in_scope.contains(&30000142));
+
+        let (name, security, security_class, proj_x, proj_y, proj_z, p2dx, p2dy): (
+            String,
+            f64,
+            String,
+            f64,
+            f64,
+            f64,
+            f64,
+            f64,
+        ) = connection
+            .query_row(
+                "SELECT solarSystemName, security, securityClass, projX, projY, projZ, \
+                 position2DX, position2DY FROM mapSolarSystems WHERE solarSystemId = 30000142",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(name, "Jita");
+        assert_eq!(security, 0.9459);
+        assert_eq!(security_class, "B");
+        // projX/Y/Z: isométrico con eje Y colapsado (default) sobre
+        // (-100, 200, -300) -> projX=-300, projZ=-250; projY no se
+        // inserta explícitamente y sale en 0.0 por el DEFAULT(0.0) del
+        // propio schema (no por un relleno hecho a mano en Rust).
+        assert_eq!((proj_x, proj_y, proj_z), (-300.0, 0.0, -250.0));
+        // position2D sin forzar: el que ya trae el registro (12.5, -7.25),
+        // NO el calculado (-300, -250).
+        assert_eq!((p2dx, p2dy), (12.5, -7.25));
+    }
+
+    #[test]
+    fn parse_solar_systems_force_isometric_ignores_ccp_position2d() {
+        let dir = TempSdeDir::new(
+            "solar_systems_force_isometric",
+            &[(
+                "mapSolarSystems.jsonl",
+                "{\"_key\": 30000142, \"name\": {\"en\": \"Jita\"}, \"constellationID\": 20000020, \
+                 \"radius\": 1.0, \"position\": {\"x\": -100.0, \"y\": 200.0, \"z\": -300.0}, \
+                 \"securityStatus\": 0.9459, \"position2D\": {\"x\": 12.5, \"y\": -7.25}}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapRegions \
+                 (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
+                 VALUES (10000002, 'The Forge', NULL, 0, 0, 0, 5, NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapConstellations \
+                 (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
+                 VALUES (20000020, 'Kimotoro', 10000002, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        let config = ParserConfig {
+            force_isometric_position_2d: true,
+            ..Default::default()
+        };
+        let mut scope = SystemScopeState::default();
+
+        parse_solar_systems(&connection, &dir.path, &config, &mut scope).unwrap();
+
+        let (p2dx, p2dy): (f64, f64) = connection
+            .query_row(
+                "SELECT position2DX, position2DY FROM mapSolarSystems WHERE solarSystemId = 30000142",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        // Forzado: debe ser el calculado (-300, -250), NO el (12.5, -7.25)
+        // que trae el registro.
+        assert_eq!((p2dx, p2dy), (-300.0, -250.0));
+    }
+
+    #[test]
+    fn parse_solar_systems_excludes_out_of_scope_systems() {
+        let dir = TempSdeDir::new(
+            "solar_systems_scope",
+            &[(
+                "mapSolarSystems.jsonl",
+                "{\"_key\": 1, \"name\": {\"en\": \"KSpace\"}, \"constellationID\": 20000020, \
+                 \"radius\": 1.0, \"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}, \
+                 \"securityStatus\": 0.5}\n\
+                 {\"_key\": 2, \"name\": {\"en\": \"WSpace\"}, \"constellationID\": 20000020, \
+                 \"wormholeClassID\": 5, \"radius\": 1.0, \
+                 \"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}, \"securityStatus\": -1.0}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapRegions \
+                 (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
+                 VALUES (10000002, 'The Forge', NULL, 0, 0, 0, 5, NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapConstellations \
+                 (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
+                 VALUES (20000020, 'Kimotoro', 10000002, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        // Excluir k-space; w-space sigue habilitado por default.
+        let config = ParserConfig {
+            map_kspace: false,
+            ..Default::default()
+        };
+        let mut scope = SystemScopeState::default();
+
+        let count = parse_solar_systems(&connection, &dir.path, &config, &mut scope).unwrap();
+        assert_eq!(count, 1);
+        assert!(!scope.systems_in_scope.contains(&1));
+        assert!(scope.systems_in_scope.contains(&2));
+
+        let total: i64 = connection
+            .query_row("SELECT COUNT(*) FROM mapSolarSystems", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn parse_solar_systems_missing_radius_errors() {
+        let dir = TempSdeDir::new(
+            "solar_systems_missing_radius",
+            &[(
+                "mapSolarSystems.jsonl",
+                "{\"_key\": 1, \"name\": {\"en\": \"Test\"}, \"constellationID\": 20000020, \
+                 \"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}, \"securityStatus\": 0.5}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapRegions \
+                 (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
+                 VALUES (10000002, 'The Forge', NULL, 0, 0, 0, 5, NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapConstellations \
+                 (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
+                 VALUES (20000020, 'Kimotoro', 10000002, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        let config = ParserConfig::default();
+        let mut scope = SystemScopeState::default();
+
+        let result = parse_solar_systems(&connection, &dir.path, &config, &mut scope);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn parse_data_happy_path_returns_summary_and_commits() {
         let dir = TempSdeDir::new(
             "parse_data_happy",
@@ -1452,6 +1898,14 @@ mod tests {
                     "{\"_key\": 20000020, \"name\": {\"en\": \"Kimotoro\"}, \"regionID\": 10000002, \
                      \"position\": {\"x\": 110.0, \"y\": 210.0, \"z\": 310.0}}\n",
                 ),
+                (
+                    "mapSolarSystems.jsonl",
+                    "{\"_key\": 30000142, \"name\": {\"en\": \"Jita\"}, \"constellationID\": 20000020, \
+                     \"radius\": 999999999.0, \"position\": {\"x\": -100.0, \"y\": 200.0, \"z\": -300.0}, \
+                     \"securityStatus\": 0.9459, \"securityClass\": \"B\", \"corridor\": false, \
+                     \"fringe\": false, \"hub\": true, \"international\": true, \"regional\": true, \
+                     \"luminosity\": 0.049, \"position2D\": {\"x\": 12.5, \"y\": -7.25}}\n",
+                ),
             ],
         );
         let mut connection = Connection::open_in_memory().unwrap();
@@ -1471,6 +1925,7 @@ mod tests {
                 star_types: 1,
                 regions: 1,
                 constellations: 1,
+                solar_systems: 1,
             }
         );
 
