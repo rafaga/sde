@@ -13,20 +13,21 @@
 //! -- el id del grupo "Sun" y el mapeo `typeId -> starTypeId` que detecta
 //! `parse_types()` -- se pasa explícitamente vía [`StarTypeState`].
 //!
-//! ## Alcance de este archivo (fase 1)
+//! ## Alcance de este archivo (fase 1 + fase 2)
 //!
 //! Cubre las tablas "base" que el resto de entidades referencian por FK y
 //! que no dependen de ninguna tabla de mapa: `invCategories`, `invGroups`,
 //! `invTypes` (incluyendo la detección especial de tipos de estrella que
-//! alimenta a `typeStar`) y `races`. Equivalen a `_parse_categories`,
-//! `_parse_groups`, `_parse_types` y `_parse_races` en Python.
+//! alimenta a `typeStar`), `races` (fase 1), `npcCorporations` y
+//! `factions` + `factionRace` (fase 2). Equivalen a `_parse_categories`,
+//! `_parse_groups`, `_parse_types`, `_parse_races`,
+//! `_parse_npc_corporations` y `_parse_factions` en Python.
 //!
 //! Deliberadamente NO incluye todavía (quedan para una siguiente fase):
-//! `npcCorporations`, `factions` + `factionRace`, `mapRegions`,
-//! `mapConstellations`, `mapSolarSystems` (con la proyección
-//! isométrica/dimétrica y el filtro k-space/w-space/abyssal/void),
-//! `mapSystemGates`, `mapStars`, `mapPlanets`, `mapMoons` ni
-//! `mapSystemConnections`.
+//! `mapRegions`, `mapConstellations`, `mapSolarSystems` (con la
+//! proyección isométrica/dimétrica y el filtro
+//! k-space/w-space/abyssal/void), `mapSystemGates`, `mapStars`,
+//! `mapPlanets`, `mapMoons` ni `mapSystemConnections`.
 //!
 //! ## Formato de archivo soportado
 //!
@@ -71,6 +72,14 @@
 //!   una sola transacción, igual que Python), en vez de envolver cada
 //!   función por separado ahora con una granularidad que no calzaría con
 //!   el comportamiento real de Python de todos modos.
+//! - `_parse_factions()` itera `faction.get('memberRaces', [])` sin
+//!   validar sus elementos -- si alguno no fuera un entero, Python
+//!   simplemente se lo pasaría a `cur.execute()` tal cual y fallaría (o
+//!   no) según el driver. Aquí, [`parse_factions`] valida cada elemento y
+//!   devuelve [`BuilderError::Data`] ante el primero que no sea entero,
+//!   ya que de todos modos violaría `factionRace.raceId INTEGER NOT NULL`
+//!   al insertar -- fallar temprano con un mensaje claro es preferible a
+//!   un error de SQLite genérico más abajo.
 
 use crate::builder::BuilderError;
 use rusqlite::Connection;
@@ -203,6 +212,59 @@ fn optional_bool(record: &Value, field: &str) -> Option<bool> {
 /// `dict.get(key)`.
 fn optional_f64(record: &Value, field: &str) -> Option<f64> {
     record.get(field).and_then(Value::as_f64)
+}
+
+/// Extrae un campo string plano requerido (no localizado -- para campos
+/// como `tickerName` que no traen variantes por idioma). Equivalente a un
+/// acceso `dict[key]` en Python.
+fn required_str<'a>(record: &'a Value, field: &str) -> Result<&'a str, BuilderError> {
+    record.get(field).and_then(Value::as_str).ok_or_else(|| {
+        BuilderError::Data(format!(
+            "registro sin campo requerido `{field}` (o no es un string): {record}"
+        ))
+    })
+}
+
+/// Extrae un campo booleano requerido. Equivalente a un acceso
+/// `dict[key]` en Python.
+fn required_bool(record: &Value, field: &str) -> Result<bool, BuilderError> {
+    record.get(field).and_then(Value::as_bool).ok_or_else(|| {
+        BuilderError::Data(format!(
+            "registro sin campo requerido `{field}` (o no es un booleano): {record}"
+        ))
+    })
+}
+
+/// Extrae un campo de punto flotante requerido. Equivalente a un acceso
+/// `dict[key]` en Python.
+fn required_f64(record: &Value, field: &str) -> Result<f64, BuilderError> {
+    record.get(field).and_then(Value::as_f64).ok_or_else(|| {
+        BuilderError::Data(format!(
+            "registro sin campo requerido `{field}` (o no es un número): {record}"
+        ))
+    })
+}
+
+/// Extrae los ids de un array entero opcional -- vacío si el campo no
+/// está o es `null`, igual que `faction.get('memberRaces', [])` en
+/// Python. Si el campo SÍ está pero no es un array, o alguno de sus
+/// elementos no es entero, es un error de datos (ver "Desviaciones
+/// conocidas" en el docstring del módulo).
+fn optional_i64_array(record: &Value, field: &str) -> Result<Vec<i64>, BuilderError> {
+    match record.get(field) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_i64().ok_or_else(|| {
+                    BuilderError::Data(format!("elemento no entero en el array `{field}`: {item}"))
+                })
+            })
+            .collect(),
+        Some(other) => Err(BuilderError::Data(format!(
+            "campo `{field}` no es un array: {other}"
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -374,6 +436,92 @@ pub fn parse_races(
         let name = required_localized(&record, "name", config)?;
 
         insert_race.execute(rusqlite::params![id, name])?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+// ---------------------------------------------------------------------
+// npcCorporations
+// ---------------------------------------------------------------------
+
+/// Puebla `npcCorporations` desde `<sde_directory>/npcCorporations.jsonl`.
+/// Requiere que `races` ya esté poblada si algún registro trae `raceID`
+/// (FK `npcCorporations.raceId -> races.raceId`). Devuelve la cantidad de
+/// filas insertadas. Equivalente a `_parse_npc_corporations()` en Python.
+pub fn parse_npc_corporations(
+    connection: &Connection,
+    sde_directory: &Path,
+    config: &ParserConfig,
+) -> Result<usize, BuilderError> {
+    let mut insert_corp = connection.prepare(
+        "INSERT INTO npcCorporations (corporationId, corporationName, tickerName, deleted, iconId, raceId) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+
+    let mut count = 0usize;
+    for record in iter_jsonl_records(sde_directory, "npcCorporations")? {
+        let record = record?;
+        let id = required_i64(&record, "_key")?;
+        let name = required_localized(&record, "name", config)?;
+        let ticker = required_str(&record, "tickerName")?;
+        let deleted = required_bool(&record, "deleted")?;
+        let icon_id = optional_i64(&record, "iconID");
+        let race_id = optional_i64(&record, "raceID");
+
+        insert_corp.execute(rusqlite::params![id, name, ticker, deleted, icon_id, race_id])?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+// ---------------------------------------------------------------------
+// factions (+ factionRace)
+// ---------------------------------------------------------------------
+
+/// Puebla `factions` y `factionRace` desde `<sde_directory>/factions.jsonl`.
+/// Requiere que `npcCorporations` ya esté poblada si algún registro trae
+/// `corporationID` (FK `factions.corporationId -> npcCorporations.
+/// corporationId`), y que `races` ya esté poblada para cualquier id en
+/// `memberRaces` (FK `factionRace.raceId -> races.raceId`). Devuelve la
+/// cantidad de facciones insertadas (no cuenta las filas de
+/// `factionRace`). Equivalente a `_parse_factions()` en Python.
+pub fn parse_factions(
+    connection: &Connection,
+    sde_directory: &Path,
+    config: &ParserConfig,
+) -> Result<usize, BuilderError> {
+    let mut insert_faction = connection.prepare(
+        "INSERT INTO factions (factionId, factionName, iconId, sizeFactor, uniqueName, corporationId) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    let mut insert_faction_race =
+        connection.prepare("INSERT INTO factionRace (factionId, raceId) VALUES (?1, ?2)")?;
+
+    let mut count = 0usize;
+    for record in iter_jsonl_records(sde_directory, "factions")? {
+        let record = record?;
+        let id = required_i64(&record, "_key")?;
+        let name = required_localized(&record, "name", config)?;
+        let icon_id = required_i64(&record, "iconID")?;
+        let size_factor = required_f64(&record, "sizeFactor")?;
+        let unique_name = required_bool(&record, "uniqueName")?;
+        let corporation_id = optional_i64(&record, "corporationID");
+        let member_races = optional_i64_array(&record, "memberRaces")?;
+
+        insert_faction.execute(rusqlite::params![
+            id,
+            name,
+            icon_id,
+            size_factor,
+            unique_name,
+            corporation_id
+        ])?;
+
+        for race_id in member_races {
+            insert_faction_race.execute(rusqlite::params![id, race_id])?;
+        }
+
         count += 1;
     }
     Ok(count)
@@ -583,5 +731,206 @@ mod tests {
         let record: Value =
             serde_json::from_str(r#"{"name": {"en": "Jita", "de": "Jita (de)"}}"#).unwrap();
         assert_eq!(localized(&record, "name", &config), Some("Jita (de)"));
+    }
+
+    #[test]
+    fn parse_npc_corporations_inserts_rows() {
+        let dir = TempSdeDir::new(
+            "npc_corporations",
+            &[(
+                "npcCorporations.jsonl",
+                "{\"_key\": 1000004, \"name\": {\"en\": \"CBD Corporation\"}, \
+                 \"tickerName\": \"CBD\", \"deleted\": false, \"iconID\": 500, \"raceID\": 1}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        // races(1) lo exige la FK de npcCorporations.raceId.
+        connection
+            .execute(
+                "INSERT INTO races (raceId, raceName) VALUES (1, 'Caldari')",
+                [],
+            )
+            .unwrap();
+        let config = ParserConfig::default();
+
+        let count = parse_npc_corporations(&connection, &dir.path, &config).unwrap();
+        assert_eq!(count, 1);
+
+        let (name, ticker, deleted, icon_id, race_id): (String, String, i64, i64, i64) =
+            connection
+                .query_row(
+                    "SELECT corporationName, tickerName, deleted, iconId, raceId \
+                     FROM npcCorporations WHERE corporationId = 1000004",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .unwrap();
+        assert_eq!(name, "CBD Corporation");
+        assert_eq!(ticker, "CBD");
+        assert_eq!(deleted, 0);
+        assert_eq!(icon_id, 500);
+        assert_eq!(race_id, 1);
+    }
+
+    #[test]
+    fn parse_npc_corporations_missing_ticker_errors() {
+        // tickerName es TEXT NOT NULL y se accede como campo requerido
+        // (equivalente a corporation['tickerName'] en Python).
+        let dir = TempSdeDir::new(
+            "npc_corp_missing_ticker",
+            &[(
+                "npcCorporations.jsonl",
+                "{\"_key\": 1, \"name\": {\"en\": \"Test\"}, \"deleted\": false}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        let config = ParserConfig::default();
+
+        let result = parse_npc_corporations(&connection, &dir.path, &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_factions_inserts_faction_and_member_races() {
+        let dir = TempSdeDir::new(
+            "factions",
+            &[(
+                "factions.jsonl",
+                "{\"_key\": 500001, \"name\": {\"en\": \"Caldari State\"}, \"iconID\": 600, \
+                 \"sizeFactor\": 3.0, \"uniqueName\": true, \"corporationID\": 1000004, \
+                 \"memberRaces\": [1]}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        // Prerrequisitos de FK: races(1) para factionRace, npcCorporations(1000004)
+        // para factions.corporationId.
+        connection
+            .execute(
+                "INSERT INTO races (raceId, raceName) VALUES (1, 'Caldari')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO npcCorporations \
+                 (corporationId, corporationName, tickerName, deleted, iconId, raceId) \
+                 VALUES (1000004, 'CBD Corporation', 'CBD', 0, 500, 1)",
+                [],
+            )
+            .unwrap();
+        let config = ParserConfig::default();
+
+        let count = parse_factions(&connection, &dir.path, &config).unwrap();
+        assert_eq!(count, 1);
+
+        let (name, icon_id, size_factor, unique_name, corporation_id): (
+            String,
+            i64,
+            f64,
+            i64,
+            i64,
+        ) = connection
+            .query_row(
+                "SELECT factionName, iconId, sizeFactor, uniqueName, corporationId \
+                 FROM factions WHERE factionId = 500001",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(name, "Caldari State");
+        assert_eq!(icon_id, 600);
+        assert_eq!(size_factor, 3.0);
+        assert_eq!(unique_name, 1);
+        assert_eq!(corporation_id, 1000004);
+
+        let member_race: i64 = connection
+            .query_row(
+                "SELECT raceId FROM factionRace WHERE factionId = 500001",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(member_race, 1);
+    }
+
+    #[test]
+    fn parse_factions_without_member_races_inserts_faction_only() {
+        // memberRaces ausente -> factionRace se queda vacía para esta
+        // facción, sin error (equivalente a `faction.get('memberRaces', [])`).
+        let dir = TempSdeDir::new(
+            "factions_no_members",
+            &[(
+                "factions.jsonl",
+                "{\"_key\": 500002, \"name\": {\"en\": \"Minmatar Republic\"}, \"iconID\": 601, \
+                 \"sizeFactor\": 2.5, \"uniqueName\": true}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        let config = ParserConfig::default();
+
+        let count = parse_factions(&connection, &dir.path, &config).unwrap();
+        assert_eq!(count, 1);
+
+        let total_faction_race: i64 = connection
+            .query_row("SELECT COUNT(*) FROM factionRace", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total_faction_race, 0);
+    }
+
+    #[test]
+    fn parse_factions_with_non_integer_member_race_errors() {
+        let dir = TempSdeDir::new(
+            "factions_bad_members",
+            &[(
+                "factions.jsonl",
+                "{\"_key\": 500003, \"name\": {\"en\": \"Bad Faction\"}, \"iconID\": 602, \
+                 \"sizeFactor\": 1.0, \"uniqueName\": false, \"memberRaces\": [1, \"oops\"]}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        let config = ParserConfig::default();
+
+        let result = parse_factions(&connection, &dir.path, &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_factions_missing_size_factor_errors() {
+        // sizeFactor es REAL NOT NULL y se accede como campo requerido
+        // (equivalente a faction['sizeFactor'] en Python).
+        let dir = TempSdeDir::new(
+            "factions_missing_size_factor",
+            &[(
+                "factions.jsonl",
+                "{\"_key\": 1, \"name\": {\"en\": \"Test\"}, \"iconID\": 1, \"uniqueName\": true}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        let config = ParserConfig::default();
+
+        let result = parse_factions(&connection, &dir.path, &config);
+        assert!(result.is_err());
     }
 }
