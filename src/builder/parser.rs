@@ -13,7 +13,7 @@
 //! -- el id del grupo "Sun" y el mapeo `typeId -> starTypeId` que detecta
 //! `parse_types()` -- se pasa explícitamente vía [`StarTypeState`].
 //!
-//! ## Alcance de este archivo (fase 1 + fase 2 + fase 3 + fase 4)
+//! ## Alcance de este archivo (fase 1 + fase 2 + fase 3 + fase 4 + fase 5)
 //!
 //! Cubre las tablas "base" que el resto de entidades referencian por FK y
 //! que no dependen de ninguna tabla de mapa: `invCategories`, `invGroups`,
@@ -33,9 +33,14 @@
 //! isométrica ([`isometric_projection_2d`]). Equivale a
 //! `_parse_solar_systems()` en Python.
 //!
+//! La fase 5 suma `mapSystemGates` ([`parse_stargates`], condicional a
+//! `config.with_gates`), equivalente a `_parse_stargates()` en Python --
+//! ver su docstring para una nota importante sobre por qué esta fase en
+//! particular necesita correr dentro de una transacción explícita (no es
+//! solo una cuestión de atomicidad, como en el resto del pipeline).
+//!
 //! Deliberadamente NO incluye todavía (quedan para una siguiente fase):
-//! `mapSystemGates`, `mapStars`, `mapPlanets`, `mapMoons` ni
-//! `mapSystemConnections`.
+//! `mapStars`, `mapPlanets`, `mapMoons` ni `mapSystemConnections`.
 //!
 //! ## Formato de archivo soportado
 //!
@@ -184,6 +189,11 @@ pub struct ParserConfig {
     /// nota sobre por qué, hoy, `map_wspace`/`map_abyssal`/`map_void`
     /// terminan gateando sobre el mismo chequeo.
     pub map_void: bool,
+    /// Si es `false`, [`parse_data`] omite la fase de stargates
+    /// ([`parse_stargates`]) por completo -- no la llama en absoluto, no
+    /// solo filtra sus resultados. Default `true`, igual que
+    /// `SdeConfig.with_gates` en Python.
+    pub with_gates: bool,
 }
 
 impl Default for ParserConfig {
@@ -196,6 +206,7 @@ impl Default for ParserConfig {
             map_wspace: true,
             map_abyssal: true,
             map_void: false,
+            with_gates: true,
         }
     }
 }
@@ -438,6 +449,17 @@ fn required_position(record: &Value) -> Result<(f64, f64, f64), BuilderError> {
     let y = required_f64(position, "y")?;
     let z = required_f64(position, "z")?;
     Ok((x, y, z))
+}
+
+/// Extrae `record[outer][inner]` como `i64` requerido. Equivalente al
+/// acceso anidado `record[outer][inner]` en Python (ambos niveles son
+/// `dict[key]`, no `.get()`) -- usado para `destination.stargateID`/
+/// `destination.solarSystemID` en [`parse_stargates`].
+fn required_nested_i64(record: &Value, outer: &str, inner: &str) -> Result<i64, BuilderError> {
+    let outer_val = record.get(outer).ok_or_else(|| {
+        BuilderError::Data(format!("registro sin campo requerido `{outer}`: {record}"))
+    })?;
+    required_i64(outer_val, inner)
 }
 
 /// Extrae un campo string plano opcional. Equivalente a `dict.get(key)`
@@ -909,6 +931,89 @@ pub fn parse_solar_systems(
 }
 
 // ---------------------------------------------------------------------
+// mapSystemGates
+// ---------------------------------------------------------------------
+
+/// Puebla `mapSystemGates` desde `<sde_directory>/mapStargates.jsonl`
+/// (el archivo se llama `mapStargates`, aunque la tabla destino se llame
+/// `mapSystemGates` -- así lo nombra el propio SDE). Filtra por
+/// `state.systems_in_scope` (poblado por [`parse_solar_systems`]): un
+/// gate cuyo `solarSystemID` no esté en ese set se omite -- mismo
+/// criterio que `gate['solarSystemID'] not in self._systems_in_scope` en
+/// Python. Requiere que `mapSolarSystems`/`invTypes` ya estén pobladas
+/// (FKs). Devuelve la cantidad de filas insertadas. Equivalente a
+/// `_parse_stargates()` en Python.
+///
+/// # Importante: requiere una transacción explícita
+///
+/// `mapSystemGates.destinationGateId` referencia otra fila de la MISMA
+/// tabla (`systemGateId`), declarada `DEFERRABLE INITIALLY DEFERRED` en
+/// el schema -- eso le permite a SQLite postergar la validación de esa FK
+/// hasta el `COMMIT` de la transacción, en vez de exigir que el gate
+/// destino ya exista en el momento exacto del INSERT. Esto importa porque
+/// los stargates suelen venir en pares que se referencian mutuamente (el
+/// gate de A apunta al de B, y viceversa), así que sea cual sea el orden
+/// del archivo, el primero de los dos en insertarse necesariamente
+/// referencia a uno que todavía no existe.
+///
+/// Verificado empíricamente (sqlite3 con `isolation_level=None`, que
+/// replica el modo autocommit real de SQLite/rusqlite): insertar ese
+/// primer gate **fuera** de una transacción explícita falla con
+/// `FOREIGN KEY constraint failed` -- en modo autocommit cada `INSERT` es
+/// su propia transacción implícita, así que la validación diferida se
+/// dispara igual, de inmediato, al cerrarse esa transacción de una sola
+/// sentencia. Envuelto en una transacción explícita (`BEGIN`/`COMMIT`),
+/// en cambio, ambos INSERTs se resuelven correctamente porque la
+/// validación se pospone hasta el `COMMIT` final, para cuando los dos
+/// gates ya existen.
+///
+/// En la práctica esto significa que llamar a esta función suelta (fuera
+/// de [`parse_data`], sin pasar por `Connection::transaction()`) no solo
+/// pierde la garantía de atomicidad de "todo o nada" que ya se documentó
+/// para el resto del pipeline (ver "Transacciones" en el docstring del
+/// módulo) -- acá puede hacer fallar la inserción de datos perfectamente
+/// válidos, solo por el orden en que aparecen en el archivo.
+pub fn parse_stargates(
+    connection: &Connection,
+    sde_directory: &Path,
+    state: &SystemScopeState,
+) -> Result<usize, BuilderError> {
+    let mut insert_gate = connection.prepare(
+        "INSERT INTO mapSystemGates (systemGateId, solarSystemId, typeId, \
+         positionX, positionY, positionZ, destinationGateId, destinationSystemId) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )?;
+
+    let mut count = 0usize;
+    for record in iter_jsonl_records(sde_directory, "mapStargates")? {
+        let record = record?;
+        let solar_system_id = required_i64(&record, "solarSystemID")?;
+        if !state.systems_in_scope.contains(&solar_system_id) {
+            continue;
+        }
+
+        let id = required_i64(&record, "_key")?;
+        let type_id = required_i64(&record, "typeID")?;
+        let (pos_x, pos_y, pos_z) = required_position(&record)?;
+        let destination_gate_id = required_nested_i64(&record, "destination", "stargateID")?;
+        let destination_system_id = required_nested_i64(&record, "destination", "solarSystemID")?;
+
+        insert_gate.execute(rusqlite::params![
+            id,
+            solar_system_id,
+            type_id,
+            pos_x,
+            pos_y,
+            pos_z,
+            destination_gate_id,
+            destination_system_id,
+        ])?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+// ---------------------------------------------------------------------
 // Orquestador
 // ---------------------------------------------------------------------
 
@@ -928,6 +1033,10 @@ pub struct ParseSummary {
     pub regions: usize,
     pub constellations: usize,
     pub solar_systems: usize,
+    /// `0` tanto si no había gates que importar como si
+    /// `config.with_gates` estaba en `false` (en ese caso, la fase ni
+    /// siquiera se corre) -- no se distingue entre ambos casos.
+    pub stargates: usize,
 }
 
 /// Corre el pipeline de parseo completo sobre `sde_directory`, en el mismo
@@ -950,13 +1059,14 @@ pub struct ParseSummary {
 ///
 /// ## Alcance actual
 ///
-/// Hoy en día cubre las 9 funciones ya portadas (fase 1 + fase 2 + fase 3
-/// + fase 4): categorías, grupos, tipos (+ `typeStar`), razas,
+/// Hoy en día cubre las 10 funciones ya portadas (fase 1 + fase 2 + fase 3
+/// + fase 4 + fase 5): categorías, grupos, tipos (+ `typeStar`), razas,
 /// corporaciones NPC, facciones (+ `factionRace`), regiones,
-/// constelaciones y sistemas solares. A medida que se porten más fases
-/// (stargates, estrellas, planetas, lunas, conexiones) se van agregando
-/// más llamadas aquí, en el mismo orden que Python, hasta llegar a
-/// paridad completa con `parse_data()`.
+/// constelaciones, sistemas solares y stargates (condicional a
+/// `config.with_gates`). A medida que se porten más fases (estrellas,
+/// planetas, lunas, conexiones) se van agregando más llamadas aquí, en el
+/// mismo orden que Python, hasta llegar a paridad completa con
+/// `parse_data()`.
 pub fn parse_data(
     connection: &mut Connection,
     sde_directory: &Path,
@@ -975,6 +1085,11 @@ pub fn parse_data(
     let constellations = parse_constellations(&tx, sde_directory, config)?;
     let mut scope = SystemScopeState::default();
     let solar_systems = parse_solar_systems(&tx, sde_directory, config, &mut scope)?;
+    let stargates = if config.with_gates {
+        parse_stargates(&tx, sde_directory, &scope)?
+    } else {
+        0
+    };
 
     tx.commit()?;
 
@@ -989,6 +1104,7 @@ pub fn parse_data(
         regions,
         constellations,
         solar_systems,
+        stargates,
     })
 }
 
@@ -1822,6 +1938,168 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Prerrequisitos de FK comunes a los tests de `parse_stargates`: dos
+    /// sistemas solares (30000001, 30000002) en la misma constelación, y
+    /// el tipo de item (16, "Stargate") que referencia `mapSystemGates.typeId`.
+    fn insert_stargate_prerequisites(connection: &Connection) {
+        connection
+            .execute(
+                "INSERT INTO invCategories (categoryId, categoryName, published) \
+                 VALUES (1, 'Celestial', 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO invGroups (groupId, categoryId, groupName, anchorable) \
+                 VALUES (1, 1, 'Stargate Group', 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO invTypes (typeId, groupId, typeName, published) \
+                 VALUES (16, 1, 'Stargate', 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapRegions \
+                 (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
+                 VALUES (10000002, 'The Forge', NULL, 0, 0, 0, 5, NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapConstellations \
+                 (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
+                 VALUES (20000020, 'Kimotoro', 10000002, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        for (id, name) in [(30000001, "A"), (30000002, "B")] {
+            connection
+                .execute(
+                    "INSERT INTO mapSolarSystems \
+                     (solarSystemId, solarSystemName, constellationId, radius, centerX, centerY, centerZ, security) \
+                     VALUES (?1, ?2, 20000020, 1.0, 0, 0, 0, 0.5)",
+                    rusqlite::params![id, name],
+                )
+                .unwrap();
+        }
+    }
+
+    /// Fixture de dos stargates que se referencian mutuamente: el gate
+    /// 50000001 (en el sistema 30000001) apunta al 50000002 (en el
+    /// 30000002), y viceversa -- el caso típico en datos reales del SDE.
+    const MUTUAL_STARGATES_JSONL: &str =
+        "{\"_key\": 50000001, \"solarSystemID\": 30000001, \"typeID\": 16, \
+         \"position\": {\"x\": 1.0, \"y\": 2.0, \"z\": 3.0}, \
+         \"destination\": {\"stargateID\": 50000002, \"solarSystemID\": 30000002}}\n\
+         {\"_key\": 50000002, \"solarSystemID\": 30000002, \"typeID\": 16, \
+         \"position\": {\"x\": 4.0, \"y\": 5.0, \"z\": 6.0}, \
+         \"destination\": {\"stargateID\": 50000001, \"solarSystemID\": 30000001}}\n";
+
+    #[test]
+    fn parse_stargates_without_transaction_fails_on_mutual_reference() {
+        // Documenta el comportamiento descrito en el docstring de
+        // parse_stargates: sin una transacción explícita, SQLite opera en
+        // modo autocommit (cada INSERT es su propia transacción
+        // implícita), así que la FK DEFERRABLE de destinationGateId igual
+        // se valida de inmediato -- y el primer gate del par
+        // necesariamente referencia a uno que todavía no existe.
+        let dir = TempSdeDir::new("stargates_no_tx", &[("mapStargates.jsonl", MUTUAL_STARGATES_JSONL)]);
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        insert_stargate_prerequisites(&connection);
+        let mut scope = SystemScopeState::default();
+        scope.systems_in_scope.insert(30000001);
+        scope.systems_in_scope.insert(30000002);
+
+        let result = parse_stargates(&connection, &dir.path, &scope);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_stargates_within_transaction_inserts_mutual_reference() {
+        let dir = TempSdeDir::new("stargates_tx", &[("mapStargates.jsonl", MUTUAL_STARGATES_JSONL)]);
+        let mut connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        insert_stargate_prerequisites(&connection);
+        let mut scope = SystemScopeState::default();
+        scope.systems_in_scope.insert(30000001);
+        scope.systems_in_scope.insert(30000002);
+
+        let tx = connection.transaction().unwrap();
+        let count = parse_stargates(&tx, &dir.path, &scope).unwrap();
+        assert_eq!(count, 2);
+        tx.commit().unwrap();
+
+        let (dest_gate, dest_system): (i64, i64) = connection
+            .query_row(
+                "SELECT destinationGateId, destinationSystemId FROM mapSystemGates \
+                 WHERE systemGateId = 50000001",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(dest_gate, 50000002);
+        assert_eq!(dest_system, 30000002);
+    }
+
+    #[test]
+    fn parse_stargates_skips_systems_outside_scope() {
+        let dir = TempSdeDir::new(
+            "stargates_scope",
+            &[(
+                "mapStargates.jsonl",
+                "{\"_key\": 50000003, \"solarSystemID\": 30000003, \"typeID\": 16, \
+                 \"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}, \
+                 \"destination\": {\"stargateID\": 50000004, \"solarSystemID\": 30000001}}\n",
+            )],
+        );
+        let mut connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        insert_stargate_prerequisites(&connection);
+        // 30000003 NO está en el scope (a diferencia de 30000001/30000002).
+        let mut scope = SystemScopeState::default();
+        scope.systems_in_scope.insert(30000001);
+        scope.systems_in_scope.insert(30000002);
+
+        let tx = connection.transaction().unwrap();
+        let count = parse_stargates(&tx, &dir.path, &scope).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(count, 0);
+
+        let total: i64 = connection
+            .query_row("SELECT COUNT(*) FROM mapSystemGates", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn parse_stargates_missing_type_id_errors() {
+        let dir = TempSdeDir::new(
+            "stargates_missing_type",
+            &[(
+                "mapStargates.jsonl",
+                "{\"_key\": 50000001, \"solarSystemID\": 30000001, \
+                 \"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}, \
+                 \"destination\": {\"stargateID\": 50000002, \"solarSystemID\": 30000002}}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        insert_stargate_prerequisites(&connection);
+        let mut scope = SystemScopeState::default();
+        scope.systems_in_scope.insert(30000001);
+
+        let result = parse_stargates(&connection, &dir.path, &scope);
+        assert!(result.is_err());
+    }
+
     #[test]
     fn parse_data_happy_path_returns_summary_and_commits() {
         let dir = TempSdeDir::new(
@@ -1835,11 +2113,6 @@ mod tests {
                     "groups.jsonl",
                     "{\"_key\": 6, \"categoryID\": 6, \"name\": {\"en\": \"Sun\"}, \"anchorable\": false}\n\
                      {\"_key\": 7, \"categoryID\": 6, \"name\": {\"en\": \"Frigate\"}, \"anchorable\": false}\n",
-                ),
-                (
-                    "types.jsonl",
-                    "{\"_key\": 3000, \"groupID\": 6, \"name\": {\"en\": \"Yellow G5 (ffcc00)\"}, \
-                     \"iconID\": 100, \"published\": true, \"volume\": 0.0}\n",
                 ),
                 ("races.jsonl", "{\"_key\": 1, \"name\": {\"en\": \"Caldari\"}}\n"),
                 (
@@ -1869,7 +2142,25 @@ mod tests {
                      \"radius\": 999999999.0, \"position\": {\"x\": -100.0, \"y\": 200.0, \"z\": -300.0}, \
                      \"securityStatus\": 0.9459, \"securityClass\": \"B\", \"corridor\": false, \
                      \"fringe\": false, \"hub\": true, \"international\": true, \"regional\": true, \
-                     \"luminosity\": 0.049, \"position2D\": {\"x\": 12.5, \"y\": -7.25}}\n",
+                     \"luminosity\": 0.049, \"position2D\": {\"x\": 12.5, \"y\": -7.25}}\n\
+                     {\"_key\": 30002187, \"name\": {\"en\": \"Perimeter\"}, \"constellationID\": 20000020, \
+                     \"radius\": 1.0, \"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}, \
+                     \"securityStatus\": 0.9}\n",
+                ),
+                (
+                    "mapStargates.jsonl",
+                    "{\"_key\": 50000001, \"solarSystemID\": 30000142, \"typeID\": 16, \
+                     \"position\": {\"x\": 1.0, \"y\": 2.0, \"z\": 3.0}, \
+                     \"destination\": {\"stargateID\": 50000002, \"solarSystemID\": 30002187}}\n\
+                     {\"_key\": 50000002, \"solarSystemID\": 30002187, \"typeID\": 16, \
+                     \"position\": {\"x\": 4.0, \"y\": 5.0, \"z\": 6.0}, \
+                     \"destination\": {\"stargateID\": 50000001, \"solarSystemID\": 30000142}}\n",
+                ),
+                (
+                    "types.jsonl",
+                    "{\"_key\": 3000, \"groupID\": 6, \"name\": {\"en\": \"Yellow G5 (ffcc00)\"}, \
+                     \"iconID\": 100, \"published\": true, \"volume\": 0.0}\n\
+                     {\"_key\": 16, \"groupID\": 7, \"name\": {\"en\": \"Stargate\"}, \"published\": true}\n",
                 ),
             ],
         );
@@ -1883,14 +2174,15 @@ mod tests {
             ParseSummary {
                 categories: 1,
                 groups: 2,
-                types: 1,
+                types: 2,
                 races: 1,
                 npc_corporations: 1,
                 factions: 1,
                 star_types: 1,
                 regions: 1,
                 constellations: 1,
-                solar_systems: 1,
+                solar_systems: 2,
+                stargates: 2,
             }
         );
 
@@ -1898,6 +2190,17 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM factionRace", [], |row| row.get(0))
             .unwrap();
         assert_eq!(total_faction_race, 1);
+
+        let (dest_gate, dest_system): (i64, i64) = connection
+            .query_row(
+                "SELECT destinationGateId, destinationSystemId FROM mapSystemGates \
+                 WHERE systemGateId = 50000001",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(dest_gate, 50000002);
+        assert_eq!(dest_system, 30002187);
     }
 
     #[test]
