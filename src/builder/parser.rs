@@ -33,6 +33,14 @@
 //! k-space/w-space/abyssal/void), `mapSystemGates`, `mapStars`,
 //! `mapPlanets`, `mapMoons` ni `mapSystemConnections`.
 //!
+//! Como adelanto de esa fase, ya está portada la fórmula de proyección
+//! isométrica de Python (`calculate_isometric_projection()`) como
+//! [`isometric_projection_2d`], junto con el flag de configuración
+//! [`ParserConfig::force_isometric_position_2d`] que va a controlar si
+//! `parse_solar_systems()` la usa en vez del `position2D` que ya trae CCP
+//! precalculado. Por ahora es una pieza suelta, sin ningún `parse_*` que
+//! la consuma todavía.
+//!
 //! ## Formato de archivo soportado
 //!
 //! Solo JSONL (`SdeConfig.file_format == 'jsonl'` en el prototipo Python,
@@ -109,11 +117,13 @@ use serde_json::Value;
 use std::io::BufRead;
 use std::path::Path;
 
-/// Configuración mínima para esta fase del parser: por ahora, solo lo que
-/// hace falta para localizar nombres (`_localized()` en Python). Los
-/// flags de alcance de sistema solar (k-space/w-space/abyssal/void) y la
-/// proyección isométrica/dimétrica se agregan cuando se porte
-/// `_parse_solar_systems` en una fase futura.
+/// Configuración para el parser. Cubre lo que hace falta para localizar
+/// nombres (`_localized()` en Python) y el cálculo isométrico opcional de
+/// `position2DX`/`position2DY` (ver [`ProjectedAxis`]/
+/// [`isometric_projection_2d`]). Los flags de alcance de sistema solar
+/// (k-space/w-space/abyssal/void) y el algoritmo de proyección dimétrico
+/// (`calculate_dimetric_projection()` en Python, no portado) se agregan
+/// cuando se porte `_parse_solar_systems` en una fase futura.
 #[derive(Debug, Clone)]
 pub struct ParserConfig {
     /// Idioma a extraer de los campos `name`/`description` localizados
@@ -121,13 +131,69 @@ pub struct ParserConfig {
     /// `"en"` si el idioma pedido no está. Default `"en"`, igual que
     /// `SdeConfig.language` en Python.
     pub language: String,
+    /// Si es `true`, `position2DX`/`position2DY` se calculan siempre
+    /// localmente vía [`isometric_projection_2d`], **ignorando** el campo
+    /// `position2D` que ya trae CCP en el SDE reworkeado -- en vez de
+    /// usar directamente el valor que CCP provee precalculado (que es el
+    /// comportamiento por default, `false`).
+    ///
+    /// Nota: todavía no hay ningún `parse_*` que puebla `mapSolarSystems`
+    /// (queda para una fase futura, ver el docstring del módulo), así que
+    /// por ahora este flag no tiene ningún efecto observable -- es la
+    /// pieza de configuración que esa función futura va a consultar.
+    pub force_isometric_position_2d: bool,
+    /// Eje que se colapsa en el cálculo de [`isometric_projection_2d`]
+    /// cuando `force_isometric_position_2d` está activo (sin efecto si no
+    /// lo está). Default [`ProjectedAxis::Y`], igual que
+    /// `SdeConfig.projected_axis = 1` en Python (`0` para X, `1` para Y,
+    /// `2` para Z).
+    pub isometric_projected_axis: ProjectedAxis,
 }
 
 impl Default for ParserConfig {
     fn default() -> Self {
         Self {
             language: "en".to_string(),
+            force_isometric_position_2d: false,
+            isometric_projected_axis: ProjectedAxis::default(),
         }
+    }
+}
+
+/// Eje que se "colapsa" (se descarta) al calcular una proyección
+/// isométrica 2D de un punto 3D -- equivalente al parámetro entero
+/// `projected_axis` de Python (`0` para X, `1` para Y, `2` para Z).
+///
+/// En la fórmula de Python, el componente del eje colapsado siempre
+/// queda en `0.0` en la tupla de salida de 3 elementos; como ese valor
+/// nunca aporta información, [`isometric_projection_2d`] lo omite
+/// directamente y devuelve solo los dos componentes restantes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProjectedAxis {
+    X,
+    /// Default -- coincide con `SdeConfig.projected_axis = 1` en Python.
+    #[default]
+    Y,
+    Z,
+}
+
+/// Proyección isométrica 2D de un punto 3D, colapsando `axis`. Puerto
+/// exacto de `calculate_isometric_projection()` en Python (mismas
+/// fórmulas, mismo eje colapsado); a diferencia de Python, que siempre
+/// devuelve una tupla de 3 con un `0.0` de relleno en el eje colapsado,
+/// esta función devuelve directamente los dos componentes no nulos como
+/// `(x2d, y2d)`.
+///
+/// Fórmulas (de <https://www.compuphase.com/axometr.htm>, según el
+/// comentario original en Python):
+/// - eje Z colapsado: `(x - z, y + (x + z) / 2)`
+/// - eje Y colapsado: `(x - y, z + (x + y) / 2)`
+/// - eje X colapsado: `(y - x, z + (y + x) / 2)`
+pub fn isometric_projection_2d(x: f64, y: f64, z: f64, axis: ProjectedAxis) -> (f64, f64) {
+    match axis {
+        ProjectedAxis::Z => (x - z, y + (x + z) / 2.0),
+        ProjectedAxis::Y => (x - y, z + (x + y) / 2.0),
+        ProjectedAxis::X => (y - x, z + (y + x) / 2.0),
     }
 }
 
@@ -924,6 +990,7 @@ mod tests {
     fn localized_falls_back_to_english() {
         let config = ParserConfig {
             language: "fr".to_string(),
+            ..Default::default()
         };
         let record: Value = serde_json::from_str(r#"{"name": {"en": "Jita", "de": "Jita"}}"#).unwrap();
         // "fr" no está presente -> cae a "en".
@@ -934,10 +1001,45 @@ mod tests {
     fn localized_uses_requested_language_when_present() {
         let config = ParserConfig {
             language: "de".to_string(),
+            ..Default::default()
         };
         let record: Value =
             serde_json::from_str(r#"{"name": {"en": "Jita", "de": "Jita (de)"}}"#).unwrap();
         assert_eq!(localized(&record, "name", &config), Some("Jita (de)"));
+    }
+
+    #[test]
+    fn isometric_projection_2d_matches_python_reference_values() {
+        // Valores de referencia calculados ejecutando
+        // calculate_isometric_projection() de sde_parser.py directamente
+        // con x=100.0, y=200.0, z=300.0 para cada projected_axis (0/1/2),
+        // tomando de la tupla de 3 los dos componentes no forzados a 0.0.
+        let (x, y, z) = (100.0, 200.0, 300.0);
+
+        assert_eq!(
+            isometric_projection_2d(x, y, z, ProjectedAxis::X),
+            (100.0, 450.0)
+        );
+        assert_eq!(
+            isometric_projection_2d(x, y, z, ProjectedAxis::Y),
+            (-100.0, 450.0)
+        );
+        assert_eq!(
+            isometric_projection_2d(x, y, z, ProjectedAxis::Z),
+            (-200.0, 400.0)
+        );
+    }
+
+    #[test]
+    fn parser_config_default_uses_y_axis_and_does_not_force_isometric() {
+        // Coincide con los defaults reales de SdeConfig en Python:
+        // projection_algorithm='isometric', projected_axis=1 (Y) -- pero
+        // aquí el "forzado" está apagado por default, ya que el
+        // comportamiento normal es confiar en el position2D que ya trae
+        // CCP cuando está presente.
+        let config = ParserConfig::default();
+        assert!(!config.force_isometric_position_2d);
+        assert_eq!(config.isometric_projected_axis, ProjectedAxis::Y);
     }
 
     #[test]
