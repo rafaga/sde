@@ -73,11 +73,18 @@ impl<'a> SdeManager<'a> {
         let mut results = Vec::new();
         // centerX, centerY, centerZ,
         let mut query = String::from(
-            "SELECT sos.SolarSystemId, sos.projX, sos.projY, sos.projZ, sos.SolarSystemName, msc.systemA, msc.systemB ",
+            "SELECT sos.SolarSystemId, sos.position2DX, sos.position2DY, sos.SolarSystemName, msc.systemA, msc.systemB ",
         );
         query += " FROM mapSolarSystems AS sos RIGHT OUTER JOIN mapSystemConnections AS msc";
         query += " ON (msc.systemA = sos.SolarSystemId OR msc.systemB = sos.SolarSystemId)";
-        query += " WHERE sos.SolarSystemId BETWEEN ?1 AND ?2 ORDER BY sos.SolarSystemId ASC";
+        query += " WHERE sos.SolarSystemId BETWEEN ?1 AND ?2";
+        // position2DX/Y son NULL-ables (a diferencia de las antiguas
+        // projX/Y/Z, que siempre traían un valor con DEFAULT(0.0)): un
+        // sistema sin proyección 2D calculada (CCP no la trae y no se
+        // forzó el cálculo local, ver ParserConfig::force_isometric_position_2d)
+        // simplemente no aparece en el mapa, en vez de romper la consulta.
+        query += " AND sos.position2DX IS NOT NULL AND sos.position2DY IS NOT NULL";
+        query += " ORDER BY sos.SolarSystemId ASC";
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows = statement.query(params![30000000, 30999999])?;
         let mut last_id = isize::MIN;
@@ -91,10 +98,9 @@ impl<'a> SdeManager<'a> {
                 last_id = id;
                 let x = row.get::<usize, f32>(1)?;
                 let y = row.get::<usize, f32>(2)?;
-                let z = row.get::<usize, f32>(3)?;
 
                 //we get the coordinate point and multiply with the adjust factor
-                let mut coord = SdePoint::from([x as i64, y as i64, z as i64]);
+                let mut coord = RawPoint::new(x, y);
                 if self.factor > 1 {
                     coord /= self.factor;
                 } else if self.factor < -1 {
@@ -103,14 +109,14 @@ impl<'a> SdeManager<'a> {
                 if self.invert_coordinates {
                     coord *= -1;
                 }
-                point = MapPoint::new(id.try_into().unwrap(), coord.to_rawpoint());
-                point.set_name(row.get::<usize, String>(4)?);
+                point = MapPoint::new(id.try_into().unwrap(), coord);
+                point.set_name(row.get::<usize, String>(3)?);
                 //hash_map.insert(id.try_into().unwrap(), point);
             }
             // TODO: Implement correct connection handling
             /*point.connections.push((
+                row.get::<usize, i64>(4)? as usize,
                 row.get::<usize, i64>(5)? as usize,
-                row.get::<usize, i64>(6)? as usize,
             ));*/
 
         }
@@ -125,16 +131,22 @@ impl<'a> SdeManager<'a> {
 
         let mut query = String::from("SELECT reg.regionId, reg.regionName, ");
         query += "MAX(reg.max_x) AS region_max_x, MAX(reg.max_y) AS region_max_y, ";
-        query += "MAX(reg.max_z) AS region_max_z, MIN(reg.min_x) AS region_min_x, ";
-        query += "MIN(reg.min_y) AS region_min_y, MIN(reg.min_z) AS region_min_z ";
+        query += "MIN(reg.min_x) AS region_min_x, MIN(reg.min_y) AS region_min_y ";
         query += "FROM (SELECT mr.regionId, mr.regionName, ";
-        query += "mc.constellationId, MAX(mss.projX) AS max_x, MAX(mss.projY) AS max_y, ";
-        query += "MAX(mss.projZ) AS max_z, MIN(mss.projX) AS min_x, MIN(mss.projY) AS min_y, ";
-        query += "MIN(mss.projZ) AS min_z FROM mapRegions AS mr ";
+        query += "mc.constellationId, MAX(mss.position2DX) AS max_x, MAX(mss.position2DY) AS max_y, ";
+        query += "MIN(mss.position2DX) AS min_x, MIN(mss.position2DY) AS min_y ";
+        query += "FROM mapRegions AS mr ";
         query += "INNER JOIN mapConstellations mc ON (mc.regionId = mr.regionId) ";
         query += "INNER JOIN mapSolarSystems mss ON (mc.constellationId = mss.constellationId) ";
         query += " WHERE mr.regionId BETWEEN 10000000 AND 10999999 GROUP BY mr.regionId, mr.regionName, mc.constellationId) ";
-        query += "AS reg GROUP BY reg.regionId;";
+        query += "AS reg GROUP BY reg.regionId ";
+        // position2DX/Y son NULL-ables; MAX()/MIN() ya ignoran los NULL
+        // individuales de cada sistema, pero si TODOS los sistemas de una
+        // región carecen de proyección 2D, el agregado final sigue dando
+        // NULL -- esa región se excluye acá en vez de romper la lectura
+        // de la fila (no hay bounding box que reportar para ella).
+        query += "HAVING MAX(reg.max_x) IS NOT NULL AND MAX(reg.max_y) IS NOT NULL ";
+        query += "AND MIN(reg.min_x) IS NOT NULL AND MIN(reg.min_y) IS NOT NULL;";
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows = statement.query([])?;
         let mut areas = Vec::new();
@@ -142,20 +154,25 @@ impl<'a> SdeManager<'a> {
             let mut region = EveRegionArea::new();
             region.region_id = row.get(0)?;
             region.name = row.get(1)?;
-            // mapSolarSystems.projX/Y/Z have REAL affinity, so MAX()/MIN()
-            // over them (even doubly-aggregated through the subquery) also
-            // yield REAL storage class -- rusqlite's `i64` FromSql impl does
-            // NOT coerce a SQLite REAL into an integer, so this has to be
-            // read as f64 first and cast explicitly.
+            // mapSolarSystems.position2DX/Y have REAL affinity, so
+            // MAX()/MIN() over them (even doubly-aggregated through the
+            // subquery) also yield REAL storage class -- rusqlite's `i64`
+            // FromSql impl does NOT coerce a SQLite REAL into an integer,
+            // so this has to be read as f64 first and cast explicitly.
+            //
+            // EveRegionArea.max/min stay `SdePoint` (3D) for API
+            // stability, but the region bounding box is now 2D (there's
+            // no third component to report anymore) -- the Z component is
+            // just always 0.
             region.max = SdePoint::from([
                 row.get::<usize, f64>(2)? as i64,
                 row.get::<usize, f64>(3)? as i64,
-                row.get::<usize, f64>(4)? as i64,
+                0,
             ]);
             region.min = SdePoint::from([
+                row.get::<usize, f64>(4)? as i64,
                 row.get::<usize, f64>(5)? as i64,
-                row.get::<usize, f64>(6)? as i64,
-                row.get::<usize, f64>(7)? as i64,
+                0,
             ]);
             // we invert the coordinates and swap the min with the max
             if self.invert_coordinates {
@@ -196,7 +213,13 @@ impl<'a> SdeManager<'a> {
     pub fn get_system_coords(&self, id_node: usize) -> Result<Option<SdePoint>, Error> {
         let connection = self.get_standart_connection()?;
 
-        let mut query = String::from("SELECT mss.ProjX, mss.ProjY, mss.ProjZ ");
+        // projX/Y/Z ya no existen (ver la nota en get_systempoints());
+        // esta función devuelve un SdePoint genuinamente 3D (a diferencia
+        // de get_systempoints()/get_connections(), que solo necesitan 2
+        // componentes), así que se migra a centerX/Y/Z -- las coordenadas
+        // 3D reales del sistema, siempre `NOT NULL` en el schema, sin la
+        // complejidad de nulls que tiene position2DX/Y.
+        let mut query = String::from("SELECT mss.centerX, mss.centerY, mss.centerZ ");
         query += "FROM mapSolarSystems AS mss WHERE mss.SolarSystemId = ?1; ";
 
         let mut statement = connection.prepare(query.as_str())?;
@@ -225,23 +248,23 @@ impl<'a> SdeManager<'a> {
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT msc.systemA, msc.systemB, ");
-        query += "mssa.projX, mssa.projY, mssa.projZ, mssb.projX, mssb.projY, mssb.projZ ";
+        query += "mssa.position2DX, mssa.position2DY, mssb.position2DX, mssb.position2DY ";
         query += "FROM mapSystemConnections AS msc INNER JOIN mapSolarSystems AS mssa ";
         query += "ON(msc.systemA = mssa.solarSystemId) INNER JOIN mapSolarSystems AS mssb ";
-        query += "ON(msc.systemB = mssb.solarSystemId);";
+        query += "ON(msc.systemB = mssb.solarSystemId) ";
+        // Ambos extremos necesitan una proyección 2D válida para poder
+        // dibujar la línea; si a cualquiera de los dos le falta (ver la
+        // misma nota de NULL-ability en get_systempoints), la conexión
+        // completa se omite en vez de fallar la consulta entera.
+        query += "WHERE mssa.position2DX IS NOT NULL AND mssa.position2DY IS NOT NULL ";
+        query += "AND mssb.position2DX IS NOT NULL AND mssb.position2DY IS NOT NULL;";
 
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows = statement.query([])?;
         let mut results = vec![];
         while let Some(row) = rows.next()? {
-            let mut point1 = RawPoint::from([
-                row.get::<usize, f32>(2)? as i64,
-                row.get::<usize, f32>(4)? as i64,
-            ]);
-            let mut point2 = RawPoint::from([
-                row.get::<usize, f32>(5)? as i64,
-                row.get::<usize, f32>(7)? as i64,
-            ]);
+            let mut point1 = RawPoint::new(row.get::<usize, f32>(2)?, row.get::<usize, f32>(3)?);
+            let mut point2 = RawPoint::new(row.get::<usize, f32>(4)?, row.get::<usize, f32>(5)?);
             if self.factor > 1 {
                 point1 /= self.factor;
                 point2 /= self.factor;
@@ -496,7 +519,7 @@ impl<'a> SdeManager<'a> {
 
         let mut query =
             String::from("SELECT mss.solarSystemId, mss.solarSystemName, mc.regionId, ");
-        query += " mc.centerX, mc.centerY, mc.centerZ, mss.projX, mss.projY, mss.projZ, ";
+        query += " mc.centerX, mc.centerY, mc.centerZ, mss.position2DX, mss.position2DY, ";
         query += " mss.constellationId FROM mapSolarSystems AS mss ";
         query +=
             " INNER JOIN mapConstellations AS mc ON(mss.constellationId = mc.constellationId)  ";
@@ -526,8 +549,14 @@ impl<'a> SdeManager<'a> {
             object.real_coords.x = row.get::<_, f64>(3)? as i64; //i64
             object.real_coords.y = row.get::<_, f64>(4)? as i64; //i64
             object.real_coords.z = row.get::<_, f64>(5)? as i64; //i64
-            object.projected_coords.x = row.get::<_, f64>(6)? as i64; //i64
-            object.projected_coords.y = row.get::<_, f64>(7)? as i64; //i64
+            // A diferencia de get_systempoints()/get_connections() (que
+            // filtran sistemas sin proyección 2D), acá se mantiene la fila
+            // igual: este método alimenta datos generales del sistema
+            // (nombre, región, constelación, coordenadas reales), no solo
+            // el mapa, así que un position2D ausente cae a (0.0, 0.0) en
+            // vez de excluir el sistema por completo.
+            object.projected_coords.x = row.get::<_, Option<f64>>(6)?.unwrap_or(0.0) as i64;
+            object.projected_coords.y = row.get::<_, Option<f64>>(7)?.unwrap_or(0.0) as i64;
 
             // Invert coordinates if needed
             if self.invert_coordinates {

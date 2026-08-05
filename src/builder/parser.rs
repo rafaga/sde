@@ -111,11 +111,22 @@
 //!   `'isometric'` (`calculate_isometric_projection()`), `'dimetric'`
 //!   (`calculate_dimetric_projection()`, no portado) y cualquier otro
 //!   valor (passthrough crudo de `position.x/y/z` sin transformar,
-//!   tampoco portado). [`parse_solar_systems`] solo cubre el caso
-//!   `'isometric'` -- que es, confirmado contra `database_builder.py`, el
-//!   default real usado hoy -- reusando [`isometric_projection_2d`]. Si
-//!   hace falta soportar `'dimetric'` o el passthrough crudo, hay que
-//!   sumarlos como opciones adicionales de proyección.
+//!   tampoco portado). Esas tres columnas ya no existen en el schema (ver
+//!   más abajo, "projX/Y/Z eliminadas"), así que esta rama de Python no
+//!   se porta en absoluto -- ni siquiera el caso `'isometric'` que sí se
+//!   portaba antes.
+//! - **`projX`/`projY`/`projZ` eliminadas del schema**: guardaban una
+//!   proyección 2D del centro del sistema calculada localmente (vía
+//!   [`isometric_projection_2d`]), separada de `position2DX`/
+//!   `position2DY` (la proyección 2D que ya trae CCP precalculada). Como
+//!   ambas representan el mismo concepto, mantener las dos era
+//!   redundante -- se decidió explícitamente eliminar `projX/Y/Z` y
+//!   migrar todo a `position2DX`/`position2DY` (incluyendo las queries de
+//!   `SdeManager` en `src/lib.rs`, que antes leían `projX`/`projZ`).
+//!   [`isometric_projection_2d`] en sí sigue existiendo -- solo perdió
+//!   este caso de uso; sigue siendo lo que calcula `position2DX`/
+//!   `position2DY` cuando `config.force_isometric_position_2d` está
+//!   activo.
 //! - `self._system_names` en Python (poblado en `_parse_solar_systems`,
 //!   junto a `_systems_in_scope`) nunca se lee en ningún lado del
 //!   prototipo -- ni siquiera para un print de progreso, a diferencia de
@@ -808,53 +819,31 @@ pub fn parse_constellations(
 /// sistemas fuera de alcance NO cuentan). Equivalente a
 /// `_parse_solar_systems()` en Python.
 ///
-/// `projX`/`projY`/`projZ`: de las tres, solo las dos que corresponden a
-/// `config.isometric_projected_axis` reciben el valor calculado por
-/// [`isometric_projection_2d`] -- la tercera (la del eje colapsado, que
-/// no aporta información) queda fuera del `INSERT` por completo y toma el
-/// `DEFAULT(0.0)` que ya tienen las tres columnas en el schema STRICT, en
-/// vez de que este código la rellene a mano con un `0.0` explícito.
-/// Mismo resultado numérico que Python con sus defaults reales
-/// (`projection_algorithm='isometric'`). Los algoritmos `'dimetric'` y
-/// `'none'` (passthrough crudo) que Python también soporta ahí no están
-/// portados todavía; si hacen falta, hay que sumarlos como una tercera
-/// opción de proyección aparte de esta.
+/// `projX`/`projY`/`projZ` ya no existen en el schema (se eliminaron: el
+/// único propósito real de esas columnas era guardar una proyección 2D
+/// del centro del sistema, y eso es exactamente lo que ya hace
+/// `position2DX`/`position2DY` -- mantener ambas era redundante). Ver
+/// `schema.sql` y `SdeManager` en `src/lib.rs`, que se migró para leer
+/// `position2DX`/`position2DY` en vez de `projX`/`projZ`.
 ///
 /// `position2DX`/`position2DY` usan el `position2D` que ya trae CCP
 /// precalculado, salvo que `config.force_isometric_position_2d` esté
 /// activo -- en cuyo caso se recalculan siempre vía
-/// [`isometric_projection_2d`] (mismo eje configurado), **ignorando** el
-/// valor de CCP, tal como se decidió explícitamente para este flag (ver
-/// su docstring en [`ParserConfig`]).
+/// [`isometric_projection_2d`] (según `config.isometric_projected_axis`),
+/// **ignorando** el valor de CCP, tal como se decidió explícitamente para
+/// este flag (ver su docstring en [`ParserConfig`]).
 pub fn parse_solar_systems(
     connection: &Connection,
     sde_directory: &Path,
     config: &ParserConfig,
     state: &mut SystemScopeState,
 ) -> Result<usize, BuilderError> {
-    // De las tres columnas `projX`/`projY`/`projZ`, solo dos reciben un
-    // valor calculado -- la correspondiente al eje colapsado no aporta
-    // información (ver el docstring de `isometric_projection_2d`, que ya
-    // solo devuelve esos dos componentes). En vez de rellenarla con un
-    // `0.0` calculado a mano en Rust, se deja fuera del INSERT por
-    // completo y se apoya en el propio `DEFAULT(0.0)` que ya tienen las
-    // tres columnas en el schema STRICT -- mismo resultado numérico, pero
-    // sin lógica de reconstrucción de tupla en este archivo. Los nombres
-    // de columna salen de un `match` sobre el enum [`ProjectedAxis`] (no
-    // de un dato externo), así que construir la query con `format!` acá
-    // es seguro.
-    let (proj_col_a, proj_col_b) = match config.isometric_projected_axis {
-        ProjectedAxis::X => ("projY", "projZ"),
-        ProjectedAxis::Y => ("projX", "projZ"),
-        ProjectedAxis::Z => ("projX", "projY"),
-    };
-    let query = format!(
+    let mut insert_system = connection.prepare(
         "INSERT INTO mapSolarSystems (solarSystemId, solarSystemName, constellationId, \
          corridor, fringe, hub, international, luminosity, radius, centerX, centerY, centerZ, \
-         regional, security, securityClass, {proj_col_a}, {proj_col_b}, position2DX, position2DY) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)"
-    );
-    let mut insert_system = connection.prepare(&query)?;
+         regional, security, securityClass, position2DX, position2DY) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+    )?;
 
     let mut count = 0usize;
     for record in iter_jsonl_records(sde_directory, "mapSolarSystems")? {
@@ -875,13 +864,6 @@ pub fn parse_solar_systems(
         let luminosity = optional_f64(&record, "luminosity");
         let radius = required_f64(&record, "radius")?;
         let (center_x, center_y, center_z) = required_position(&record)?;
-
-        let (proj_a, proj_b) = isometric_projection_2d(
-            center_x,
-            center_y,
-            center_z,
-            config.isometric_projected_axis,
-        );
 
         let regional = optional_bool(&record, "regional");
         let security = required_f64(&record, "securityStatus")?;
@@ -918,8 +900,6 @@ pub fn parse_solar_systems(
             regional,
             security,
             security_class,
-            proj_a,
-            proj_b,
             position_2d_x,
             position_2d_y,
         ])?;
@@ -1682,44 +1662,29 @@ mod tests {
         assert_eq!(count, 1);
         assert!(scope.systems_in_scope.contains(&30000142));
 
-        let (name, security, security_class, proj_x, proj_y, proj_z, p2dx, p2dy): (
-            String,
-            f64,
-            String,
-            f64,
-            f64,
-            f64,
-            f64,
-            f64,
-        ) = connection
-            .query_row(
-                "SELECT solarSystemName, security, securityClass, projX, projY, projZ, \
-                 position2DX, position2DY FROM mapSolarSystems WHERE solarSystemId = 30000142",
-                [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                        row.get(7)?,
-                    ))
-                },
-            )
-            .unwrap();
+        let (name, security, security_class, p2dx, p2dy): (String, f64, String, f64, f64) =
+            connection
+                .query_row(
+                    "SELECT solarSystemName, security, securityClass, \
+                     position2DX, position2DY FROM mapSolarSystems WHERE solarSystemId = 30000142",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .unwrap();
         assert_eq!(name, "Jita");
         assert_eq!(security, 0.9459);
         assert_eq!(security_class, "B");
-        // projX/Y/Z: isométrico con eje Y colapsado (default) sobre
-        // (-100, 200, -300) -> projX=-300, projZ=-250; projY no se
-        // inserta explícitamente y sale en 0.0 por el DEFAULT(0.0) del
-        // propio schema (no por un relleno hecho a mano en Rust).
-        assert_eq!((proj_x, proj_y, proj_z), (-300.0, 0.0, -250.0));
         // position2D sin forzar: el que ya trae el registro (12.5, -7.25),
-        // NO el calculado (-300, -250).
+        // NO el que calcularía isometric_projection_2d ((-300, -250), ver
+        // el test de fuerza más abajo).
         assert_eq!((p2dx, p2dy), (12.5, -7.25));
     }
 

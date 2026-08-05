@@ -49,7 +49,8 @@ impl Fixture {
                 solarSystemId INTEGER PRIMARY KEY,
                 solarSystemName TEXT NOT NULL,
                 constellationId INTEGER NOT NULL,
-                projX REAL, projY REAL, projZ REAL
+                centerX REAL, centerY REAL, centerZ REAL,
+                position2DX REAL, position2DY REAL
             );
             CREATE TABLE mapSystemConnections (
                 systemA INTEGER NOT NULL,
@@ -79,11 +80,11 @@ impl Fixture {
             INSERT INTO mapConstellations (constellationId, constellationName, regionId, centerX, centerY, centerZ) VALUES
                 (20000001, 'Const One', 10000001, 100.0, 200.0, 300.0),
                 (20000002, 'Const Two', 10000002, -100.0, -200.0, -300.0);
-            INSERT INTO mapSolarSystems (solarSystemId, solarSystemName, constellationId, projX, projY, projZ) VALUES
-                (30000001, 'Sys One',   20000001,  1000.0,  2000.0,  3000.0),
-                (30000002, 'Sys Two',   20000001, -1000.0, -2000.0, -3000.0),
-                (30000003, 'Sys Three', 20000002,  5000.0,  5000.0,  5000.0),
-                (31000001, 'W-Sys',     20000002,  9000.0,  9000.0,  9000.0);
+            INSERT INTO mapSolarSystems (solarSystemId, solarSystemName, constellationId, centerX, centerY, centerZ, position2DX, position2DY) VALUES
+                (30000001, 'Sys One',   20000001,  1000.0,  2000.0,  3000.0,  1000.0,  3000.0),
+                (30000002, 'Sys Two',   20000001, -1000.0, -2000.0, -3000.0, -1000.0, -3000.0),
+                (30000003, 'Sys Three', 20000002,  5000.0,  5000.0,  5000.0,  5000.0,  5000.0),
+                (31000001, 'W-Sys',     20000002,  9000.0,  9000.0,  9000.0,  9000.0,  9000.0);
             INSERT INTO mapSystemConnections (systemA, systemB) VALUES
                 (30000001, 30000002),
                 (30000002, 30000003);
@@ -548,17 +549,18 @@ fn region_coordinates_returns_bounding_box_per_region() {
     let alpha = &areas[0];
     assert_eq!(alpha.region_id, 10000001);
     assert_eq!(alpha.name, "Region Alpha");
-    // Region Alpha's fixture systems are (1000,2000,3000) and
-    // (-1000,-2000,-3000); coordinate inversion (swap + negate) maps this
-    // symmetric bounding box back onto itself.
-    assert_eq!(alpha.max, SdePoint::new(1000, 2000, 3000));
-    assert_eq!(alpha.min, SdePoint::new(-1000, -2000, -3000));
+    // Region Alpha's fixture systems are position2D (1000,3000) and
+    // (-1000,-3000); coordinate inversion (swap + negate) maps this
+    // symmetric bounding box back onto itself. Z siempre 0 -- el
+    // bounding box es 2D desde que se migró de projX/Y/Z a position2DX/Y.
+    assert_eq!(alpha.max, SdePoint::new(1000, 3000, 0));
+    assert_eq!(alpha.min, SdePoint::new(-1000, -3000, 0));
 
     let beta = &areas[1];
     assert_eq!(beta.region_id, 10000002);
     assert_eq!(beta.name, "Region Beta");
-    // Region Beta's fixture systems are (5000,5000,5000) and
-    // (9000,9000,9000); after inversion new_max = -old_min, new_min = -old_max.
-    assert_eq!(beta.max, SdePoint::new(-5000, -5000, -5000));
-    assert_eq!(beta.min, SdePoint::new(-9000, -9000, -9000));
+    // Region Beta's fixture systems are position2D (5000,5000) and
+    // (9000,9000); after inversion new_max = -old_min, new_min = -old_max.
+    assert_eq!(beta.max, SdePoint::new(-5000, -5000, 0));
+    assert_eq!(beta.min, SdePoint::new(-9000, -9000, 0));
 }

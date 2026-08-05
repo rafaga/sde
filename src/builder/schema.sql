@@ -110,8 +110,6 @@ CREATE TABLE mapSolarSystems (
   luminosity REAL,
   radius REAL NOT NULL,
   centerX REAL NOT NULL, centerY REAL NOT NULL, centerZ REAL NOT NULL,
-  projX REAL NOT NULL DEFAULT(0.0), projY REAL NOT NULL DEFAULT(0.0),
-  projZ REAL NOT NULL DEFAULT(0.0),
   position2DX REAL, position2DY REAL,
   regional INTEGER CHECK (regional IN (0,1)),
   security REAL NOT NULL CHECK (security BETWEEN -1.0 AND 1.0),
