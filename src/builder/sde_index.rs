@@ -1,44 +1,44 @@
-//! Chequeo del build number más reciente del SDE publicado por CCP
-//! (`developers.eveonline.com`), y descarga condicional del zip
-//! correspondiente. Equivalente a `update_as_needed()` en
+//! Checking the most recent SDE build number published by CCP
+//! (`developers.eveonline.com`), and conditionally downloading the
+//! corresponding zip. Equivalent to `update_as_needed()` in
 //! `database_builder.py`.
 //!
-//! Igual que [`super::http`], este módulo no escribe nada a la base de
-//! datos -- solo maneja archivos en disco (`latest.jsonl`, el `.build`
-//! con el número guardado localmente, y el zip en sí). Portar el
-//! `.zip` descargado hacia adentro del árbol de trabajo del builder
-//! (preservando `maps/`, ver [`super::manifest::manifest_path`]) queda
-//! para `builder::extract`, todavía sin portar.
+//! Just like [`super::http`], this module doesn't write anything to the
+//! database -- it only handles files on disk (`latest.jsonl`, the
+//! `.build` file with the locally saved number, and the zip itself).
+//! Moving the downloaded `.zip` into the builder's working tree
+//! (preserving `maps/`, see [`super::manifest::manifest_path`]) is
+//! `builder::extract`'s job.
 
 use crate::builder::http;
 use crate::builder::BuilderError;
 use reqwest::Client;
 use std::path::Path;
 
-/// Busca, línea por línea, el registro de `latest.jsonl` con
-/// `_key == "sde"` y devuelve su `buildNumber` como texto.
+/// Looks, line by line, for the `latest.jsonl` record with
+/// `_key == "sde"` and returns its `buildNumber` as text.
 ///
-/// Verificado contra un `latest.jsonl` real (agosto 2026): trae una sola
-/// línea (`{"_key": "sde", "buildNumber": 3458726, "releaseDate":
-/// "..."}`, con final de línea `\r\n`) -- no varias, una por dataset,
-/// como especulaba antes de tener una muestra real. `buildNumber` viene
-/// como número JSON (no como texto entrecomillado), y `str::lines()`
-/// (usado acá) maneja el `\r\n` correctamente sin dejar un `\r` colgado
-/// que rompa el parseo JSON -- confirmado línea por línea contra el
-/// archivo real, byte a byte.
+/// Verified against a real `latest.jsonl` (August 2026): it carries a
+/// single line (`{"_key": "sde", "buildNumber": 3458726, "releaseDate":
+/// "..."}`, with a `\r\n` line ending) -- not several, one per dataset,
+/// as was speculated before having a real sample. `buildNumber` comes in
+/// as a JSON number (not as quoted text), and `str::lines()` (used
+/// here) handles the `\r\n` correctly without leaving a stray `\r` that
+/// would break JSON parsing -- confirmed line by line against the real
+/// file, byte for byte.
 ///
-/// El parseo sigue siendo deliberadamente tolerante más allá de este
-/// caso confirmado: cualquier línea que no sea JSON válido, o que no
-/// tenga el campo esperado, simplemente se salta en vez de abortar el
-/// archivo entero -- por si alguna vez trae más de una línea, o el
-/// formato cambia -- mismo espíritu defensivo que Python, que usa
-/// `.get()` con `None` por todos lados acá en vez de indexado directo.
+/// The parsing remains deliberately tolerant beyond this confirmed case:
+/// any line that isn't valid JSON, or that's missing the expected field,
+/// is simply skipped instead of aborting the whole file -- in case it
+/// ever carries more than one line, or the format changes -- same
+/// defensive spirit as Python, which uses `.get()` with `None` all over
+/// this instead of direct indexing.
 ///
-/// `buildNumber` se devuelve como `String` sin importar si en el JSON
-/// original es un número o ya viene como texto -- igual que Python, que
-/// compara builds con `str(current) == str(latest)` en vez de aritmética
-/// (el build number es un identificador opaco, no algo con lo que se
-/// vaya a operar numéricamente).
+/// `buildNumber` is returned as a `String` regardless of whether it was
+/// a number or already text in the original JSON -- just like Python,
+/// which compares builds with `str(current) == str(latest)` instead of
+/// arithmetic (the build number is an opaque identifier, not something
+/// meant to be operated on numerically).
 fn find_sde_build_number(jsonl: &str) -> Option<String> {
     for line in jsonl.lines() {
         let line = line.trim();
@@ -60,36 +60,36 @@ fn find_sde_build_number(jsonl: &str) -> Option<String> {
     None
 }
 
-/// Verifica el build number más reciente del SDE
-/// (`{sde_url_base}latest.jsonl`) y descarga
-/// `eve-online-static-data-{build}-{variant}.zip` a
-/// `<data_dir>/sde-{variant}.zip` solo si es más nuevo que el guardado
-/// localmente en `<data_dir>/sde-{variant}.build`. Equivalente a
-/// `update_as_needed()` en Python.
+/// Checks the most recent SDE build number
+/// (`{sde_url_base}latest.jsonl`) and downloads
+/// `eve-online-static-data-{build}-{variant}.zip` to
+/// `<data_dir>/sde-{variant}.zip` only if it's newer than the one saved
+/// locally in `<data_dir>/sde-{variant}.build`. Equivalent to
+/// `update_as_needed()` in Python.
 ///
-/// `sde_url_base` debe terminar en `/` (p. ej.
+/// `sde_url_base` must end in `/` (e.g.
 /// `"https://developers.eveonline.com/static-data/tranquility/"`).
-/// `variant` es `"jsonl"` o `"yaml"` -- se usa tal cual en los nombres de
-/// archivo, sin validar contra un enum cerrado: si CCP agrega un tercer
-/// formato de exportación, esta función no necesita cambios.
+/// `variant` is `"jsonl"` or `"yaml"` -- used as-is in file names,
+/// without validating against a closed enum: if CCP adds a third export
+/// format, this function needs no changes.
 ///
-/// Devuelve `Ok(true)` si se descargó una versión nueva, `Ok(false)` si
-/// ya estaba actualizado -- o si no se pudo determinar el build remoto
-/// (sin red, `latest.jsonl` no trae el registro esperado, etc.): mismo
-/// comportamiento que Python, que también devuelve `False` en ese caso
-/// en vez de propagar una excepción, para no bloquear el build entero
-/// por un problema puntual verificando la versión.
+/// Returns `Ok(true)` if a new version was downloaded, `Ok(false)` if it
+/// was already up to date -- or if the remote build couldn't be
+/// determined (no network, `latest.jsonl` missing the expected record,
+/// etc.): same behavior as Python, which also returns `False` in that
+/// case instead of propagating an exception, so a one-off problem
+/// checking the version doesn't block the whole build.
 ///
-/// # Mejora deliberada sobre Python: descarga a temporal + rename
+/// # Deliberate improvement over Python: download to temp + rename
 ///
-/// Python borra el zip viejo *antes* de intentar descargar el nuevo
-/// (`if zip_file.exists(): zip_file.unlink()`, luego recién
-/// `download_control(zip_url)`) -- si la descarga falla a mitad de
-/// camino, esa corrida se queda sin zip viejo NI nuevo. Acá se descarga
-/// primero a un archivo temporal (`sde-{variant}.zip.tmp`) y solo se
-/// reemplaza `sde-{variant}.zip` (vía `rename`, atómico en el mismo
-/// filesystem) una vez que la descarga terminó con éxito -- si falla,
-/// el zip anterior queda intacto.
+/// Python deletes the old zip *before* attempting to download the new
+/// one (`if zip_file.exists(): zip_file.unlink()`, only then
+/// `download_control(zip_url)`) -- if the download fails partway
+/// through, that run ends up with neither the old zip NOR the new one.
+/// Here it downloads first to a temporary file
+/// (`sde-{variant}.zip.tmp`) and only replaces `sde-{variant}.zip` (via
+/// `rename`, atomic on the same filesystem) once the download finished
+/// successfully -- if it fails, the previous zip stays intact.
 pub async fn update_as_needed(
     client: &Client,
     data_dir: &Path,
@@ -106,13 +106,13 @@ pub async fn update_as_needed(
     let index_contents = match http::fetch_text(client, &index_url).await {
         Ok(contents) => contents,
         Err(err) => {
-            eprintln!("sde_index: no se pudo descargar {index_url} ({err})");
+            eprintln!("sde_index: couldn't download {index_url} ({err})");
             return Ok(false);
         }
     };
 
     let Some(latest_build) = find_sde_build_number(&index_contents) else {
-        eprintln!("sde_index: no se pudo determinar el build number más reciente en {index_url}");
+        eprintln!("sde_index: couldn't determine the most recent build number in {index_url}");
         return Ok(false);
     };
 
@@ -121,13 +121,13 @@ pub async fn update_as_needed(
         .map(|s| s.trim().to_string());
 
     if current_build.as_deref() == Some(latest_build.as_str()) && zip_file.exists() {
-        println!("sde_index: datos {variant} ya actualizados (build {latest_build})");
+        println!("sde_index: {variant} data already up to date (build {latest_build})");
         return Ok(false);
     }
 
     println!(
-        "sde_index: nuevo build disponible ({} -> {latest_build}), descargando datos {variant}",
-        current_build.as_deref().unwrap_or("ninguno")
+        "sde_index: new build available ({} -> {latest_build}), downloading {variant} data",
+        current_build.as_deref().unwrap_or("none")
     );
 
     let zip_url = format!("{sde_url_base}eve-online-static-data-{latest_build}-{variant}.zip");
@@ -167,8 +167,8 @@ mod tests {
     #[test]
     fn find_sde_build_number_skips_malformed_lines_without_aborting() {
         let jsonl = concat!(
-            "no es json valido\n",
-            "\n", // linea vacia
+            "not valid json\n",
+            "\n", // blank line
             "{\"_key\": \"sde\", \"buildNumber\": 42}\n",
         );
         assert_eq!(find_sde_build_number(jsonl), Some("42".to_string()));
@@ -176,15 +176,15 @@ mod tests {
 
     #[test]
     fn find_sde_build_number_accepts_string_build_numbers() {
-        // por si en la practica CCP alguna vez trae buildNumber como texto
+        // in case CCP ever ships buildNumber as text in practice
         let jsonl = "{\"_key\": \"sde\", \"buildNumber\": \"12345\"}\n";
         assert_eq!(find_sde_build_number(jsonl), Some("12345".to_string()));
     }
 
     #[test]
     fn find_sde_build_number_handles_real_latest_jsonl() {
-        // Contenido EXACTO de un latest.jsonl real (agosto 2026), con su
-        // \r\n de final de linea tal cual viene -- no sintetizado a mano.
+        // EXACT content of a real latest.jsonl (August 2026), with its
+        // \r\n line ending as-is -- not hand-synthesized.
         let jsonl = "{\"_key\": \"sde\", \"buildNumber\": 3458726, \"releaseDate\": \"2026-08-06T11:07:36Z\"}\r\n";
         assert_eq!(find_sde_build_number(jsonl), Some("3458726".to_string()));
     }
@@ -210,7 +210,7 @@ mod tests {
             .and(wiremock::matchers::path(
                 "/eve-online-static-data-123-jsonl.zip",
             ))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(b"contenido del zip".to_vec()))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(b"zip content".to_vec()))
             .mount(&server)
             .await;
 
@@ -226,7 +226,7 @@ mod tests {
         let build = std::fs::read_to_string(data_dir.join("sde-jsonl.build")).unwrap();
         assert_eq!(build, "123");
         let zip_contents = std::fs::read(data_dir.join("sde-jsonl.zip")).unwrap();
-        assert_eq!(zip_contents, b"contenido del zip");
+        assert_eq!(zip_contents, b"zip content");
         assert!(!data_dir.join("sde-jsonl.zip.tmp").exists());
     }
 
@@ -241,7 +241,7 @@ mod tests {
             )
             .mount(&server)
             .await;
-        // El zip nunca deberia pedirse -- 0 esperado explicitamente.
+        // The zip should never be requested -- explicitly expect 0 calls.
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .and(wiremock::matchers::path(
                 "/eve-online-static-data-123-jsonl.zip",
@@ -254,7 +254,7 @@ mod tests {
         let client = http::build_client().unwrap();
         let data_dir = temp_data_dir("matches");
         std::fs::write(data_dir.join("sde-jsonl.build"), "123").unwrap();
-        std::fs::write(data_dir.join("sde-jsonl.zip"), b"zip previo").unwrap();
+        std::fs::write(data_dir.join("sde-jsonl.zip"), b"previous zip").unwrap();
         let base_url = format!("{}/", server.uri());
 
         let changed = update_as_needed(&client, &data_dir, &base_url, "jsonl")
@@ -262,9 +262,9 @@ mod tests {
             .unwrap();
         assert!(!changed);
 
-        // El zip previo no debe haberse tocado.
+        // The previous zip must not have been touched.
         let zip_contents = std::fs::read(data_dir.join("sde-jsonl.zip")).unwrap();
-        assert_eq!(zip_contents, b"zip previo");
+        assert_eq!(zip_contents, b"previous zip");
     }
 
     #[tokio::test]
@@ -282,14 +282,14 @@ mod tests {
             .and(wiremock::matchers::path(
                 "/eve-online-static-data-456-jsonl.zip",
             ))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(b"zip nuevo".to_vec()))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(b"new zip".to_vec()))
             .mount(&server)
             .await;
 
         let client = http::build_client().unwrap();
         let data_dir = temp_data_dir("changed");
         std::fs::write(data_dir.join("sde-jsonl.build"), "123").unwrap();
-        std::fs::write(data_dir.join("sde-jsonl.zip"), b"zip viejo").unwrap();
+        std::fs::write(data_dir.join("sde-jsonl.zip"), b"old zip").unwrap();
         let base_url = format!("{}/", server.uri());
 
         let changed = update_as_needed(&client, &data_dir, &base_url, "jsonl")
@@ -300,7 +300,7 @@ mod tests {
         let build = std::fs::read_to_string(data_dir.join("sde-jsonl.build")).unwrap();
         assert_eq!(build, "456");
         let zip_contents = std::fs::read(data_dir.join("sde-jsonl.zip")).unwrap();
-        assert_eq!(zip_contents, b"zip nuevo");
+        assert_eq!(zip_contents, b"new zip");
     }
 
     #[tokio::test]

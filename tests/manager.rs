@@ -552,8 +552,8 @@ fn region_coordinates_returns_bounding_box_per_region() {
     assert_eq!(alpha.name, "Region Alpha");
     // Region Alpha's fixture systems are position2D (1000,3000) and
     // (-1000,-3000); coordinate inversion (swap + negate) maps this
-    // symmetric bounding box back onto itself. Z siempre 0 -- el
-    // bounding box es 2D desde que se migró de projX/Y/Z a position2DX/Y.
+    // symmetric bounding box back onto itself. Z is always 0 -- the
+    // bounding box has been 2D since the migration from projX/Y/Z to position2DX/Y.
     assert_eq!(alpha.max, SdePoint::new(1000, 3000, 0));
     assert_eq!(alpha.min, SdePoint::new(-1000, -3000, 0));
 

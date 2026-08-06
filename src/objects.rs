@@ -4,49 +4,50 @@ use std::convert::{From, TryInto};
 use std::io::{Error as GenericError, ErrorKind};
 use std::ops::{Add, Div, DivAssign, Mul, MulAssign, Sub};
 
-/// Punto de mapa 2D con metadata, indexable en un
+/// 2D map point with metadata, indexable in a
 /// `kdtree::KdTree<f32, MapPoint, [f32; 2]>`.
 ///
-/// Tipo propio de `sde`, sin ninguna dependencia de crates de UI/render
-/// (reemplaza al `MapPoint` que antes venía de `egui-map`). `coords` y
-/// `connections` son tipos primitivos (`[f32; 2]`, `Vec<(usize, usize)>`)
-/// a propósito: cualquier consumidor externo (p. ej. `egui-map`) puede
-/// construir su propio tipo de punto "rico" a partir de estos campos sin
-/// que `sde` conozca a `egui-map` ni viceversa -- son "compatibles pero
-/// independientes", no un tipo compartido entre los dos crates.
+/// A type owned by `sde`, with no dependency on any UI/rendering crate
+/// (replaces the `MapPoint` that used to come from `egui-map`). `coords`
+/// and `connections` are deliberately primitive types (`[f32; 2]`,
+/// `Vec<(usize, usize)>`): any external consumer (e.g. `egui-map`) can
+/// build its own "rich" point type from these fields without `sde`
+/// knowing about `egui-map` or vice versa -- they're "compatible but
+/// independent", not a type shared between the two crates.
 ///
-/// **Nota de interoperabilidad**: `coords: [f32; 2]` ya coincide 1:1 con
-/// `egui_map::RawPoint.components` -- construir un `RawPoint` desde acá
-/// no requiere ningún cambio en `egui-map`
+/// **Interoperability note**: `coords: [f32; 2]` already matches
+/// `egui_map::RawPoint.components` 1:1 -- building a `RawPoint` from
+/// this requires no change at all in `egui-map`
 /// (`RawPoint::new(p.coords[0], p.coords[1])`). `connections:
-/// Vec<(usize, usize)>` en cambio SÍ requiere que `egui-map` migre su
-/// `MapPoint.connections` de `Vec<String>` a esa misma forma de tupla --
-/// exactamente el cambio puntual que ya se dejó diseñado (no un
-/// rediseño) para cuando se retome ese crate.
+/// Vec<(usize, usize)>`, on the other hand, DOES require `egui-map` to
+/// migrate its `MapPoint.connections` from `Vec<String>` to that same
+/// tuple shape -- exactly the targeted change that was already designed
+/// (not a redesign) for whenever that crate gets picked back up.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapPoint {
     pub id: usize,
     pub name: String,
     pub coords: [f32; 2],
-    /// Pares `(solarSystemId, solarSystemId)` de las conexiones de este
-    /// sistema con otros -- cada entrada corresponde al `id` de un
-    /// [`MapSegment`] devuelto por [`crate::SdeManager::get_connections`]
-    /// (o `get_abstract_connections`, según de qué consulta venga este
-    /// punto).
+    /// `(solarSystemId, solarSystemId)` pairs for this system's
+    /// connections to others -- each entry corresponds to the `id` of a
+    /// [`MapSegment`] returned by [`crate::SdeManager::get_connections`]
+    /// (or `get_abstract_connections`, depending on which query this
+    /// point came from).
     pub connections: Vec<(usize, usize)>,
 }
 
-/// Segmento de línea entre dos sistemas solares (una conexión de
-/// stargate, o una arista del mapa abstracto). Tipo propio de `sde`,
-/// reemplaza al `MapSegment` que antes venía de `egui-map`.
+/// Line segment between two solar systems (a stargate connection, or an
+/// edge on the abstract map). A type owned by `sde`, replaces the
+/// `MapSegment` that used to come from `egui-map`.
 ///
-/// `id` es el par de ids de sistema que conecta -- ya no un `Rc<str>`
-/// arbitrario como en la vieja integración con `egui-map`. Este `(usize,
-/// usize)` es exactamente la forma que necesitaría `egui_map::MapSegment.id`
-/// tras el cambio puntual ya diseñado para ese crate (`Rc<str>` ->
-/// tupla) -- la única pieza de `egui-map` que hace falta tocar para
-/// interoperar, sin rediseñar nada más ahí. `point1`/`point2` ya
-/// coinciden 1:1 con `RawPoint.components`, sin requerir ningún cambio.
+/// `id` is the pair of system ids it connects -- no longer an arbitrary
+/// `Rc<str>` like in the old `egui-map` integration. This `(usize,
+/// usize)` is exactly the shape `egui_map::MapSegment.id` would need
+/// after the targeted change already designed for that crate (`Rc<str>`
+/// -> tuple) -- the only piece of `egui-map` that needs touching to
+/// interoperate, without redesigning anything else there. `point1`/
+/// `point2` already match `RawPoint.components` 1:1, requiring no
+/// change at all.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MapSegment {
     pub id: (usize, usize),
@@ -54,28 +55,28 @@ pub struct MapSegment {
     pub point2: [f32; 2],
 }
 
-/// Convierte un `KdTree<f32, MapPoint, [f32; 2]>` a una lista de
-/// referencias a sus puntos, **sin clonar** -- para quien prefiera
-/// iterar/consumir como lista simple en vez de usar las búsquedas
-/// espaciales nativas de `kdtree` (`nearest`, `within`, `iter_nearest`,
-/// etc., todas disponibles directamente sobre el árbol devuelto por
+/// Converts a `KdTree<f32, MapPoint, [f32; 2]>` into a list of
+/// references to its points, **without cloning** -- for anyone who
+/// prefers to iterate/consume it as a plain list instead of using
+/// `kdtree`'s native spatial queries (`nearest`, `within`,
+/// `iter_nearest`, etc., all available directly on the tree returned by
 /// [`crate::SdeManager::get_systempoints`]/`get_abstract_systems`).
 ///
-/// Internamente usa `bounding_box` con límites en `f32::MIN`/`f32::MAX`
-/// (el rango finito completo representable) para traer todo el
-/// contenido del árbol de una vez -- es el uso que la propia
-/// documentación de `kdtree` recomienda para "range queries donde solo
-/// hacen falta las referencias, sin garantía de orden". Importante:
-/// `f32::INFINITY`/`f32::NEG_INFINITY` NO sirven acá -- `kdtree` las
-/// rechaza explícitamente como límites no-finitos
-/// (`ErrorKind::NonFiniteCoordinate`); verificado contra el código fuente
-/// real del crate, no solo su documentación.
+/// Internally uses `bounding_box` with bounds at `f32::MIN`/`f32::MAX`
+/// (the full representable finite range) to fetch the tree's entire
+/// content in one go -- this is the exact usage `kdtree`'s own
+/// documentation recommends for "range queries where you only need the
+/// references, without ordering guarantees". Important:
+/// `f32::INFINITY`/`f32::NEG_INFINITY` do NOT work here -- `kdtree`
+/// explicitly rejects them as non-finite bounds
+/// (`ErrorKind::NonFiniteCoordinate`); verified against the crate's
+/// actual source code, not just its documentation.
 ///
-/// No puede fallar en la práctica (2 dimensiones fijas, límites siempre
-/// finitos), así que se usa `expect` en vez de propagar un `Result` que
-/// nunca sería `Err` con este uso -- si alguna vez lo fuera, es una señal
-/// de un bug real que conviene que aborte fuerte, no que se trague en
-/// silencio con una lista vacía.
+/// Can't fail in practice (2 fixed dimensions, always-finite bounds),
+/// so `expect` is used instead of propagating a `Result` that would
+/// never be `Err` with this usage -- if it ever were, that's a sign of
+/// a real bug that should abort loudly, not get silently swallowed into
+/// an empty list.
 pub fn map_points_to_vec(tree: &KdTree<f32, MapPoint, [f32; 2]>) -> Vec<&MapPoint> {
     tree.bounding_box(&[f32::MIN, f32::MIN], &[f32::MAX, f32::MAX])
         .expect("bounding_box con limites f32::MIN/f32::MAX no deberia fallar nunca (2 dimensiones fijas, limites siempre finitos)")

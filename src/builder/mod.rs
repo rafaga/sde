@@ -1,11 +1,11 @@
-//! Lógica para (re)generar `sde.db` a partir del SDE oficial de CCP y los
-//! mapas de dotlan.
+//! Logic to (re)generate `sde.db` from CCP's official SDE and dotlan's
+//! maps.
 //!
-//! Todo este módulo vive detrás de la feature `builder` (deshabilitada por
-//! default) para que un consumidor que solo *lee* `sde.db` -- como la app
-//! egui principal del proyecto -- no arrastre reqwest/tokio/zip/etc.
-//! Los binarios `sde` (CLI) y `sde-gui` habilitan esta feature y llaman a
-//! las funciones de este módulo.
+//! This whole module lives behind the `builder` feature (disabled by
+//! default) so that a consumer that only *reads* `sde.db` -- like the
+//! project's main egui app -- doesn't drag in reqwest/tokio/zip/etc.
+//! The `sde` (CLI) and `sde-gui` binaries enable this feature and call
+//! into this module's functions.
 
 pub mod dotlan;
 pub mod extract;
@@ -15,46 +15,47 @@ pub mod parser;
 pub mod schema;
 pub mod sde_index;
 
-// `schema` (DDL STRICT) ya está portado -- ver builder::schema::create_schema().
-// `parser` (escritura de datos) ya está portado por completo -- 14
-// funciones, paridad total con parse_data() de Python. Ver el docstring
-// de builder::parser para el detalle fase por fase.
-// `dotlan` (datos comunitarios externos al SDE) ya está portado por
-// completo -- DDL dinámico, poblado de listas estáticas, parseo de SVG
-// (validado contra un mapa real de dotlan) y el orquestador de descarga
-// con reintentos. Ver el docstring de builder::dotlan para el detalle.
-// `sde_index` (chequeo de build number + descarga condicional del SDE)
-// ya está portado -- ver el docstring de builder::sde_index.
-// `extract` (descompresión del zip del SDE, preservando maps/) ya está
-// portado -- ver el docstring de builder::extract.
+// `schema` (STRICT DDL) is already ported -- see builder::schema::create_schema().
+// `parser` (data writing) is fully ported -- 14 functions, full parity
+// with Python's parse_data(). See builder::parser's docstring for the
+// phase-by-phase detail.
+// `dotlan` (community data external to the SDE) is fully ported --
+// dynamic DDL, static list population, SVG parsing (validated against a
+// real dotlan map) and the download orchestrator with retries. See
+// builder::dotlan's docstring for the detail.
+// `sde_index` (build number check + conditional SDE download) is
+// already ported -- see builder::sde_index's docstring.
+// `extract` (SDE zip decompression, preserving maps/) is already
+// ported -- see builder::extract's docstring.
 //
-// Solo falta el orquestador de nivel superior que une todo esto (hoy un
-// stub en src/bin/cli.rs): sde_index::update_as_needed() ->
-// extract::prepare_sde_directory() -> parser::parse_data() ->
-// dotlan::process(), en ese orden -- el mismo que sigue
-// database_builder.py.
+// The only thing missing is the top-level orchestrator that ties all of
+// this together (today a stub in src/bin/cli.rs):
+// sde_index::update_as_needed() -> extract::prepare_sde_directory() ->
+// parser::parse_data() -> dotlan::process(), in that order -- the same
+// one database_builder.py follows.
 
-/// Errores del proceso de build. Sin `thiserror` a propósito: es el mismo
-/// patrón "sin abstracción" que ya usa `SdeManager` (propaga los errores de
-/// las crates de abajo tal cual con `?`), solo que aquí sí necesitamos
-/// unificar varios tipos de error distintos (HTTP, IO, zip, JSON, sqlite).
+/// Build process errors. Deliberately without `thiserror`: same
+/// "no abstraction" pattern `SdeManager` already uses (propagates the
+/// underlying crates' errors as-is with `?`), except here we do need to
+/// unify several different error types (HTTP, IO, zip, JSON, sqlite).
 #[derive(Debug)]
 pub enum BuilderError {
     Io(std::io::Error),
     Json(serde_json::Error),
     Http(reqwest::Error),
-    /// El servidor respondió, pero con un status HTTP que no es 2xx.
+    /// The server responded, but with a non-2xx HTTP status.
     HttpStatus { url: String, status: u16 },
-    /// Error al ejecutar una consulta SQL (creación de schema, inserts del
-    /// parser, etc.).
+    /// Error running a SQL query (schema creation, parser inserts,
+    /// etc.).
     Sqlite(rusqlite::Error),
-    /// Error al leer/descomprimir un archivo zip (`builder::extract`).
+    /// Error reading/decompressing a zip file (`builder::extract`).
     Zip(zip::result::ZipError),
-    /// Un registro del SDE no tiene la forma esperada (campo requerido
-    /// ausente, o de un tipo distinto al esperado). No es un error de
-    /// sintaxis JSON (`Json` ya cubre eso, cuando el archivo ni siquiera
-    /// parsea) ni de E/S (`Io`) -- el archivo se leyó y parseó bien, el
-    /// contenido simplemente no calza con lo que el parser necesita.
+    /// An SDE record doesn't have the expected shape (a required field
+    /// is missing, or is of a different type than expected). This isn't
+    /// a JSON syntax error (`Json` already covers that, for when the
+    /// file doesn't even parse) nor an I/O error (`Io`) -- the file was
+    /// read and parsed fine, its content simply doesn't match what the
+    /// parser needs.
     Data(String),
 }
 

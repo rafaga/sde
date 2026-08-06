@@ -1,169 +1,171 @@
-//! Población de datos del SDE en las tablas creadas por [`super::schema`].
+//! Populates the SDE data into the tables created by [`super::schema`].
 //!
-//! Puerto **completo** de los métodos `_parse_*`/`parse_*` de `SdeParser`
-//! en el prototipo Python (`sde_parser.py`) -- ver "Alcance" más abajo
-//! para el detalle fase por fase. Cada método de Python corresponde aquí
-//! a una función `parse_*` que recibe la conexión ya abierta (con el
-//! schema ya creado por [`super::schema::create_schema`]) y el directorio
-//! donde viven los archivos planos del SDE (`categories.jsonl`,
-//! `types.jsonl`, etc.) -- con la excepción de [`parse_connections`], que
-//! no lee ningún archivo (deriva sus datos de `mapSystemGates`, ya
-//! insertada por una fase anterior).
+//! **Complete** port of `SdeParser`'s `_parse_*`/`parse_*` methods in
+//! the Python prototype (`sde_parser.py`) -- see "Scope" below for the
+//! phase-by-phase detail. Each Python method corresponds here to a
+//! `parse_*` function that receives the already-open connection (with
+//! the schema already created by [`super::schema::create_schema`]) and
+//! the directory where the SDE's flat files live (`categories.jsonl`,
+//! `types.jsonl`, etc.) -- with the exception of [`parse_connections`],
+//! which doesn't read any file (it derives its data from
+//! `mapSystemGates`, already inserted by an earlier phase).
 //!
-//! A diferencia de Python (donde `SdeParser` es una clase con estado
-//! mutable en `self`), aquí las funciones son libres y sin estado propio;
-//! el único estado que de verdad necesita compartirse entre dos de ellas
-//! -- el id del grupo "Sun" y el mapeo `typeId -> starTypeId` que detecta
-//! `parse_types()` -- se pasa explícitamente vía [`StarTypeState`].
+//! Unlike Python (where `SdeParser` is a class with mutable state on
+//! `self`), here the functions are free and stateless; the only state
+//! that genuinely needs sharing between two of them -- the "Sun" group's
+//! id and the `typeId -> starTypeId` mapping detected by `parse_types()`
+//! -- is passed explicitly via [`StarTypeState`].
 //!
-//! ## Alcance de este archivo (fase 1 a fase 9 -- paridad completa)
+//! ## Scope of this file (phase 1 to phase 9 -- full parity)
 //!
-//! Cubre las tablas "base" que el resto de entidades referencian por FK y
-//! que no dependen de ninguna tabla de mapa: `invCategories`, `invGroups`,
-//! `invTypes` (incluyendo la detección especial de tipos de estrella que
-//! alimenta a `typeStar`), `races` (fase 1), `npcCorporations` y
-//! `factions` + `factionRace` (fase 2). Equivalen a `_parse_categories`,
-//! `_parse_groups`, `_parse_types`, `_parse_races`,
-//! `_parse_npc_corporations` y `_parse_factions` en Python.
+//! Covers the "base" tables the rest of the entities reference via FK
+//! and that don't depend on any map table: `invCategories`,
+//! `invGroups`, `invTypes` (including the special star-type detection
+//! that feeds `typeStar`), `races` (phase 1), `npcCorporations` and
+//! `factions` + `factionRace` (phase 2). Equivalent to
+//! `_parse_categories`, `_parse_groups`, `_parse_types`, `_parse_races`,
+//! `_parse_npc_corporations` and `_parse_factions` in Python.
 //!
-//! La fase 3 suma las dos primeras tablas de mapa, sin la complejidad de
-//! la proyección isométrica/dimétrica que trae `mapSolarSystems`:
-//! `mapRegions` y `mapConstellations`. Equivalen a `_parse_regions` y
-//! `_parse_constellations` en Python.
+//! Phase 3 adds the first two map tables, without the
+//! isometric/dimetric projection complexity `mapSolarSystems` brings:
+//! `mapRegions` and `mapConstellations`. Equivalent to `_parse_regions`
+//! and `_parse_constellations` in Python.
 //!
-//! La fase 4 suma `mapSolarSystems`, con el filtro de alcance
-//! k-space/w-space/abyssal/void ([`system_in_scope`]) y la proyección
-//! isométrica ([`isometric_projection_2d`]). Equivale a
-//! `_parse_solar_systems()` en Python.
+//! Phase 4 adds `mapSolarSystems`, with the k-space/w-space/abyssal/void
+//! scope filter ([`system_in_scope`]) and the isometric projection
+//! ([`isometric_projection_2d`]). Equivalent to `_parse_solar_systems()`
+//! in Python.
 //!
-//! La fase 5 suma `mapSystemGates` ([`parse_stargates`], condicional a
-//! `config.with_gates`), equivalente a `_parse_stargates()` en Python --
-//! ver su docstring para una nota importante sobre por qué esta fase en
-//! particular necesita correr dentro de una transacción explícita (no es
-//! solo una cuestión de atomicidad, como en el resto del pipeline).
+//! Phase 5 adds `mapSystemGates` ([`parse_stargates`], gated by
+//! `config.with_gates`), equivalent to `_parse_stargates()` in Python --
+//! see its docstring for an important note on why this particular phase
+//! needs to run inside an explicit transaction (it's not just an
+//! atomicity concern, unlike the rest of the pipeline).
 //!
-//! La fase 6 suma `mapStars` ([`parse_stars`]), equivalente a
-//! `_parse_stars()` en Python. El shape exacto de `mapStars.jsonl` se
-//! confirmó contra una muestra real de datos (no solo contra el código
-//! Python, que en este punto traía una nota del propio autor advirtiendo
-//! que el shape no estaba verificado) -- ver el docstring de
-//! [`parse_stars`] para el detalle.
+//! Phase 6 adds `mapStars` ([`parse_stars`]), equivalent to
+//! `_parse_stars()` in Python. `mapStars.jsonl`'s exact shape was
+//! confirmed against a real data sample (not just against the Python
+//! code, which at this point carried a note from the author themselves
+//! warning that the shape hadn't been verified) -- see [`parse_stars`]'s
+//! docstring for the detail.
 //!
-//! La fase 7 suma `mapPlanets` ([`parse_planets`]), equivalente a
-//! `_parse_planets()` en Python -- mismo caso que `mapStars`, shape
-//! confirmado contra una muestra real de 68407 registros (ver el
-//! docstring de [`parse_planets`]).
+//! Phase 7 adds `mapPlanets` ([`parse_planets`]), equivalent to
+//! `_parse_planets()` in Python -- same situation as `mapStars`, shape
+//! confirmed against a real sample of 68407 records (see
+//! [`parse_planets`]'s docstring).
 //!
-//! La fase 8 suma `mapMoons` ([`parse_moons`], condicional a
-//! `config.with_moons`), equivalente a `_parse_moons()` en Python. A
-//! diferencia de `mapStars`/`mapPlanets`, acá NO hubo una muestra real
-//! disponible para verificar (el archivo real pesa más de 200 MiB) -- el
-//! puerto se basa únicamente en el código Python, cuyo docstring SÍ
-//! confirma la lista de campos. Ver el docstring de [`parse_moons`] para
-//! el detalle de qué queda como inferencia (no verificación) en esta
-//! fase.
+//! Phase 8 adds `mapMoons` ([`parse_moons`], gated by
+//! `config.with_moons`), equivalent to `_parse_moons()` in Python.
+//! Unlike `mapStars`/`mapPlanets`, there was NO real sample available
+//! to verify against here (the real file weighs over 200 MiB) -- the
+//! port relies solely on the Python code, whose docstring DOES confirm
+//! the field list. See [`parse_moons`]'s docstring for the detail of
+//! what remains an inference (not a verification) in this phase.
 //!
-//! La fase 9 suma `mapSystemConnections` ([`parse_connections`]),
-//! equivalente a `parse_connections()` en Python -- la más simple de
-//! todas: una sola sentencia SQL que deriva las conexiones directamente
-//! de `mapSystemGates`, sin leer ningún archivo del SDE. Con esto,
-//! `parser.rs` alcanza paridad completa con `parse_data()` de Python.
+//! Phase 9 adds `mapSystemConnections` ([`parse_connections`]),
+//! equivalent to `parse_connections()` in Python -- the simplest of
+//! all: a single SQL statement that derives the connections directly
+//! from `mapSystemGates`, without reading any SDE file. With this,
+//! `parser.rs` reaches full parity with Python's `parse_data()`.
 //!
-//! ## Formato de archivo soportado
+//! ## Supported file format
 //!
-//! Solo JSONL (`SdeConfig.file_format == 'jsonl'` en el prototipo Python,
-//! que además es el default). El soporte YAML del prototipo (la otra
-//! rama de `_iter_records`) no está portado -- añadirlo implica sumar una
-//! dependencia de parseo YAML nueva al crate, decisión que se dejó fuera
-//! de esta fase a propósito.
+//! JSONL only (`SdeConfig.file_format == 'jsonl'` in the Python
+//! prototype, which is also the default). The prototype's YAML support
+//! (the other branch of `_iter_records`) isn't ported -- adding it would
+//! mean pulling in a new YAML-parsing dependency into the crate, a
+//! decision that was deliberately left out of this phase.
 //!
-//! ## Desviaciones conocidas respecto al prototipo Python
+//! ## Known deviations from the Python prototype
 //!
-//! - `_parse_types()` declara un diccionario `process = {}` que nunca se
-//!   llena (`process.get(...)` siempre da `None`), así que su chequeo
-//!   `if process.get(...) is not None: pass` nunca se cumple y todo tipo
-//!   termina insertándose de todos modos -- es código muerto. Este puerto
-//!   no lo replica; el comportamiento observable es idéntico (se inserta
-//!   cada tipo del archivo).
-//! - Si el nombre de un tipo del grupo "Sun" no tiene al menos 3 tokens
-//!   separados por espacio, Python lanza `IndexError` y aborta todo el
-//!   proceso. Aquí, en cambio, ese tipo simplemente no se trata como
-//!   estrella (no se inserta en `typeStar`) y el resto del archivo se
-//!   sigue procesando con normalidad. Si se prefiere paridad estricta
-//!   (abortar como en Python), avisar para cambiarlo a un
-//!   `BuilderError::Data`.
-//! - La extracción del color usa `strip_prefix('(')`/`strip_suffix(')')`
-//!   en vez del slice ciego `[1:-1]` de Python (que quita el primer/último
-//!   carácter sean o no paréntesis). Con datos bien formados el resultado
-//!   es idéntico; con datos mal formados, esta versión es más tolerante.
-//! - **Transacciones**: en Python, ningún `_parse_*` hace `commit()` --
-//!   todo el pipeline corre en una única transacción implícita que recién
-//!   se confirma en `SdeParser.close()`, al final de todo. Si algo falla
-//!   a mitad de camino, nada queda persistido (rollback implícito al
-//!   cerrar sin commit). Las funciones `parse_*` individuales de este
-//!   archivo, llamadas sueltas, NO envuelven sus inserts en una
-//!   transacción explícita (autocommit por INSERT, modo por defecto de
-//!   SQLite) -- solo [`parse_data`], el orquestador, envuelve las 6 fases
-//!   en una única transacción real (`Connection::transaction()`), con el
-//!   mismo comportamiento de "todo o nada" que Python. Si se llama a
-//!   `parse_categories()` (u otra función individual) directamente, fuera
-//!   de `parse_data`, sigue aplicando la falta de atomicidad descrita
-//!   arriba -- para tener la garantía de Python hay que pasar siempre por
-//!   `parse_data`.
-//! - `_parse_factions()` itera `faction.get('memberRaces', [])` sin
-//!   validar sus elementos -- si alguno no fuera un entero, Python
-//!   simplemente se lo pasaría a `cur.execute()` tal cual y fallaría (o
-//!   no) según el driver. Aquí, [`parse_factions`] valida cada elemento y
-//!   devuelve [`BuilderError::Data`] ante el primero que no sea entero,
-//!   ya que de todos modos violaría `factionRace.raceId INTEGER NOT NULL`
-//!   al insertar -- fallar temprano con un mensaje claro es preferible a
-//!   un error de SQLite genérico más abajo.
-//! - `_parse_regions()` lee `region.get('nebulaID')` como opcional, pero
-//!   `mapRegions.nebula` es `INTEGER NOT NULL` -- si faltara, Python
-//!   fallaría igual al insertar (constraint NOT NULL). Aquí,
-//!   [`parse_regions`] lo trata como requerido (mismo criterio que
-//!   `name` en fase 1): falla con [`BuilderError::Data`] y un mensaje
-//!   claro en vez de dejar que SQLite lo rechace más abajo.
-//! - `_parse_regions()`/`_parse_constellations()` también arman
-//!   `self._region_names`/`self._constellation_names`, pero solo para
-//!   componer el texto de la barra de progreso en consola (`print(...,
-//!   end="\r")`) -- no afectan ningún dato insertado. Este puerto no
-//!   replica esa caché, ya que no hay un equivalente de progreso en
-//!   consola todavía en ninguna función de este archivo.
-//! - `_parse_constellations()` calcula el id como
+//! - `_parse_types()` declares a `process = {}` dict that's never
+//!   filled in (`process.get(...)` always gives `None`), so its check
+//!   `if process.get(...) is not None: pass` is never true and every
+//!   type ends up inserted anyway -- it's dead code. This port doesn't
+//!   replicate it; the observable behavior is identical (every type in
+//!   the file gets inserted).
+//! - If a "Sun"-group type's name doesn't have at least 3
+//!   space-separated tokens, Python raises `IndexError` and aborts the
+//!   whole process. Here, instead, that type simply isn't treated as a
+//!   star (it isn't inserted into `typeStar`) and the rest of the file
+//!   keeps processing normally. If strict parity is preferred (abort
+//!   like Python), flag it to change this to a `BuilderError::Data`.
+//! - Color extraction uses `strip_prefix('(')`/`strip_suffix(')')`
+//!   instead of Python's blind `[1:-1]` slice (which strips the
+//!   first/last character whether or not they're parentheses). With
+//!   well-formed data the result is identical; with malformed data,
+//!   this version is more tolerant.
+//! - **Transactions**: in Python, no `_parse_*` does a `commit()` --
+//!   the whole pipeline runs in a single implicit transaction that's
+//!   only committed in `SdeParser.close()`, at the very end. If
+//!   something fails partway through, nothing gets persisted (implicit
+//!   rollback on closing without a commit). This file's individual
+//!   `parse_*` functions, called on their own, do NOT wrap their
+//!   inserts in an explicit transaction (autocommit per INSERT, SQLite's
+//!   default mode) -- only [`parse_data`], the orchestrator, wraps all 6
+//!   phases in a single real transaction (`Connection::transaction()`),
+//!   with the same "all or nothing" behavior as Python. If
+//!   `parse_categories()` (or another individual function) is called
+//!   directly, outside of `parse_data`, the lack-of-atomicity described
+//!   above still applies -- to get Python's guarantee you always have to
+//!   go through `parse_data`.
+//! - `_parse_factions()` iterates `faction.get('memberRaces', [])`
+//!   without validating its elements -- if one weren't an integer,
+//!   Python would just pass it to `cur.execute()` as-is and fail (or
+//!   not) depending on the driver. Here, [`parse_factions`] validates
+//!   each element and returns [`BuilderError::Data`] on the first one
+//!   that isn't an integer, since it would violate
+//!   `factionRace.raceId INTEGER NOT NULL` on insert anyway -- failing
+//!   early with a clear message beats a generic SQLite error further
+//!   down.
+//! - `_parse_regions()` reads `region.get('nebulaID')` as optional, but
+//!   `mapRegions.nebula` is `INTEGER NOT NULL` -- if it were missing,
+//!   Python would fail the same way on insert (NOT NULL constraint).
+//!   Here, [`parse_regions`] treats it as required (same criterion as
+//!   `name` in phase 1): it fails with [`BuilderError::Data`] and a
+//!   clear message instead of letting SQLite reject it further down.
+//! - `_parse_regions()`/`_parse_constellations()` also build
+//!   `self._region_names`/`self._constellation_names`, but only to
+//!   compose the console progress-bar text (`print(...,
+//!   end="\r")`) -- they don't affect any inserted data. This port
+//!   doesn't replicate that cache, since there's no console-progress
+//!   equivalent yet in any function in this file.
+//! - `_parse_constellations()` computes the id as
 //!   `element['constellationID'] if 'constellationID' in element else
-//!   element['_key']`. Python distingue "la clave está presente" (con
-//!   `in`) de "el valor es válido"; si `constellationID` estuviera
-//!   presente pero fuera `null` o de otro tipo, Python igual lo usaría
-//!   (y probablemente fallaría más abajo al insertar). [`parse_constellations`]
-//!   en cambio cae a `_key` en ambos casos (ausente o presente-pero-no-entero)
-//!   -- más tolerante, mismo resultado con datos bien formados.
-//! - `_parse_solar_systems()` en Python soporta tres algoritmos para
-//!   `projX`/`projY`/`projZ` según `self._config.projection_algorithm`:
-//!   `'isometric'` (`calculate_isometric_projection()`), `'dimetric'`
-//!   (`calculate_dimetric_projection()`, no portado) y cualquier otro
-//!   valor (passthrough crudo de `position.x/y/z` sin transformar,
-//!   tampoco portado). Esas tres columnas ya no existen en el schema (ver
-//!   más abajo, "projX/Y/Z eliminadas"), así que esta rama de Python no
-//!   se porta en absoluto -- ni siquiera el caso `'isometric'` que sí se
-//!   portaba antes.
-//! - **`projX`/`projY`/`projZ` eliminadas del schema**: guardaban una
-//!   proyección 2D del centro del sistema calculada localmente (vía
-//!   [`isometric_projection_2d`]), separada de `position2DX`/
-//!   `position2DY` (la proyección 2D que ya trae CCP precalculada). Como
-//!   ambas representan el mismo concepto, mantener las dos era
-//!   redundante -- se decidió explícitamente eliminar `projX/Y/Z` y
-//!   migrar todo a `position2DX`/`position2DY` (incluyendo las queries de
-//!   `SdeManager` en `src/lib.rs`, que antes leían `projX`/`projZ`).
-//!   [`isometric_projection_2d`] en sí sigue existiendo -- solo perdió
-//!   este caso de uso; sigue siendo lo que calcula `position2DX`/
-//!   `position2DY` cuando `config.force_isometric_position_2d` está
-//!   activo.
-//! - `self._system_names` en Python (poblado en `_parse_solar_systems`,
-//!   junto a `_systems_in_scope`) nunca se lee en ningún lado del
-//!   prototipo -- ni siquiera para un print de progreso, a diferencia de
-//!   `_region_names`/`_constellation_names`. Es dead code puro. Este
-//!   puerto no lo replica.
+//!   element['_key']`. Python distinguishes "the key is present" (with
+//!   `in`) from "the value is valid"; if `constellationID` were present
+//!   but `null` or some other type, Python would still use it (and
+//!   probably fail further down on insert). [`parse_constellations`]
+//!   instead falls back to `_key` in both cases (absent or
+//!   present-but-not-an-integer) -- more tolerant, same result with
+//!   well-formed data.
+//! - Python's `_parse_solar_systems()` supports three algorithms for
+//!   `projX`/`projY`/`projZ` depending on
+//!   `self._config.projection_algorithm`: `'isometric'`
+//!   (`calculate_isometric_projection()`), `'dimetric'`
+//!   (`calculate_dimetric_projection()`, not ported) and any other
+//!   value (raw passthrough of `position.x/y/z` untransformed, also not
+//!   ported). Those three columns no longer exist in the schema (see
+//!   below, "projX/Y/Z removed"), so this branch of Python isn't ported
+//!   at all -- not even the `'isometric'` case, which used to be
+//!   ported.
+//! - **`projX`/`projY`/`projZ` removed from the schema**: they used to
+//!   store a locally-computed 2D projection of the system's center (via
+//!   [`isometric_projection_2d`]), separate from `position2DX`/
+//!   `position2DY` (the 2D projection CCP already provides
+//!   precomputed). Since both represent the same concept, keeping both
+//!   was redundant -- the explicit decision was made to remove
+//!   `projX/Y/Z` and migrate everything to `position2DX`/
+//!   `position2DY` (including `SdeManager`'s queries in `src/lib.rs`,
+//!   which used to read `projX`/`projZ`). [`isometric_projection_2d`]
+//!   itself still exists -- it just lost this use case; it's still what
+//!   computes `position2DX`/`position2DY` when
+//!   `config.force_isometric_position_2d` is on.
+//! - Python's `self._system_names` (populated in
+//!   `_parse_solar_systems`, alongside `_systems_in_scope`) is never
+//!   read anywhere in the prototype -- not even for a progress print,
+//!   unlike `_region_names`/`_constellation_names`. It's pure dead
+//!   code. This port doesn't replicate it.
 
 use crate::builder::BuilderError;
 use rusqlite::Connection;
@@ -171,59 +173,59 @@ use serde_json::Value;
 use std::io::BufRead;
 use std::path::Path;
 
-/// Configuración para el parser. Cubre lo que hace falta para localizar
-/// nombres (`_localized()` en Python) y el cálculo isométrico opcional de
-/// `position2DX`/`position2DY` (ver [`ProjectedAxis`]/
-/// [`isometric_projection_2d`]). Los flags de alcance de sistema solar
-/// (k-space/w-space/abyssal/void) y el algoritmo de proyección dimétrico
-/// (`calculate_dimetric_projection()` en Python, no portado) se agregan
-/// cuando se porte `_parse_solar_systems` en una fase futura.
+/// Config for the parser. Covers what's needed for localizing names
+/// (`_localized()` in Python) and the optional isometric computation of
+/// `position2DX`/`position2DY` (see [`ProjectedAxis`]/
+/// [`isometric_projection_2d`]). The solar-system scope flags
+/// (k-space/w-space/abyssal/void) and the dimetric projection algorithm
+/// (`calculate_dimetric_projection()` in Python, not ported) get added
+/// when `_parse_solar_systems` gets ported in a future phase.
 #[derive(Debug, Clone)]
 pub struct ParserConfig {
-    /// Idioma a extraer de los campos `name`/`description` localizados
-    /// (p. ej. `{"en": "Jita", "es": "Jita"}` -> `"Jita"`), con fallback a
-    /// `"en"` si el idioma pedido no está. Default `"en"`, igual que
-    /// `SdeConfig.language` en Python.
+    /// Language to extract from localized `name`/`description` fields
+    /// (e.g. `{"en": "Jita", "es": "Jita"}` -> `"Jita"`), falling back
+    /// to `"en"` if the requested language isn't there. Default `"en"`,
+    /// same as `SdeConfig.language` in Python.
     pub language: String,
-    /// Si es `true`, `position2DX`/`position2DY` se calculan siempre
-    /// localmente vía [`isometric_projection_2d`], **ignorando** el campo
-    /// `position2D` que ya trae CCP en el SDE reworkeado -- en vez de
-    /// usar directamente el valor que CCP provee precalculado (que es el
-    /// comportamiento por default, `false`).
+    /// If `true`, `position2DX`/`position2DY` are always computed
+    /// locally via [`isometric_projection_2d`], **ignoring** the
+    /// `position2D` field CCP already provides in the reworked SDE --
+    /// instead of directly using the precomputed value CCP provides
+    /// (which is the default behavior, `false`).
     ///
-    /// Nota: todavía no hay ningún `parse_*` que puebla `mapSolarSystems`
-    /// (queda para una fase futura, ver el docstring del módulo), así que
-    /// por ahora este flag no tiene ningún efecto observable -- es la
-    /// pieza de configuración que esa función futura va a consultar.
+    /// Note: there's still no `parse_*` that populates
+    /// `mapSolarSystems` (left for a future phase, see the module's
+    /// docstring), so for now this flag has no observable effect -- it's
+    /// the config piece that future function will consult.
     pub force_isometric_position_2d: bool,
-    /// Eje que se colapsa en el cálculo de [`isometric_projection_2d`]
-    /// cuando `force_isometric_position_2d` está activo (sin efecto si no
-    /// lo está). Default [`ProjectedAxis::Y`], igual que
-    /// `SdeConfig.projected_axis = 1` en Python (`0` para X, `1` para Y,
-    /// `2` para Z).
+    /// Axis collapsed in [`isometric_projection_2d`]'s computation when
+    /// `force_isometric_position_2d` is on (no effect if it isn't).
+    /// Default [`ProjectedAxis::Y`], same as
+    /// `SdeConfig.projected_axis = 1` in Python (`0` for X, `1` for Y,
+    /// `2` for Z).
     pub isometric_projected_axis: ProjectedAxis,
-    /// Incluir sistemas k-space (sin `wormholeClassID`). Default `true`,
-    /// igual que `SdeConfig.map_kspace` en Python.
+    /// Include k-space systems (no `wormholeClassID`). Default `true`,
+    /// same as `SdeConfig.map_kspace` in Python.
     pub map_kspace: bool,
-    /// Incluir sistemas de wormhole space. Default `true`, igual que
-    /// `SdeConfig.map_wspace` en Python.
+    /// Include wormhole space systems. Default `true`, same as
+    /// `SdeConfig.map_wspace` in Python.
     pub map_wspace: bool,
-    /// Incluir sistemas de abyssal deadspace. Default `true`, igual que
-    /// `SdeConfig.map_abyssal` en Python.
+    /// Include abyssal deadspace systems. Default `true`, same as
+    /// `SdeConfig.map_abyssal` in Python.
     pub map_abyssal: bool,
-    /// Incluir sistemas "void". Default `false`, igual que
-    /// `SdeConfig.map_void` en Python. Ver [`system_in_scope`] para la
-    /// nota sobre por qué, hoy, `map_wspace`/`map_abyssal`/`map_void`
-    /// terminan gateando sobre el mismo chequeo.
+    /// Include "void" systems. Default `false`, same as
+    /// `SdeConfig.map_void` in Python. See [`system_in_scope`] for a
+    /// note on why, today, `map_wspace`/`map_abyssal`/`map_void` all
+    /// end up gating on the same check.
     pub map_void: bool,
-    /// Si es `false`, [`parse_data`] omite la fase de stargates
-    /// ([`parse_stargates`]) por completo -- no la llama en absoluto, no
-    /// solo filtra sus resultados. Default `true`, igual que
-    /// `SdeConfig.with_gates` en Python.
+    /// If `false`, [`parse_data`] skips the stargates phase
+    /// ([`parse_stargates`]) entirely -- doesn't call it at all, not
+    /// just filter its results. Default `true`, same as
+    /// `SdeConfig.with_gates` in Python.
     pub with_gates: bool,
-    /// Si es `false`, [`parse_data`] omite la fase de lunas
-    /// ([`parse_moons`]) por completo -- no la llama en absoluto. Default
-    /// `true`, igual que `SdeConfig.with_moons` en Python.
+    /// If `false`, [`parse_data`] skips the moons phase
+    /// ([`parse_moons`]) entirely -- doesn't call it at all. Default
+    /// `true`, same as `SdeConfig.with_moons` in Python.
     pub with_moons: bool,
 }
 
@@ -243,35 +245,34 @@ impl Default for ParserConfig {
     }
 }
 
-/// Eje que se "colapsa" (se descarta) al calcular una proyección
-/// isométrica 2D de un punto 3D -- equivalente al parámetro entero
-/// `projected_axis` de Python (`0` para X, `1` para Y, `2` para Z).
+/// Axis that gets "collapsed" (dropped) when computing a 2D isometric
+/// projection of a 3D point -- equivalent to Python's integer
+/// `projected_axis` parameter (`0` for X, `1` for Y, `2` for Z).
 ///
-/// En la fórmula de Python, el componente del eje colapsado siempre
-/// queda en `0.0` en la tupla de salida de 3 elementos; como ese valor
-/// nunca aporta información, [`isometric_projection_2d`] lo omite
-/// directamente y devuelve solo los dos componentes restantes.
+/// In Python's formula, the collapsed axis's component always ends up
+/// `0.0` in the 3-element output tuple; since that value never carries
+/// any information, [`isometric_projection_2d`] omits it directly and
+/// returns just the two remaining components.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProjectedAxis {
     X,
-    /// Default -- coincide con `SdeConfig.projected_axis = 1` en Python.
+    /// Default -- matches `SdeConfig.projected_axis = 1` in Python.
     #[default]
     Y,
     Z,
 }
 
-/// Proyección isométrica 2D de un punto 3D, colapsando `axis`. Puerto
-/// exacto de `calculate_isometric_projection()` en Python (mismas
-/// fórmulas, mismo eje colapsado); a diferencia de Python, que siempre
-/// devuelve una tupla de 3 con un `0.0` de relleno en el eje colapsado,
-/// esta función devuelve directamente los dos componentes no nulos como
-/// `(x2d, y2d)`.
+/// 2D isometric projection of a 3D point, collapsing `axis`. Exact port
+/// of `calculate_isometric_projection()` in Python (same formulas, same
+/// collapsed axis); unlike Python, which always returns a 3-tuple with
+/// a `0.0` filler on the collapsed axis, this function directly returns
+/// the two non-null components as `(x2d, y2d)`.
 ///
-/// Fórmulas (de <https://www.compuphase.com/axometr.htm>, según el
-/// comentario original en Python):
-/// - eje Z colapsado: `(x - z, y + (x + z) / 2)`
-/// - eje Y colapsado: `(x - y, z + (x + y) / 2)`
-/// - eje X colapsado: `(y - x, z + (y + x) / 2)`
+/// Formulas (from <https://www.compuphase.com/axometr.htm>, per the
+/// original comment in Python):
+/// - Z axis collapsed: `(x - z, y + (x + z) / 2)`
+/// - Y axis collapsed: `(x - y, z + (x + y) / 2)`
+/// - X axis collapsed: `(y - x, z + (y + x) / 2)`
 pub fn isometric_projection_2d(x: f64, y: f64, z: f64, axis: ProjectedAxis) -> (f64, f64) {
     match axis {
         ProjectedAxis::Z => (x - z, y + (x + z) / 2.0),
@@ -280,17 +281,17 @@ pub fn isometric_projection_2d(x: f64, y: f64, z: f64, axis: ProjectedAxis) -> (
     }
 }
 
-/// Decide si un sistema solar debe importarse, según los flags
-/// `map_kspace`/`map_wspace`/`map_abyssal`/`map_void`. Puerto exacto de
-/// `_system_in_scope()` en Python.
+/// Decides whether a solar system should be imported, based on the
+/// `map_kspace`/`map_wspace`/`map_abyssal`/`map_void` flags. Exact port
+/// of `_system_in_scope()` in Python.
 ///
-/// El SDE reworkeado ya no separa k-space/w-space/abyssal/void por
-/// directorio como el viejo; el único discriminador confirmado en el
-/// propio registro es `wormholeClassID` (solo presente en sistemas que
-/// NO son k-space). CCP no expone un flag más fino para distinguir
-/// abyssal de void a este nivel, así que -- igual que en Python --
-/// `map_wspace`/`map_abyssal`/`map_void` hoy comparten el mismo chequeo
-/// ("¿tiene `wormholeClassID`?").
+/// The reworked SDE no longer splits k-space/w-space/abyssal/void by
+/// directory like the old one did; the only confirmed discriminator in
+/// the record itself is `wormholeClassID` (only present in systems that
+/// are NOT k-space). CCP doesn't expose a finer-grained flag to
+/// distinguish abyssal from void at this level, so -- same as in
+/// Python -- `map_wspace`/`map_abyssal`/`map_void` currently share the
+/// same check ("does it have a `wormholeClassID`?").
 fn system_in_scope(wormhole_class_id: Option<i64>, config: &ParserConfig) -> bool {
     match wormhole_class_id {
         None => config.map_kspace,
@@ -298,45 +299,41 @@ fn system_in_scope(wormhole_class_id: Option<i64>, config: &ParserConfig) -> boo
     }
 }
 
-/// Estado compartido entre [`parse_groups`] y [`parse_types`], equivalente
-/// a `SdeParser._stars` (`DataBrigde`) en Python.
+/// State shared between [`parse_groups`] and [`parse_types`], equivalent
+/// to `SdeParser._stars` (`DataBrigde`) in Python.
 #[derive(Debug, Default)]
 pub struct StarTypeState {
-    /// `groupId` del grupo llamado exactamente `"Sun"`, una vez que
-    /// [`parse_groups`] lo encuentra.
+    /// `groupId` of the group named exactly `"Sun"`, once
+    /// [`parse_groups`] finds it.
     pub sun_group_id: Option<i64>,
-    /// `typeId` (de `invTypes`) -> `starTypeId` (de `typeStar`) para cada
-    /// tipo de estrella insertado por [`parse_types`]. Lo va a necesitar
-    /// `parse_stars()` en una fase futura del builder (no portada
-    /// todavía).
+    /// `typeId` (from `invTypes`) -> `starTypeId` (from `typeStar`) for
+    /// each star type inserted by [`parse_types`]. Used by
+    /// [`parse_stars`] to resolve each star's `starTypeId`.
     pub star_type_ids: std::collections::HashMap<i64, i64>,
 }
 
-/// Ids de sistema solar que pasaron el filtro de [`system_in_scope`],
-/// poblado por [`parse_solar_systems`]. Equivalente a
-/// `self._systems_in_scope` en Python, que usan `_parse_stargates`,
-/// `_parse_stars`, `_parse_planets` y `_parse_moons` para filtrar sus
-/// propios registros por `solarSystemID` -- ninguna de esas cuatro está
-/// portada todavía, pero este estado es lo que van a necesitar cuando se
-/// porten.
+/// Solar system ids that passed the [`system_in_scope`] filter,
+/// populated by [`parse_solar_systems`]. Equivalent to
+/// `self._systems_in_scope` in Python, which `_parse_stargates`,
+/// `_parse_stars`, `_parse_planets` and `_parse_moons` use to filter
+/// their own records by `solarSystemID`.
 #[derive(Debug, Default)]
 pub struct SystemScopeState {
     pub systems_in_scope: std::collections::HashSet<i64>,
 }
 
 // ---------------------------------------------------------------------
-// Infraestructura compartida: lectura de archivos planos + helpers de
-// extracción de campos, equivalentes a `_iter_records()` / `_localized()`
-// en Python.
+// Shared infrastructure: flat-file reading + field-extraction helpers,
+// equivalent to `_iter_records()` / `_localized()` in Python.
 // ---------------------------------------------------------------------
 
-/// Itera los registros de `<sde_directory>/<stem>.jsonl`, una línea (no
-/// vacía) a la vez, como [`serde_json::Value`].
+/// Iterates the records in `<sde_directory>/<stem>.jsonl`, one
+/// non-empty line at a time, as [`serde_json::Value`].
 ///
-/// Equivalente a la rama `jsonl` de `_iter_records()` en Python. Cada
-/// registro trae su propio campo `_key` (el id) por convención del nuevo
-/// SDE -- a diferencia de la rama YAML de Python, no hace falta
-/// inyectarlo aparte.
+/// Equivalent to the `jsonl` branch of `_iter_records()` in Python.
+/// Each record carries its own `_key` field (the id) by convention of
+/// the new SDE -- unlike Python's YAML branch, there's no need to
+/// inject it separately.
 fn iter_jsonl_records(
     sde_directory: &Path,
     stem: &str,
@@ -351,10 +348,10 @@ fn iter_jsonl_records(
     }))
 }
 
-/// Extrae el string localizado en `config.language` de un campo tipo
-/// `{"en": "...", "es": "...", ...}`, con fallback a `"en"`. Si `field` ya
-/// es un string plano (no un objeto), se devuelve tal cual. Equivalente a
-/// `_localized()` en Python.
+/// Extracts the string localized to `config.language` from a field
+/// shaped like `{"en": "...", "es": "...", ...}`, falling back to
+/// `"en"`. If `field` is already a plain string (not an object), it's
+/// returned as-is. Equivalent to `_localized()` in Python.
 fn localized<'a>(record: &'a Value, field: &str, config: &ParserConfig) -> Option<&'a str> {
     match record.get(field) {
         Some(Value::Object(map)) => map
@@ -366,31 +363,31 @@ fn localized<'a>(record: &'a Value, field: &str, config: &ParserConfig) -> Optio
     }
 }
 
-/// Extrae un campo entero requerido del registro. Equivalente a un acceso
-/// tipo `dict[key]` en Python (que lanza `KeyError` si falta): si el campo
-/// no está presente o no es numérico, esto es un error de datos
-/// ([`BuilderError::Data`]), no un `None` silencioso.
+/// Extracts a required integer field from the record. Equivalent to a
+/// `dict[key]`-style access in Python (which raises `KeyError` if
+/// missing): if the field isn't present or isn't numeric, this is a
+/// data error ([`BuilderError::Data`]), not a silent `None`.
 fn required_i64(record: &Value, field: &str) -> Result<i64, BuilderError> {
     record.get(field).and_then(Value::as_i64).ok_or_else(|| {
         BuilderError::Data(format!(
-            "registro sin campo requerido `{field}` (o no es un entero): {record}"
+            "record missing required field `{field}` (or it's not an integer): {record}"
         ))
     })
 }
 
-/// Extrae un campo entero opcional. Equivalente a `dict.get(key)` en
-/// Python (`None` si falta, sin error).
+/// Extracts an optional integer field. Equivalent to `dict.get(key)` in
+/// Python (`None` if missing, no error).
 fn optional_i64(record: &Value, field: &str) -> Option<i64> {
     record.get(field).and_then(Value::as_i64)
 }
 
-/// Extrae un nombre localizado requerido (vía [`localized`]); si el campo
-/// falta o no es un string/objeto localizable, es un error de datos. Las
-/// columnas de nombre a las que alimenta esto (`categoryName`,
-/// `groupName`, `typeName`, `raceName`) son todas `TEXT NOT NULL` en el
-/// schema STRICT -- Python también fallaría aquí (con `IntegrityError` al
-/// intentar insertar `NULL`), así que se trata igual de "duro" que
-/// `required_i64` en vez de insertar silenciosamente una cadena vacía.
+/// Extracts a required localized name (via [`localized`]); if the field
+/// is missing or isn't a localizable string/object, this is a data
+/// error. The name columns this feeds (`categoryName`, `groupName`,
+/// `typeName`, `raceName`) are all `TEXT NOT NULL` in the STRICT
+/// schema -- Python would also fail here (with an `IntegrityError` when
+/// trying to insert `NULL`), so it's treated just as "hard" as
+/// `required_i64` instead of silently inserting an empty string.
 fn required_localized<'a>(
     record: &'a Value,
     field: &str,
@@ -398,59 +395,59 @@ fn required_localized<'a>(
 ) -> Result<&'a str, BuilderError> {
     localized(record, field, config).ok_or_else(|| {
         BuilderError::Data(format!(
-            "registro sin campo `{field}` localizable en `{}`/`en`: {record}",
+            "record has no localizable field `{field}` in `{}`/`en`: {record}",
             config.language
         ))
     })
 }
 
-/// Extrae un campo booleano opcional. Equivalente a `dict.get(key)`.
+/// Extracts an optional boolean field. Equivalent to `dict.get(key)`.
 fn optional_bool(record: &Value, field: &str) -> Option<bool> {
     record.get(field).and_then(Value::as_bool)
 }
 
-/// Extrae un campo de punto flotante opcional. Equivalente a
+/// Extracts an optional floating-point field. Equivalent to
 /// `dict.get(key)`.
 fn optional_f64(record: &Value, field: &str) -> Option<f64> {
     record.get(field).and_then(Value::as_f64)
 }
 
-/// Extrae un campo string plano requerido (no localizado -- para campos
-/// como `tickerName` que no traen variantes por idioma). Equivalente a un
-/// acceso `dict[key]` en Python.
+/// Extracts a required plain string field (not localized -- for fields
+/// like `tickerName` that don't carry per-language variants). Equivalent
+/// to a `dict[key]` access in Python.
 fn required_str<'a>(record: &'a Value, field: &str) -> Result<&'a str, BuilderError> {
     record.get(field).and_then(Value::as_str).ok_or_else(|| {
         BuilderError::Data(format!(
-            "registro sin campo requerido `{field}` (o no es un string): {record}"
+            "record missing required field `{field}` (or it's not a string): {record}"
         ))
     })
 }
 
-/// Extrae un campo booleano requerido. Equivalente a un acceso
-/// `dict[key]` en Python.
+/// Extracts a required boolean field. Equivalent to a `dict[key]`
+/// access in Python.
 fn required_bool(record: &Value, field: &str) -> Result<bool, BuilderError> {
     record.get(field).and_then(Value::as_bool).ok_or_else(|| {
         BuilderError::Data(format!(
-            "registro sin campo requerido `{field}` (o no es un booleano): {record}"
+            "record missing required field `{field}` (or it's not a boolean): {record}"
         ))
     })
 }
 
-/// Extrae un campo de punto flotante requerido. Equivalente a un acceso
-/// `dict[key]` en Python.
+/// Extracts a required floating-point field. Equivalent to a
+/// `dict[key]` access in Python.
 fn required_f64(record: &Value, field: &str) -> Result<f64, BuilderError> {
     record.get(field).and_then(Value::as_f64).ok_or_else(|| {
         BuilderError::Data(format!(
-            "registro sin campo requerido `{field}` (o no es un número): {record}"
+            "record missing required field `{field}` (or it's not a number): {record}"
         ))
     })
 }
 
-/// Extrae los ids de un array entero opcional -- vacío si el campo no
-/// está o es `null`, igual que `faction.get('memberRaces', [])` en
-/// Python. Si el campo SÍ está pero no es un array, o alguno de sus
-/// elementos no es entero, es un error de datos (ver "Desviaciones
-/// conocidas" en el docstring del módulo).
+/// Extracts ids from an optional integer array -- empty if the field is
+/// missing or `null`, same as `faction.get('memberRaces', [])` in
+/// Python. If the field IS present but isn't an array, or any of its
+/// elements isn't an integer, that's a data error (see "Known
+/// deviations" in the module's docstring).
 fn optional_i64_array(record: &Value, field: &str) -> Result<Vec<i64>, BuilderError> {
     match record.get(field) {
         None | Some(Value::Null) => Ok(Vec::new()),
@@ -458,24 +455,24 @@ fn optional_i64_array(record: &Value, field: &str) -> Result<Vec<i64>, BuilderEr
             .iter()
             .map(|item| {
                 item.as_i64().ok_or_else(|| {
-                    BuilderError::Data(format!("elemento no entero en el array `{field}`: {item}"))
+                    BuilderError::Data(format!("non-integer element in array `{field}`: {item}"))
                 })
             })
             .collect(),
         Some(other) => Err(BuilderError::Data(format!(
-            "campo `{field}` no es un array: {other}"
+            "field `{field}` is not an array: {other}"
         ))),
     }
 }
 
-/// Extrae `record["position"]["x"/"y"/"z"]` como `(f64, f64, f64)`.
-/// Equivalente al acceso anidado `record['position']['x']` (etc.) en
-/// Python -- ambos niveles son requeridos (`dict[key]`, no `.get()`); si
-/// falta `position` o cualquiera de sus tres componentes, es un error de
-/// datos.
+/// Extracts `record["position"]["x"/"y"/"z"]` as `(f64, f64, f64)`.
+/// Equivalent to the nested access `record['position']['x']` (etc.) in
+/// Python -- both levels are required (`dict[key]`, not `.get()`); if
+/// `position` or any of its three components is missing, that's a data
+/// error.
 fn required_position(record: &Value) -> Result<(f64, f64, f64), BuilderError> {
     let position = record.get("position").ok_or_else(|| {
-        BuilderError::Data(format!("registro sin campo requerido `position`: {record}"))
+        BuilderError::Data(format!("record missing required field `position`: {record}"))
     })?;
     let x = required_f64(position, "x")?;
     let y = required_f64(position, "y")?;
@@ -483,34 +480,35 @@ fn required_position(record: &Value) -> Result<(f64, f64, f64), BuilderError> {
     Ok((x, y, z))
 }
 
-/// Extrae `record[outer][inner]` como `i64` requerido. Equivalente al
-/// acceso anidado `record[outer][inner]` en Python (ambos niveles son
-/// `dict[key]`, no `.get()`) -- usado para `destination.stargateID`/
-/// `destination.solarSystemID` en [`parse_stargates`].
+/// Extracts `record[outer][inner]` as a required `i64`. Equivalent to
+/// the nested access `record[outer][inner]` in Python (both levels are
+/// `dict[key]`, not `.get()`) -- used for `destination.stargateID`/
+/// `destination.solarSystemID` in [`parse_stargates`].
 fn required_nested_i64(record: &Value, outer: &str, inner: &str) -> Result<i64, BuilderError> {
     let outer_val = record.get(outer).ok_or_else(|| {
-        BuilderError::Data(format!("registro sin campo requerido `{outer}`: {record}"))
+        BuilderError::Data(format!("record missing required field `{outer}`: {record}"))
     })?;
     required_i64(outer_val, inner)
 }
 
-/// Extrae un campo entero opcional que puede venir en el nivel superior
-/// del registro o anidado bajo `nested_field` (p. ej. `statistics`), con
-/// el nivel superior con prioridad. Aproxima el patrón Python
-/// `record.get(field, nested.get(field))` (donde `nested =
-/// record.get(nested_field) or {}`), usado en `_parse_stars()` para
-/// `radius`/`locked` -- con una diferencia menor: Python distingue "la
-/// clave está pero es `null`" (no cae al nested) de "la clave no está"
-/// (sí cae); acá ambos casos caen al nested por igual, ya que
-/// `optional_i64` no distingue "ausente" de "presente pero de tipo
-/// incorrecto/null".
+/// Extracts an optional integer field that can either be at the
+/// record's top level or nested under `nested_field` (e.g.
+/// `statistics`), with the top level taking priority. Approximates
+/// Python's `record.get(field, nested.get(field))` pattern (where
+/// `nested = record.get(nested_field) or {}`), used in `_parse_stars()`
+/// for `radius`/`locked` -- with a minor difference: Python
+/// distinguishes "the key is present but is `null`" (doesn't fall
+/// through to nested) from "the key is absent" (does fall through);
+/// here both cases fall through to nested alike, since `optional_i64`
+/// doesn't distinguish "absent" from "present but of the wrong
+/// type/null".
 fn optional_i64_with_nested_fallback(record: &Value, field: &str, nested_field: &str) -> Option<i64> {
     optional_i64(record, field)
         .or_else(|| record.get(nested_field).and_then(|nested| optional_i64(nested, field)))
 }
 
-/// Igual que [`optional_i64_with_nested_fallback`], pero para campos
-/// booleanos (p. ej. `locked`).
+/// Same as [`optional_i64_with_nested_fallback`], but for boolean
+/// fields (e.g. `locked`).
 fn optional_bool_with_nested_fallback(
     record: &Value,
     field: &str,
@@ -520,26 +518,25 @@ fn optional_bool_with_nested_fallback(
         .or_else(|| record.get(nested_field).and_then(|nested| optional_bool(nested, field)))
 }
 
-/// Igual que [`optional_i64_with_nested_fallback`], pero para campos de
-/// punto flotante -- usado para `mapPlanets.radius` (columna `REAL`, a
-/// diferencia de `mapStars.radius`, que es `INTEGER`).
+/// Same as [`optional_i64_with_nested_fallback`], but for floating-point
+/// fields -- used for `mapPlanets.radius` (a `REAL` column, unlike
+/// `mapStars.radius`, which is `INTEGER`).
 fn optional_f64_with_nested_fallback(record: &Value, field: &str, nested_field: &str) -> Option<f64> {
     optional_f64(record, field)
         .or_else(|| record.get(nested_field).and_then(|nested| optional_f64(nested, field)))
 }
 
-/// Extrae un campo string plano opcional. Equivalente a `dict.get(key)`
-/// en Python (`None` si falta, sin error).
+/// Extracts an optional plain string field. Equivalent to
+/// `dict.get(key)` in Python (`None` if missing, no error).
 fn optional_str<'a>(record: &'a Value, field: &str) -> Option<&'a str> {
     record.get(field).and_then(Value::as_str)
 }
 
-/// Extrae `record[outer][inner]` como `f64`, devolviendo `None` si falta
-/// cualquiera de los dos niveles (o no es numérico). Equivalente al
-/// patrón `outer_val = record.get(outer); outer_val.get(inner) if
-/// outer_val else None` en Python -- usado para `position2D.x`/`.y`, que
-/// a diferencia de `position` (ver [`required_position`]) es opcional en
-/// ambos niveles.
+/// Extracts `record[outer][inner]` as `f64`, returning `None` if either
+/// level is missing (or isn't numeric). Equivalent to the pattern
+/// `outer_val = record.get(outer); outer_val.get(inner) if outer_val
+/// else None` in Python -- used for `position2D.x`/`.y`, which, unlike
+/// `position` (see [`required_position`]), is optional at both levels.
 fn optional_nested_f64(record: &Value, outer: &str, inner: &str) -> Option<f64> {
     record.get(outer)?.get(inner).and_then(Value::as_f64)
 }
@@ -548,9 +545,9 @@ fn optional_nested_f64(record: &Value, outer: &str, inner: &str) -> Option<f64> 
 // invCategories
 // ---------------------------------------------------------------------
 
-/// Puebla `invCategories` desde `<sde_directory>/categories.jsonl`.
-/// Devuelve la cantidad de filas insertadas. Equivalente a
-/// `_parse_categories()` en Python.
+/// Populates `invCategories` from `<sde_directory>/categories.jsonl`.
+/// Returns the number of rows inserted. Equivalent to
+/// `_parse_categories()` in Python.
 pub fn parse_categories(
     connection: &Connection,
     sde_directory: &Path,
@@ -577,11 +574,11 @@ pub fn parse_categories(
 // invGroups
 // ---------------------------------------------------------------------
 
-/// Puebla `invGroups` desde `<sde_directory>/groups.jsonl`. De paso,
-/// detecta el grupo llamado exactamente `"Sun"` y guarda su id en
-/// `state.sun_group_id` -- lo necesita [`parse_types`] para reconocer los
-/// tipos de estrella. Devuelve la cantidad de filas insertadas.
-/// Equivalente a `_parse_groups()` en Python.
+/// Populates `invGroups` from `<sde_directory>/groups.jsonl`. Along the
+/// way, detects the group named exactly `"Sun"` and saves its id in
+/// `state.sun_group_id` -- [`parse_types`] needs it to recognize star
+/// types. Returns the number of rows inserted. Equivalent to
+/// `_parse_groups()` in Python.
 pub fn parse_groups(
     connection: &Connection,
     sde_directory: &Path,
@@ -613,14 +610,14 @@ pub fn parse_groups(
 }
 
 // ---------------------------------------------------------------------
-// invTypes (+ typeStar para los tipos de estrella)
+// invTypes (+ typeStar for star types)
 // ---------------------------------------------------------------------
 
-/// Inserta una fila en `typeStar` y devuelve el `starTypeId` que le
-/// asignó SQLite. Equivalente a `add_star_type()` en Python (que hace lo
-/// mismo: INSERT y luego un SELECT de vuelta por `typeId`, ya que
-/// `typeStar.starTypeId` no tiene `AUTOINCREMENT` -- es un `ROWID` común
-/// que igual se autoasigna).
+/// Inserts a row into `typeStar` and returns the `starTypeId` SQLite
+/// assigned it. Equivalent to `add_star_type()` in Python (which does
+/// the same thing: INSERT and then a SELECT to read it back by
+/// `typeId`, since `typeStar.starTypeId` has no `AUTOINCREMENT` -- it's
+/// a plain `ROWID` that still gets auto-assigned).
 fn add_star_type(
     connection: &Connection,
     type_id: i64,
@@ -639,13 +636,12 @@ fn add_star_type(
     Ok(star_type_id)
 }
 
-/// Puebla `invTypes` desde `<sde_directory>/types.jsonl`, y de paso
-/// `typeStar` para cualquier tipo perteneciente al grupo "Sun" (detectado
-/// por [`parse_groups`] vía `state.sun_group_id`). Devuelve la cantidad de
-/// filas insertadas en `invTypes`. Equivalente a `_parse_types()` en
-/// Python -- ver las "Desviaciones conocidas" en el docstring del módulo
-/// para el manejo del código muerto `process` y de nombres de estrella
-/// mal formados.
+/// Populates `invTypes` from `<sde_directory>/types.jsonl`, and along
+/// the way `typeStar` for any type belonging to the "Sun" group (detected
+/// by [`parse_groups`] via `state.sun_group_id`). Returns the number of
+/// rows inserted into `invTypes`. Equivalent to `_parse_types()` in
+/// Python -- see "Known deviations" in the module's docstring for how
+/// the dead `process` code and malformed star names are handled.
 pub fn parse_types(
     connection: &Connection,
     sde_directory: &Path,
@@ -681,9 +677,9 @@ pub fn parse_types(
                 let star_type_id = add_star_type(connection, id, star_name, color)?;
                 state.star_type_ids.insert(id, star_type_id);
             }
-            // Menos de 3 tokens: no se trata como estrella. Ver
-            // "Desviaciones conocidas" en el docstring del módulo --
-            // Python abortaría todo el proceso con IndexError aquí.
+            // Fewer than 3 tokens: not treated as a star. See "Known
+            // deviations" in the module's docstring -- Python would
+            // abort the whole process with an IndexError here.
         }
 
         count += 1;
@@ -695,9 +691,8 @@ pub fn parse_types(
 // races
 // ---------------------------------------------------------------------
 
-/// Puebla `races` desde `<sde_directory>/races.jsonl`. Devuelve la
-/// cantidad de filas insertadas. Equivalente a `_parse_races()` en
-/// Python.
+/// Populates `races` from `<sde_directory>/races.jsonl`. Returns the
+/// number of rows inserted. Equivalent to `_parse_races()` in Python.
 pub fn parse_races(
     connection: &Connection,
     sde_directory: &Path,
@@ -722,10 +717,11 @@ pub fn parse_races(
 // npcCorporations
 // ---------------------------------------------------------------------
 
-/// Puebla `npcCorporations` desde `<sde_directory>/npcCorporations.jsonl`.
-/// Requiere que `races` ya esté poblada si algún registro trae `raceID`
-/// (FK `npcCorporations.raceId -> races.raceId`). Devuelve la cantidad de
-/// filas insertadas. Equivalente a `_parse_npc_corporations()` en Python.
+/// Populates `npcCorporations` from
+/// `<sde_directory>/npcCorporations.jsonl`. Requires `races` to already
+/// be populated if any record carries `raceID` (FK
+/// `npcCorporations.raceId -> races.raceId`). Returns the number of
+/// rows inserted. Equivalent to `_parse_npc_corporations()` in Python.
 pub fn parse_npc_corporations(
     connection: &Connection,
     sde_directory: &Path,
@@ -756,13 +752,14 @@ pub fn parse_npc_corporations(
 // factions (+ factionRace)
 // ---------------------------------------------------------------------
 
-/// Puebla `factions` y `factionRace` desde `<sde_directory>/factions.jsonl`.
-/// Requiere que `npcCorporations` ya esté poblada si algún registro trae
-/// `corporationID` (FK `factions.corporationId -> npcCorporations.
-/// corporationId`), y que `races` ya esté poblada para cualquier id en
-/// `memberRaces` (FK `factionRace.raceId -> races.raceId`). Devuelve la
-/// cantidad de facciones insertadas (no cuenta las filas de
-/// `factionRace`). Equivalente a `_parse_factions()` en Python.
+/// Populates `factions` and `factionRace` from
+/// `<sde_directory>/factions.jsonl`. Requires `npcCorporations` to
+/// already be populated if any record carries `corporationID` (FK
+/// `factions.corporationId -> npcCorporations.corporationId`), and
+/// `races` to already be populated for any id in `memberRaces` (FK
+/// `factionRace.raceId -> races.raceId`). Returns the number of
+/// factions inserted (doesn't count `factionRace` rows). Equivalent to
+/// `_parse_factions()` in Python.
 pub fn parse_factions(
     connection: &Connection,
     sde_directory: &Path,
@@ -808,13 +805,13 @@ pub fn parse_factions(
 // mapRegions
 // ---------------------------------------------------------------------
 
-/// Puebla `mapRegions` desde `<sde_directory>/mapRegions.jsonl`. Devuelve
-/// la cantidad de filas insertadas. Equivalente a `_parse_regions()` en
-/// Python.
+/// Populates `mapRegions` from `<sde_directory>/mapRegions.jsonl`.
+/// Returns the number of rows inserted. Equivalent to
+/// `_parse_regions()` in Python.
 ///
-/// `maxProjX`/`maxProjY` no se incluyen en el INSERT: el DDL les da
-/// `DEFAULT(0.0)` y Python tampoco los especifica en su propia query, así
-/// que SQLite aplica ese default automáticamente en ambos casos.
+/// `maxProjX`/`maxProjY` aren't included in the INSERT: the DDL gives
+/// them `DEFAULT(0.0)` and Python doesn't specify them in its own query
+/// either, so SQLite applies that default automatically in both cases.
 pub fn parse_regions(
     connection: &Connection,
     sde_directory: &Path,
@@ -854,17 +851,17 @@ pub fn parse_regions(
 // mapConstellations
 // ---------------------------------------------------------------------
 
-/// Puebla `mapConstellations` desde
-/// `<sde_directory>/mapConstellations.jsonl`. Requiere que `mapRegions`
-/// ya esté poblada (FK `mapConstellations.regionId -> mapRegions.
-/// regionId`). Devuelve la cantidad de filas insertadas. Equivalente a
-/// `_parse_constellations()` en Python.
+/// Populates `mapConstellations` from
+/// `<sde_directory>/mapConstellations.jsonl`. Requires `mapRegions` to
+/// already be populated (FK `mapConstellations.regionId ->
+/// mapRegions.regionId`). Returns the number of rows inserted.
+/// Equivalent to `_parse_constellations()` in Python.
 ///
-/// El id preferido es `constellationID` si el registro lo trae; si no,
-/// cae a `_key` -- replica el
+/// The preferred id is `constellationID` if the record carries it; if
+/// not, it falls back to `_key` -- replicates Python's
 /// `element['constellationID'] if 'constellationID' in element else
-/// element['_key']` de Python (ver "Desviaciones conocidas" en el
-/// docstring del módulo para el matiz de cuándo difiere).
+/// element['_key']` (see "Known deviations" in the module's docstring
+/// for the nuance of when this differs).
 pub fn parse_constellations(
     connection: &Connection,
     sde_directory: &Path,
@@ -898,28 +895,30 @@ pub fn parse_constellations(
 // mapSolarSystems
 // ---------------------------------------------------------------------
 
-/// Puebla `mapSolarSystems` desde
-/// `<sde_directory>/mapSolarSystems.jsonl`, filtrando por
-/// [`system_in_scope`] y acumulando los ids que pasan el filtro en
-/// `state.systems_in_scope`. Requiere que `mapConstellations` ya esté
-/// poblada (FK `mapSolarSystems.constellationId -> mapConstellations.
-/// constellationId`). Devuelve la cantidad de filas insertadas (los
-/// sistemas fuera de alcance NO cuentan). Equivalente a
-/// `_parse_solar_systems()` en Python.
+/// Populates `mapSolarSystems` from
+/// `<sde_directory>/mapSolarSystems.jsonl`, filtering by
+/// [`system_in_scope`] and accumulating the ids that pass the filter
+/// into `state.systems_in_scope`. Requires `mapConstellations` to
+/// already be populated (FK `mapSolarSystems.constellationId ->
+/// mapConstellations.constellationId`). Returns the number of rows
+/// inserted (out-of-scope systems do NOT count). Equivalent to
+/// `_parse_solar_systems()` in Python.
 ///
-/// `projX`/`projY`/`projZ` ya no existen en el schema (se eliminaron: el
-/// único propósito real de esas columnas era guardar una proyección 2D
-/// del centro del sistema, y eso es exactamente lo que ya hace
-/// `position2DX`/`position2DY` -- mantener ambas era redundante). Ver
-/// `schema.sql` y `SdeManager` en `src/lib.rs`, que se migró para leer
-/// `position2DX`/`position2DY` en vez de `projX`/`projZ`.
+/// `projX`/`projY`/`projZ` no longer exist in the schema (they were
+/// removed: those columns' only real purpose was storing a 2D
+/// projection of the system's center, and that's exactly what
+/// `position2DX`/`position2DY` already does -- keeping both was
+/// redundant). See `schema.sql` and `SdeManager` in `src/lib.rs`, which
+/// was migrated to read `position2DX`/`position2DY` instead of
+/// `projX`/`projZ`.
 ///
-/// `position2DX`/`position2DY` usan el `position2D` que ya trae CCP
-/// precalculado, salvo que `config.force_isometric_position_2d` esté
-/// activo -- en cuyo caso se recalculan siempre vía
-/// [`isometric_projection_2d`] (según `config.isometric_projected_axis`),
-/// **ignorando** el valor de CCP, tal como se decidió explícitamente para
-/// este flag (ver su docstring en [`ParserConfig`]).
+/// `position2DX`/`position2DY` use the `position2D` CCP already
+/// provides precomputed, unless `config.force_isometric_position_2d`
+/// is on -- in which case they're always recomputed via
+/// [`isometric_projection_2d`] (per
+/// `config.isometric_projected_axis`), **ignoring** CCP's value, as was
+/// explicitly decided for this flag (see its docstring in
+/// [`ParserConfig`]).
 pub fn parse_solar_systems(
     connection: &Connection,
     sde_directory: &Path,
@@ -1000,45 +999,45 @@ pub fn parse_solar_systems(
 // mapSystemGates
 // ---------------------------------------------------------------------
 
-/// Puebla `mapSystemGates` desde `<sde_directory>/mapStargates.jsonl`
-/// (el archivo se llama `mapStargates`, aunque la tabla destino se llame
-/// `mapSystemGates` -- así lo nombra el propio SDE). Filtra por
-/// `state.systems_in_scope` (poblado por [`parse_solar_systems`]): un
-/// gate cuyo `solarSystemID` no esté en ese set se omite -- mismo
-/// criterio que `gate['solarSystemID'] not in self._systems_in_scope` en
-/// Python. Requiere que `mapSolarSystems`/`invTypes` ya estén pobladas
-/// (FKs). Devuelve la cantidad de filas insertadas. Equivalente a
-/// `_parse_stargates()` en Python.
+/// Populates `mapSystemGates` from `<sde_directory>/mapStargates.jsonl`
+/// (the file is named `mapStargates`, even though the destination table
+/// is `mapSystemGates` -- that's how the SDE itself names it). Filters
+/// by `state.systems_in_scope` (populated by [`parse_solar_systems`]): a
+/// gate whose `solarSystemID` isn't in that set is skipped -- same
+/// criterion as `gate['solarSystemID'] not in self._systems_in_scope`
+/// in Python. Requires `mapSolarSystems`/`invTypes` to already be
+/// populated (FKs). Returns the number of rows inserted. Equivalent to
+/// `_parse_stargates()` in Python.
 ///
-/// # Importante: requiere una transacción explícita
+/// # Important: requires an explicit transaction
 ///
-/// `mapSystemGates.destinationGateId` referencia otra fila de la MISMA
-/// tabla (`systemGateId`), declarada `DEFERRABLE INITIALLY DEFERRED` en
-/// el schema -- eso le permite a SQLite postergar la validación de esa FK
-/// hasta el `COMMIT` de la transacción, en vez de exigir que el gate
-/// destino ya exista en el momento exacto del INSERT. Esto importa porque
-/// los stargates suelen venir en pares que se referencian mutuamente (el
-/// gate de A apunta al de B, y viceversa), así que sea cual sea el orden
-/// del archivo, el primero de los dos en insertarse necesariamente
-/// referencia a uno que todavía no existe.
+/// `mapSystemGates.destinationGateId` references another row of the
+/// SAME table (`systemGateId`), declared `DEFERRABLE INITIALLY
+/// DEFERRED` in the schema -- that lets SQLite postpone that FK's
+/// validation until the transaction's `COMMIT`, instead of requiring
+/// the destination gate to already exist at the exact moment of the
+/// INSERT. This matters because stargates usually come in pairs that
+/// reference each other mutually (A's gate points to B's, and vice
+/// versa), so whatever order the file is in, the first of the two to be
+/// inserted necessarily references one that doesn't exist yet.
 ///
-/// Verificado empíricamente (sqlite3 con `isolation_level=None`, que
-/// replica el modo autocommit real de SQLite/rusqlite): insertar ese
-/// primer gate **fuera** de una transacción explícita falla con
-/// `FOREIGN KEY constraint failed` -- en modo autocommit cada `INSERT` es
-/// su propia transacción implícita, así que la validación diferida se
-/// dispara igual, de inmediato, al cerrarse esa transacción de una sola
-/// sentencia. Envuelto en una transacción explícita (`BEGIN`/`COMMIT`),
-/// en cambio, ambos INSERTs se resuelven correctamente porque la
-/// validación se pospone hasta el `COMMIT` final, para cuando los dos
-/// gates ya existen.
+/// Verified empirically (sqlite3 with `isolation_level=None`, which
+/// replicates SQLite/rusqlite's real autocommit mode): inserting that
+/// first gate **outside** an explicit transaction fails with
+/// `FOREIGN KEY constraint failed` -- in autocommit mode each `INSERT`
+/// is its own implicit transaction, so the deferred validation still
+/// fires immediately, when that single statement's transaction closes.
+/// Wrapped in an explicit transaction (`BEGIN`/`COMMIT`), on the other
+/// hand, both INSERTs resolve correctly because validation is postponed
+/// until the final `COMMIT`, by which point both gates already exist.
 ///
-/// En la práctica esto significa que llamar a esta función suelta (fuera
-/// de [`parse_data`], sin pasar por `Connection::transaction()`) no solo
-/// pierde la garantía de atomicidad de "todo o nada" que ya se documentó
-/// para el resto del pipeline (ver "Transacciones" en el docstring del
-/// módulo) -- acá puede hacer fallar la inserción de datos perfectamente
-/// válidos, solo por el orden en que aparecen en el archivo.
+/// In practice this means calling this function on its own (outside of
+/// [`parse_data`], without going through `Connection::transaction()`)
+/// doesn't just lose the "all or nothing" atomicity guarantee already
+/// documented for the rest of the pipeline (see "Transactions" in the
+/// module's docstring) -- here it can make the insertion of perfectly
+/// valid data fail, purely because of the order records appear in the
+/// file.
 pub fn parse_stargates(
     connection: &Connection,
     sde_directory: &Path,
@@ -1083,38 +1082,38 @@ pub fn parse_stargates(
 // mapStars
 // ---------------------------------------------------------------------
 
-/// Puebla `mapStars` desde `<sde_directory>/mapStars.jsonl`, filtrando
-/// por `state.systems_in_scope` (poblado por [`parse_solar_systems`]).
-/// Requiere que [`parse_types`] ya haya corrido -- necesita
-/// `star_state.star_type_ids`, el mapeo `typeId -> starTypeId` -- y que
-/// `mapSolarSystems`/`typeStar` ya estén pobladas (FKs). Devuelve la
-/// cantidad de filas insertadas. Equivalente a `_parse_stars()` en
-/// Python.
+/// Populates `mapStars` from `<sde_directory>/mapStars.jsonl`, filtering
+/// by `state.systems_in_scope` (populated by [`parse_solar_systems`]).
+/// Requires [`parse_types`] to have already run -- it needs
+/// `star_state.star_type_ids`, the `typeId -> starTypeId` mapping --
+/// and `mapSolarSystems`/`typeStar` to already be populated (FKs).
+/// Returns the number of rows inserted. Equivalent to `_parse_stars()`
+/// in Python.
 ///
-/// Confirmado contra una muestra real de `mapStars.jsonl` (8089
-/// registros, EVE Online, agosto 2026): `radius` siempre viene en el
-/// nivel superior como entero (nunca hace falta el fallback anidado a
-/// `statistics.radius`), `statistics` siempre está presente, y `locked`
-/// **nunca** aparece -- ni en el nivel superior ni dentro de
-/// `statistics` -- así que en la práctica esa columna siempre sale
-/// `NULL`. El fallback anidado (ver [`optional_i64_with_nested_fallback`]/
-/// [`optional_bool_with_nested_fallback`]) se deja igual, fielmente
-/// portado desde Python, por si otra versión del SDE sí llega a traerlo.
+/// Confirmed against a real sample of `mapStars.jsonl` (8089
+/// records, EVE Online, August 2026): `radius` always comes at the
+/// top level as an integer (never needs the nested fallback to
+/// `statistics.radius`), `statistics` is always present, and `locked`
+/// **never** shows up -- neither at the top level nor inside
+/// `statistics` -- so in practice that column always comes out
+/// `NULL`. The nested fallback (see [`optional_i64_with_nested_fallback`]/
+/// [`optional_bool_with_nested_fallback`]) is kept anyway, faithfully
+/// ported from Python, in case some other SDE version does carry it.
 ///
-/// # Desviación de Python: `starTypeId` no encontrado
+/// # Deviation from Python: `starTypeId` not found
 ///
-/// Python resuelve el tipo de estrella con
-/// `self._stars.entity_type.get(star['typeID'], star['typeID'])`: si el
-/// `typeID` de la estrella no está en el mapa (es decir, `_parse_types()`
-/// no lo detectó como perteneciente al grupo "Sun"), usa el `typeID`
-/// CRUDO como si fuera un `starTypeId` -- casi seguro violando la FK
-/// `mapStars.starTypeId -> typeStar.starTypeId` al insertar, ya que son
-/// secuencias de ids completamente distintas (una es `invTypes.typeId`,
-/// la otra un `ROWID` autoasignado de `typeStar`). Acá, en cambio, no
-/// encontrar el `typeId` en el mapa es un [`BuilderError::Data`] directo
-/// -- mismo criterio que el resto del archivo: fallar temprano con un
-/// mensaje claro en vez de dejar que SQLite rechace un valor que de
-/// todos modos iba a ser inválido.
+/// Python resolves the star type with
+/// `self._stars.entity_type.get(star['typeID'], star['typeID'])`: if
+/// the star's `typeID` isn't in the map (meaning `_parse_types()`
+/// didn't detect it as belonging to the "Sun" group), it uses the RAW
+/// `typeID` as if it were a `starTypeId` -- almost certainly violating
+/// the `mapStars.starTypeId -> typeStar.starTypeId` FK on insert, since
+/// these are completely different id sequences (one is
+/// `invTypes.typeId`, the other a self-assigned `ROWID` from
+/// `typeStar`). Here, instead, not finding the `typeId` in the map is a
+/// direct [`BuilderError::Data`] -- same criterion as the rest of this
+/// file: fail early with a clear message instead of letting SQLite
+/// reject a value that was going to be invalid anyway.
 pub fn parse_stars(
     connection: &Connection,
     sde_directory: &Path,
@@ -1140,8 +1139,8 @@ pub fn parse_stars(
         let type_id = required_i64(&record, "typeID")?;
         let star_type_id = star_state.star_type_ids.get(&type_id).copied().ok_or_else(|| {
             BuilderError::Data(format!(
-                "estrella {star_id}: typeId {type_id} no está en star_type_ids \
-                 (parse_types() no lo detectó como tipo de estrella)"
+                "star {star_id}: typeId {type_id} isn't in star_type_ids \
+                 (parse_types() didn't detect it as a star type)"
             ))
         })?;
 
@@ -1161,32 +1160,34 @@ pub fn parse_stars(
 // mapPlanets
 // ---------------------------------------------------------------------
 
-/// Puebla `mapPlanets` desde `<sde_directory>/mapPlanets.jsonl`, filtrando
-/// por `state.systems_in_scope` (poblado por [`parse_solar_systems`]).
-/// Requiere que `mapSolarSystems`/`invTypes` ya estén pobladas (FKs).
-/// Devuelve la cantidad de filas insertadas. Equivalente a
-/// `_parse_planets()` en Python.
+/// Populates `mapPlanets` from `<sde_directory>/mapPlanets.jsonl`,
+/// filtering by `state.systems_in_scope` (populated by
+/// [`parse_solar_systems`]). Requires `mapSolarSystems`/`invTypes` to
+/// already be populated (FKs). Returns the number of rows inserted.
+/// Equivalent to `_parse_planets()` in Python.
 ///
-/// Confirmado contra una muestra real de `mapPlanets.jsonl` (68407
-/// registros, EVE Online, agosto 2026):
-/// - `celestialIndex`, `position`, `typeID` y `solarSystemID` están
-///   presentes en el 100% de los registros -- a diferencia de Python
-///   (que lee `celestialIndex` con `.get()`, opcional), acá se tratan
-///   como requeridos ([`required_i64`]/[`required_position`]), mismo
-///   criterio usado en todo este archivo para columnas `NOT NULL`
-///   (`mapPlanets.planetaryIndex` lo es) cuando la fuente real confirma
-///   que el dato siempre está: falla temprano con un mensaje claro en
-///   vez de dejar que SQLite rechace un `NULL` más abajo.
-/// - `radius` está **siempre** en el nivel superior (nunca hace falta el
-///   fallback anidado a `statistics.radius`) -- pero a diferencia de
-///   `mapStars.radius` (columna `INTEGER`), `mapPlanets.radius` es
-///   `REAL`, así que se lee con [`optional_f64_with_nested_fallback`],
-///   no la variante `i64`.
-/// - `fragmented` **nunca** aparece, ni en el nivel superior ni anidado
-///   (0 de 68407) -- en la práctica esta columna siempre sale `NULL`.
-/// - `locked`, en cambio, está **siempre** anidado bajo `statistics`
-///   (nunca en el nivel superior) -- lo opuesto a `radius`. Acá sí hace
-///   falta el fallback para no perder el dato.
+/// Confirmed against a real sample of `mapPlanets.jsonl` (68407
+/// records, EVE Online, August 2026):
+/// - `celestialIndex`, `position`, `typeID` and `solarSystemID` are
+///   present in 100% of records -- unlike Python (which reads
+///   `celestialIndex` with `.get()`, optional), here they're treated
+///   as required ([`required_i64`]/[`required_position`]), same
+///   criterion used throughout this file for `NOT NULL` columns
+///   (`mapPlanets.planetaryIndex` is one) when the real source
+///   confirms the data is always there: fail early with a clear
+///   message instead of letting SQLite reject a `NULL` further down.
+/// - `radius` is **always** at the top level (never needs the nested
+///   fallback to `statistics.radius`) -- but unlike `mapStars.radius`
+///   (an `INTEGER` column), `mapPlanets.radius` is `REAL`, so it's
+///   read with [`optional_f64_with_nested_fallback`], not the `i64`
+///   variant.
+/// - `fragmented` **never** shows up, neither at the top level nor
+///   nested (0 out of 68407) -- in practice this column always comes
+///   out `NULL`.
+/// - `locked`, on the other hand, is **always** nested under
+///   `statistics` (never at the top level) -- the opposite of
+///   `radius`. Here the fallback genuinely matters, to not lose the
+///   data.
 pub fn parse_planets(
     connection: &Connection,
     sde_directory: &Path,
@@ -1235,49 +1236,47 @@ pub fn parse_planets(
 // mapMoons
 // ---------------------------------------------------------------------
 
-/// Puebla `mapMoons` desde `<sde_directory>/mapMoons.jsonl`, filtrando
-/// por `state.systems_in_scope` (poblado por [`parse_solar_systems`]).
-/// Requiere que `mapSolarSystems` ya esté poblada (FK). Devuelve la
-/// cantidad de filas insertadas. Equivalente a `_parse_moons()` en
-/// Python.
+/// Populates `mapMoons` from `<sde_directory>/mapMoons.jsonl`, filtering
+/// by `state.systems_in_scope` (populated by [`parse_solar_systems`]).
+/// Requires `mapSolarSystems` to already be populated (FK). Returns the
+/// number of rows inserted. Equivalent to `_parse_moons()` in Python.
 ///
-/// # Nota: sin verificación contra datos reales
+/// # Note: no verification against real data
 ///
-/// A diferencia de `mapStars`/`mapPlanets` (fases 6 y 7), acá **no** tuve
-/// una muestra real de `mapMoons.jsonl` para verificar campo por campo
-/// (el archivo pesa más de 200 MiB) -- este puerto se basa únicamente en
-/// el código Python. Vale la pena aclarar que `mapMoons` es, según el
-/// propio docstring de `_parse_moons()` en Python, la ENTIDAD DE
-/// REFERENCIA cuyo shape sí está confirmado (`_key`, `attributes`,
-/// `celestialIndex`, `npcStationIDs`, `orbitID`, `orbitIndex`,
-/// `position`, `radius`, `solarSystemID`, `statistics`, `typeID`,
-/// `uniqueName`) -- es la que se usó de base para *inferir sin verificar
-/// independientemente* el shape de `mapStars`/`mapPlanets` en las dos
-/// fases anteriores. Aun así, "confirmado" en ese docstring parece
-/// referirse a los NOMBRES de los campos, no necesariamente a que estén
-/// SIEMPRE presentes en todo registro -- ver la nota sobre `moonIndex`
-/// más abajo.
+/// Unlike `mapStars`/`mapPlanets` (phases 6 and 7), there was **no**
+/// real sample of `mapMoons.jsonl` here to verify field by field (the
+/// file weighs over 200 MiB) -- this port relies solely on the Python
+/// code. It's worth clarifying that `mapMoons` is, per
+/// `_parse_moons()`'s own docstring in Python, the REFERENCE ENTITY
+/// whose shape IS confirmed (`_key`, `attributes`, `celestialIndex`,
+/// `npcStationIDs`, `orbitID`, `orbitIndex`, `position`, `radius`,
+/// `solarSystemID`, `statistics`, `typeID`, `uniqueName`) -- it's the
+/// one that was used as the basis to *infer without independently
+/// verifying* `mapStars`/`mapPlanets`'s shape in the two previous
+/// phases. Even so, "confirmed" in that docstring seems to refer to the
+/// field NAMES, not necessarily that they're ALWAYS present in every
+/// record -- see the note on `moonIndex` below.
 ///
-/// `moonIndex` (`orbitIndex` en el JSON) se trata como requerido
-/// ([`required_i64`]) aunque Python lo lee opcional
-/// (`moon.get('orbitIndex')`) -- mismo criterio de siempre para columnas
-/// `NOT NULL` (`mapMoons.moonIndex` lo es): si el campo genuinamente
-/// faltara alguna vez, Python fallaría igual al insertar (constraint
-/// violation), así que tratarlo como requerido acá no cambia el
-/// resultado final (falla en ambos casos), solo da un mensaje más claro
-/// y más temprano. La diferencia con `planetaryIndex` en la fase
-/// anterior es que ahí sí pude confirmar con 68407 registros reales que
-/// el campo nunca falta; acá es una inferencia a partir de ese mismo
-/// patrón (y de la restricción `NOT NULL` del schema), no un hecho
-/// verificado para `mapMoons` en particular.
+/// `moonIndex` (`orbitIndex` in the JSON) is treated as required
+/// ([`required_i64`]) even though Python reads it as optional
+/// (`moon.get('orbitIndex')`) -- same criterion as always for `NOT
+/// NULL` columns (`mapMoons.moonIndex` is one): if the field genuinely
+/// were ever missing, Python would fail the same way on insert
+/// (constraint violation), so treating it as required here doesn't
+/// change the final outcome (it fails either way), it just gives a
+/// clearer, earlier message. The difference from `planetaryIndex` in
+/// the previous phase is that there it WAS possible to confirm with
+/// 68407 real records that the field never goes missing; here it's an
+/// inference from that same pattern (and from the schema's `NOT NULL`
+/// constraint), not a fact verified for `mapMoons` specifically.
 ///
-/// `typeId` también se trata como requerido ([`required_i64`]),
-/// coincidiendo con el acceso `moon['typeID']` (bracket) de Python -- a
-/// pesar de que la columna en sí es nullable en el schema (`typeId
-/// INTEGER REFERENCES invTypes(typeId)`, sin `NOT NULL`). Acá no hay
-/// desviación de Python: el docstring confirma `typeID` como campo
-/// presente en `mapMoons`, así que exigirlo es fidelidad al
-/// comportamiento real de Python, no un endurecimiento propio.
+/// `typeId` is also treated as required ([`required_i64`]), matching
+/// Python's `moon['typeID']` (bracket) access -- even though the
+/// column itself is nullable in the schema (`typeId INTEGER REFERENCES
+/// invTypes(typeId)`, without `NOT NULL`). There's no deviation from
+/// Python here: the docstring confirms `typeID` as a field present in
+/// `mapMoons`, so requiring it is faithful to Python's real behavior,
+/// not an unprompted tightening on this port's part.
 pub fn parse_moons(
     connection: &Connection,
     sde_directory: &Path,
@@ -1324,33 +1323,33 @@ pub fn parse_moons(
 // mapSystemConnections
 // ---------------------------------------------------------------------
 
-/// Puebla `mapSystemConnections` a partir de `mapSystemGates`, uniendo
-/// cada gate con el gate al que apunta (`destinationGateId`) para
-/// derivar el par de sistemas solares que conecta. A diferencia de todas
-/// las demás funciones de este archivo, esta NO lee ningún archivo del
-/// SDE -- toda la lógica es una sola sentencia SQL sobre datos ya
-/// insertados por [`parse_stargates`], por eso no recibe `sde_directory`.
-/// Devuelve la cantidad de filas insertadas. Equivalente a
-/// `parse_connections()` en Python (sí, sin guion bajo al inicio -- es el
-/// único `_parse_*`/`parse_*` público en el prototipo).
+/// Populates `mapSystemConnections` from `mapSystemGates`, joining each
+/// gate with the gate it points to (`destinationGateId`) to derive the
+/// pair of solar systems it connects. Unlike every other function in
+/// this file, this one does NOT read any SDE file -- the whole logic
+/// is a single SQL statement over data already inserted by
+/// [`parse_stargates`], which is why it doesn't take `sde_directory`.
+/// Returns the number of rows inserted. Equivalent to
+/// `parse_connections()` in Python (yes, no leading underscore -- it's
+/// the only public `_parse_*`/`parse_*` in the prototype).
 ///
-/// Requiere que `mapSystemGates` ya esté poblada. Si `config.with_gates`
-/// fue `false` (así que [`parse_stargates`] nunca corrió) o simplemente
-/// no había gates que importar, esta consulta no encuentra filas para
-/// unir y no inserta nada -- no es un error, devuelve `0`.
+/// Requires `mapSystemGates` to already be populated. If
+/// `config.with_gates` was `false` (so [`parse_stargates`] never ran)
+/// or there simply were no gates to import, this query finds no rows to
+/// join and inserts nothing -- not an error, it returns `0`.
 ///
-/// El `WHERE msga.solarSystemId < msgb.solarSystemId` filtra a un solo
-/// registro por par de sistemas conectados: los stargates siempre vienen
-/// en pares mutuos (A apunta a B, B apunta a A), así que sin este filtro
-/// se insertaría cada conexión dos veces (una por sentido), violando el
-/// `CHECK (systemA < systemB)` del schema en el segundo intento. Los
-/// `MIN`/`MAX` de la sentencia son la forma escalar de 2 argumentos (no
-/// la agregada de 1 argumento que se usa en otras partes de este crate,
-/// p. ej. en `get_region_coordinates` de `src/lib.rs`) -- calculan el
-/// mínimo/máximo *por fila*, no a través de filas; dado el `WHERE` de
-/// arriba, en la práctica siempre devuelven
-/// `(msga.solarSystemId, msgb.solarSystemId)` en ese orden, pero se
-/// portan literalmente como están en Python.
+/// The `WHERE msga.solarSystemId < msgb.solarSystemId` filters down to
+/// a single record per connected system pair: stargates always come in
+/// mutual pairs (A points to B, B points to A), so without this filter
+/// each connection would get inserted twice (once per direction),
+/// violating the schema's `CHECK (systemA < systemB)` on the second
+/// attempt. The statement's `MIN`/`MAX` are the 2-argument scalar form
+/// (not the 1-argument aggregate form used elsewhere in this crate,
+/// e.g. in `get_region_coordinates` in `src/lib.rs`) -- they compute
+/// the min/max *per row*, not across rows; given the `WHERE` above,
+/// they always end up returning
+/// `(msga.solarSystemId, msgb.solarSystemId)` in that order in
+/// practice, but they're ported literally as they are in Python.
 pub fn parse_connections(connection: &Connection) -> Result<usize, BuilderError> {
     let count = connection.execute(
         "INSERT INTO mapSystemConnections (systemA, systemB) \
@@ -1368,10 +1367,10 @@ pub fn parse_connections(connection: &Connection) -> Result<usize, BuilderError>
 // Orquestador
 // ---------------------------------------------------------------------
 
-/// Cantidad de filas insertadas por cada fase de [`parse_data`].
+/// Number of rows inserted by each phase of [`parse_data`].
 ///
-/// `star_types` cuenta las filas de `typeStar` (no una fase propia:
-/// las genera [`parse_types`] al detectar tipos del grupo "Sun").
+/// `star_types` counts `typeStar`'s rows (not its own phase: they're
+/// generated by [`parse_types`] when it detects "Sun"-group types).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ParseSummary {
     pub categories: usize,
@@ -1384,45 +1383,45 @@ pub struct ParseSummary {
     pub regions: usize,
     pub constellations: usize,
     pub solar_systems: usize,
-    /// `0` tanto si no había gates que importar como si
-    /// `config.with_gates` estaba en `false` (en ese caso, la fase ni
-    /// siquiera se corre) -- no se distingue entre ambos casos.
+    /// `0` both if there were no gates to import and if
+    /// `config.with_gates` was `false` (in which case the phase doesn't
+    /// even run) -- the two cases aren't distinguished.
     pub stargates: usize,
     pub stars: usize,
     pub planets: usize,
-    /// `0` tanto si no había lunas que importar como si
-    /// `config.with_moons` estaba en `false` -- no se distingue entre
-    /// ambos casos, mismo criterio que `stargates`.
+    /// `0` both if there were no moons to import and if
+    /// `config.with_moons` was `false` -- the two cases aren't
+    /// distinguished, same criterion as `stargates`.
     pub moons: usize,
     pub connections: usize,
 }
 
-/// Corre el pipeline de parseo completo sobre `sde_directory`, en el mismo
-/// orden de dependencias que `parse_data()` en Python. Equivalente a ese
-/// método, salvo por el alcance actual (ver más abajo).
+/// Runs the full parsing pipeline over `sde_directory`, in the same
+/// dependency order as `parse_data()` in Python. Equivalent to that
+/// method, except for the current scope (see below).
 ///
-/// A diferencia de las funciones `parse_*` individuales -- que
-/// autocommitean cada `INSERT` por separado, ver "Transacciones" en el
-/// docstring del módulo --, esta función SÍ envuelve todo el pipeline en
-/// una única transacción explícita (`Connection::transaction()`), igual
-/// que Python, que no hace `commit()` hasta `SdeParser.close()`, al final
-/// de todo. Si cualquier fase falla, se hace *rollback* de TODO lo
-/// insertado hasta ese punto -- nada queda persistido a medias --, porque
-/// el `Transaction` de rusqlite hace rollback automático en su `Drop` si
-/// nunca se llamó a `.commit()`, y el operador `?` de cada llamada de
-/// abajo dispara justamente ese `Drop` temprano al propagar el error.
+/// Unlike the individual `parse_*` functions -- which autocommit each
+/// `INSERT` separately, see "Transactions" in the module's docstring --
+/// this function DOES wrap the whole pipeline in a single explicit
+/// transaction (`Connection::transaction()`), same as Python, which
+/// doesn't `commit()` until `SdeParser.close()`, at the very end. If
+/// any phase fails, EVERYTHING inserted up to that point gets rolled
+/// back -- nothing is left half-persisted -- because rusqlite's
+/// `Transaction` rolls back automatically on `Drop` if `.commit()` was
+/// never called, and each call below's `?` operator triggers exactly
+/// that early `Drop` when it propagates the error.
 ///
-/// Requiere `&mut Connection` (no `&Connection` como las funciones
-/// individuales) porque `Connection::transaction()` lo exige.
+/// Requires `&mut Connection` (not `&Connection` like the individual
+/// functions) because `Connection::transaction()` requires it.
 ///
-/// ## Alcance actual
+/// ## Current scope
 ///
-/// Cubre las 14 funciones que porta este archivo (fase 1 a fase 9):
-/// categorías, grupos, tipos (+ `typeStar`), razas, corporaciones NPC,
-/// facciones (+ `factionRace`), regiones, constelaciones, sistemas
-/// solares, stargates (condicional a `config.with_gates`), estrellas,
-/// planetas, lunas (condicional a `config.with_moons`) y conexiones --
-/// **paridad completa** con `parse_data()` de Python.
+/// Covers the 14 functions this file ports (phase 1 to phase 9):
+/// categories, groups, types (+ `typeStar`), races, NPC corporations,
+/// factions (+ `factionRace`), regions, constellations, solar systems,
+/// stargates (gated by `config.with_gates`), stars, planets, moons
+/// (gated by `config.with_moons`) and connections -- **full parity**
+/// with Python's `parse_data()`.
 pub fn parse_data(
     connection: &mut Connection,
     sde_directory: &Path,
@@ -1483,9 +1482,9 @@ mod tests {
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-    /// Directorio temporal único con los archivos `.jsonl` dados (nombre
-    /// -> contenido), borrado automáticamente al salir de scope. Mismo
-    /// patrón que la fixture de `tests/manager.rs`.
+    /// Unique temp directory with the given `.jsonl` files (name ->
+    /// content), removed automatically on going out of scope. Same
+    /// pattern as `tests/manager.rs`'s fixture.
     struct TempSdeDir {
         path: std::path::PathBuf,
     }
@@ -1638,9 +1637,9 @@ mod tests {
 
     #[test]
     fn parse_categories_missing_name_errors() {
-        // categoryName es TEXT NOT NULL en el schema STRICT; Python
-        // también fallaría aquí (IntegrityError al insertar NULL) -- ver
-        // el docstring de `required_localized`.
+        // categoryName is TEXT NOT NULL in the STRICT schema; Python
+        // would also fail here (IntegrityError inserting NULL) -- see
+        // `required_localized`'s docstring.
         let dir = TempSdeDir::new("missing_name", &[("categories.jsonl", "{\"_key\": 6}\n")]);
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
@@ -1657,7 +1656,7 @@ mod tests {
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
 
-        // No se escribió categories.jsonl en absoluto.
+        // categories.jsonl was never written at all.
         let result = parse_categories(&connection, &dir.path, &config);
         assert!(result.is_err());
     }
@@ -1669,7 +1668,7 @@ mod tests {
             ..Default::default()
         };
         let record: Value = serde_json::from_str(r#"{"name": {"en": "Jita", "de": "Jita"}}"#).unwrap();
-        // "fr" no está presente -> cae a "en".
+        // "fr" isn't present -> falls back to "en".
         assert_eq!(localized(&record, "name", &config), Some("Jita"));
     }
 
@@ -1686,10 +1685,11 @@ mod tests {
 
     #[test]
     fn isometric_projection_2d_matches_python_reference_values() {
-        // Valores de referencia calculados ejecutando
-        // calculate_isometric_projection() de sde_parser.py directamente
-        // con x=100.0, y=200.0, z=300.0 para cada projected_axis (0/1/2),
-        // tomando de la tupla de 3 los dos componentes no forzados a 0.0.
+        // Reference values computed by running
+        // calculate_isometric_projection() from sde_parser.py directly
+        // with x=100.0, y=200.0, z=300.0 for each projected_axis
+        // (0/1/2), taking the two non-zero-forced components from the
+        // 3-tuple.
         let (x, y, z) = (100.0, 200.0, 300.0);
 
         assert_eq!(
@@ -1708,11 +1708,11 @@ mod tests {
 
     #[test]
     fn parser_config_default_uses_y_axis_and_does_not_force_isometric() {
-        // Coincide con los defaults reales de SdeConfig en Python:
-        // projection_algorithm='isometric', projected_axis=1 (Y) -- pero
-        // aquí el "forzado" está apagado por default, ya que el
-        // comportamiento normal es confiar en el position2D que ya trae
-        // CCP cuando está presente.
+        // Matches SdeConfig's real defaults in Python:
+        // projection_algorithm='isometric', projected_axis=1 (Y) -- but
+        // here the "forcing" is off by default, since normal behavior
+        // is to trust the position2D CCP already provides when it's
+        // present.
         let config = ParserConfig::default();
         assert!(!config.force_isometric_position_2d);
         assert_eq!(config.isometric_projected_axis, ProjectedAxis::Y);
@@ -1859,8 +1859,8 @@ mod tests {
 
     #[test]
     fn parse_factions_without_member_races_inserts_faction_only() {
-        // memberRaces ausente -> factionRace se queda vacía para esta
-        // facción, sin error (equivalente a `faction.get('memberRaces', [])`).
+        // memberRaces absent -> factionRace stays empty for this
+        // faction, no error (equivalent to `faction.get('memberRaces', [])`).
         let dir = TempSdeDir::new(
             "factions_no_members",
             &[(
@@ -1971,17 +1971,17 @@ mod tests {
         assert_eq!((cx, cy, cz), (100.0, 200.0, 300.0));
         assert_eq!(nebula, 5);
         assert_eq!(wh_class, None);
-        // maxProjX/maxProjY no se insertan explícitamente -- deben salir
-        // del DEFAULT(0.0) del DDL.
+        // maxProjX/maxProjY aren't inserted explicitly -- they should
+        // come out of the DDL's DEFAULT(0.0).
         assert_eq!((max_x, max_y), (0.0, 0.0));
     }
 
     #[test]
     fn parse_regions_missing_nebula_errors() {
-        // mapRegions.nebula es INTEGER NOT NULL; Python lo lee opcional
-        // (`region.get('nebulaID')`) pero fallaría igual al insertar si
-        // faltara -- ver "Desviaciones conocidas" en el docstring del
-        // módulo.
+        // mapRegions.nebula is INTEGER NOT NULL; Python reads it as
+        // optional (`region.get('nebulaID')`) but would fail the same
+        // way on insert if it were missing -- see "Known deviations" in
+        // the module's docstring.
         let dir = TempSdeDir::new(
             "regions_missing_nebula",
             &[(
@@ -2166,9 +2166,9 @@ mod tests {
         assert_eq!(name, "Jita");
         assert_eq!(security, 0.9459);
         assert_eq!(security_class, "B");
-        // position2D sin forzar: el que ya trae el registro (12.5, -7.25),
-        // NO el que calcularía isometric_projection_2d ((-300, -250), ver
-        // el test de fuerza más abajo).
+        // position2D unforced: the one the record already carries
+        // (12.5, -7.25), NOT the one isometric_projection_2d would
+        // compute ((-300, -250), see the forcing test further below).
         assert_eq!((p2dx, p2dy), (12.5, -7.25));
     }
 
@@ -2306,9 +2306,9 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Prerrequisitos de FK comunes a los tests de `parse_stargates`: dos
-    /// sistemas solares (30000001, 30000002) en la misma constelación, y
-    /// el tipo de item (16, "Stargate") que referencia `mapSystemGates.typeId`.
+    /// FK prerequisites shared by `parse_stargates`'s tests: two solar
+    /// systems (30000001, 30000002) in the same constellation, and the
+    /// item type (16, "Stargate") referenced by `mapSystemGates.typeId`.
     fn insert_stargate_prerequisites(connection: &Connection) {
         connection
             .execute(
@@ -2359,9 +2359,9 @@ mod tests {
         }
     }
 
-    /// Fixture de dos stargates que se referencian mutuamente: el gate
-    /// 50000001 (en el sistema 30000001) apunta al 50000002 (en el
-    /// 30000002), y viceversa -- el caso típico en datos reales del SDE.
+    /// Fixture of two mutually-referencing stargates: gate 50000001 (in
+    /// system 30000001) points to 50000002 (in 30000002), and vice
+    /// versa -- the typical case in real SDE data.
     const MUTUAL_STARGATES_JSONL: &str =
         "{\"_key\": 50000001, \"solarSystemID\": 30000001, \"typeID\": 16, \
          \"position\": {\"x\": 1.0, \"y\": 2.0, \"z\": 3.0}, \
@@ -2372,12 +2372,12 @@ mod tests {
 
     #[test]
     fn parse_stargates_without_transaction_fails_on_mutual_reference() {
-        // Documenta el comportamiento descrito en el docstring de
-        // parse_stargates: sin una transacción explícita, SQLite opera en
-        // modo autocommit (cada INSERT es su propia transacción
-        // implícita), así que la FK DEFERRABLE de destinationGateId igual
-        // se valida de inmediato -- y el primer gate del par
-        // necesariamente referencia a uno que todavía no existe.
+        // Documents the behavior described in parse_stargates's
+        // docstring: without an explicit transaction, SQLite operates
+        // in autocommit mode (each INSERT is its own implicit
+        // transaction), so destinationGateId's DEFERRABLE FK still
+        // gets validated immediately -- and the first gate of the pair
+        // necessarily references one that doesn't exist yet.
         let dir = TempSdeDir::new("stargates_no_tx", &[("mapStargates.jsonl", MUTUAL_STARGATES_JSONL)]);
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
@@ -2431,7 +2431,7 @@ mod tests {
         let mut connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         insert_stargate_prerequisites(&connection);
-        // 30000003 NO está en el scope (a diferencia de 30000001/30000002).
+        // 30000003 is NOT in scope (unlike 30000001/30000002).
         let mut scope = SystemScopeState::default();
         scope.systems_in_scope.insert(30000001);
         scope.systems_in_scope.insert(30000002);
@@ -2468,11 +2468,11 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Setup común de los tests de `parse_stars`: crea el schema, un
-    /// tipo de estrella detectado ("Sun" > "Yellow G5 (ffcc00)") vía
-    /// `parse_groups`/`parse_types` directamente contra fixtures propios
-    /// (para obtener un `StarTypeState` real, no simulado a mano), y un
-    /// sistema solar en scope. Devuelve `(connection, star_state, scope)`.
+    /// Common setup for `parse_stars`'s tests: creates the schema, a
+    /// detected star type ("Sun" > "Yellow G5 (ffcc00)") via
+    /// `parse_groups`/`parse_types` directly against dedicated fixtures
+    /// (to get a real `StarTypeState`, not a hand-simulated one), and a
+    /// solar system in scope. Returns `(connection, star_state, scope)`.
     fn setup_for_parse_stars(dir_prefix: &str) -> (Connection, StarTypeState, SystemScopeState) {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
@@ -2536,9 +2536,9 @@ mod tests {
 
     #[test]
     fn parse_stars_inserts_row_using_real_sde_shape() {
-        // Registro con el shape confirmado contra una muestra real de
-        // mapStars.jsonl (agosto 2026): radius entero en el nivel
-        // superior, statistics presente, sin locked en ningún lado.
+        // Record with the shape confirmed against a real sample of
+        // mapStars.jsonl (August 2026): radius as a top-level integer,
+        // statistics present, locked nowhere to be found.
         let dir = TempSdeDir::new(
             "stars_real_shape",
             &[(
@@ -2567,9 +2567,10 @@ mod tests {
 
     #[test]
     fn parse_stars_locked_falls_back_to_nested_statistics() {
-        // Sintético -- la SDE real nunca trae `locked` (ni en el nivel
-        // superior ni en `statistics`), pero el fallback se porta igual
-        // desde Python por si otra versión del SDE sí lo trae.
+        // Synthetic -- the real SDE never carries `locked` (neither at
+        // the top level nor in `statistics`), but the fallback is
+        // ported from Python all the same, in case some other SDE
+        // version does carry it.
         let dir = TempSdeDir::new(
             "stars_locked_fallback",
             &[(
@@ -2600,7 +2601,7 @@ mod tests {
             )],
         );
         let (connection, star_state, scope) = setup_for_parse_stars("stars_setup_scope");
-        // 30000099 no está en el scope (solo 30000001 lo está).
+        // 30000099 is not in scope (only 30000001 is).
 
         let count = parse_stars(&connection, &dir.path, &scope, &star_state).unwrap();
         assert_eq!(count, 0);
@@ -2628,9 +2629,9 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Setup común de los tests de `parse_planets`: schema, un `invTypes`
-    /// mínimo para satisfacer la FK de `typeId`, y un sistema solar en
-    /// scope. Devuelve `(connection, scope)`.
+    /// Common setup for `parse_planets`'s tests: schema, a minimal
+    /// `invTypes` to satisfy `typeId`'s FK, and a solar system in
+    /// scope. Returns `(connection, scope)`.
     fn setup_for_parse_planets() -> (Connection, SystemScopeState) {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
@@ -2747,7 +2748,7 @@ mod tests {
             )],
         );
         let (connection, scope) = setup_for_parse_planets();
-        // 30000099 no está en el scope (solo 30000001 lo está).
+        // 30000099 is not in scope (only 30000001 is).
 
         let count = parse_planets(&connection, &dir.path, &scope).unwrap();
         assert_eq!(count, 0);
@@ -2790,10 +2791,10 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Setup común de los tests de `parse_moons`: schema, un `invTypes`
-    /// para el planeta y otro para la luna, un sistema solar y un
-    /// planeta en scope (para poder probar `planetId` con un valor real
-    /// además de `NULL`). Devuelve `(connection, scope)`.
+    /// Common setup for `parse_moons`'s tests: schema, an `invTypes`
+    /// row for the planet and another for the moon, a solar system and
+    /// a planet in scope (so `planetId` can be tested with a real value
+    /// as well as `NULL`). Returns `(connection, scope)`.
     fn setup_for_parse_moons() -> (Connection, SystemScopeState) {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
@@ -2930,7 +2931,7 @@ mod tests {
             )],
         );
         let (connection, scope) = setup_for_parse_moons();
-        // 30000099 no está en el scope (solo 30000001 lo está).
+        // 30000099 is not in scope (only 30000001 is).
 
         let count = parse_moons(&connection, &dir.path, &scope).unwrap();
         assert_eq!(count, 0);
@@ -3014,10 +3015,10 @@ mod tests {
                 [],
             )
             .unwrap();
-        // A propósito, el gate con solarSystemId MENOR (30000001) se
-        // inserta como fila #2 y el de solarSystemId MAYOR (30000002)
-        // como fila #1, para confirmar que el orden de inserción no
-        // afecta el resultado.
+        // On purpose, the gate with the SMALLER solarSystemId
+        // (30000001) is inserted as row #2, and the one with the
+        // LARGER solarSystemId (30000002) as row #1, to confirm that
+        // insertion order doesn't affect the result.
         for (id, name) in [(30000002, "B"), (30000001, "A")] {
             connection
                 .execute(
@@ -3053,7 +3054,7 @@ mod tests {
                 Ok((row.get(0)?, row.get(1)?))
             })
             .unwrap();
-        // systemA < systemB, sin importar el orden de inserción de los gates.
+        // systemA < systemB, regardless of the gates' insertion order.
         assert_eq!((system_a, system_b), (30000001, 30000002));
     }
 
@@ -3233,8 +3234,9 @@ mod tests {
                      \"tickerName\": \"CBD\", \"deleted\": false, \"iconID\": 500, \"raceID\": 1}\n",
                 ),
                 (
-                    // sizeFactor falta a propósito: factions.sizeFactor es
-                    // REAL NOT NULL, así que parse_factions() debe fallar.
+                    // sizeFactor is deliberately missing:
+                    // factions.sizeFactor is REAL NOT NULL, so
+                    // parse_factions() must fail.
                     "factions.jsonl",
                     "{\"_key\": 500001, \"name\": {\"en\": \"Caldari State\"}, \"iconID\": 600, \
                      \"uniqueName\": true, \"corporationID\": 1000004}\n",
@@ -3248,10 +3250,10 @@ mod tests {
         let result = parse_data(&mut connection, &dir.path, &config);
         assert!(result.is_err());
 
-        // Nada debe haber quedado persistido, ni siquiera las fases
-        // anteriores a la que falló (categories/groups/types/races/
-        // npcCorporations ya se habían insertado exitosamente antes de
-        // que factions fallara).
+        // Nothing should have been left persisted, not even the phases
+        // before the one that failed (categories/groups/types/races/
+        // npcCorporations had already been successfully inserted
+        // before factions failed).
         for table in [
             "invCategories",
             "invGroups",
@@ -3267,7 +3269,7 @@ mod tests {
                     row.get(0)
                 })
                 .unwrap();
-            assert_eq!(count, 0, "la tabla {table} debería estar vacía tras el rollback");
+            assert_eq!(count, 0, "table {table} should be empty after the rollback");
         }
     }
 }

@@ -1,65 +1,66 @@
-//! Creación del schema STRICT de `sde.db`.
+//! Creation of `sde.db`'s STRICT schema.
 //!
-//! Equivalente a `SdeParser.create_table_structure()` en el prototipo
-//! Python (`sde_parser.py`), que abre `schema_corregido_strict.sql` desde
-//! disco y lo ejecuta contra la conexión con `cur.executescript(query)`.
+//! Equivalent to `SdeParser.create_table_structure()` in the Python
+//! prototype (`sde_parser.py`), which opens `schema_corregido_strict.sql`
+//! from disk and runs it against the connection with
+//! `cur.executescript(query)`.
 //!
-//! Aquí el DDL se embebe en el binario en tiempo de compilación con
-//! `include_str!` en vez de leerse desde el filesystem en tiempo de
-//! ejecución: el builder de `sde` no depende de que un archivo `.sql`
-//! externo exista en un path relativo dado (frágil si el binario corre
-//! desde un directorio de trabajo distinto), y el DDL queda versionado
-//! junto con el código que lo consume.
+//! Here the DDL is embedded into the binary at compile time with
+//! `include_str!` instead of being read from the filesystem at runtime:
+//! `sde`'s builder doesn't depend on an external `.sql` file existing at
+//! a given relative path (fragile if the binary runs from a different
+//! working directory), and the DDL stays versioned alongside the code
+//! that consumes it.
 //!
-//! `schema.sql` es una copia 1:1 de `schema_corregido_strict.sql` del
-//! proyecto `databaseCreator` (la fuente de verdad original del schema);
-//! si ese archivo cambia, esta copia debe actualizarse a mano.
+//! `schema.sql` is a 1:1 copy of `schema_corregido_strict.sql` from the
+//! `databaseCreator` project (the schema's original source of truth);
+//! if that file changes, this copy needs to be updated by hand.
 //!
-//! Nota sobre "escritura final a sqlite": este módulo solo cubre la
-//! creación del schema vacío (DDL). Poblarlo con datos reales del SDE
-//! (el equivalente a los ~15 métodos `_parse_*` de `sde_parser.py`:
-//! categorías, grupos, tipos, razas, facciones, regiones, constelaciones,
-//! sistemas solares con proyección isométrica/dimétrica, stargates,
-//! estrellas, planetas, lunas y conexiones) es un trabajo bastante más
-//! grande y queda fuera de este módulo -- ver `builder::mod` para el
-//! resto de piezas pendientes del builder.
+//! Note on "final write to sqlite": this module only covers creating the
+//! empty schema (DDL). Populating it with real SDE data (the equivalent
+//! of `sde_parser.py`'s ~15 `_parse_*` methods: categories, groups,
+//! types, races, factions, regions, constellations, solar systems with
+//! isometric/dimetric projection, stargates, stars, planets, moons and
+//! connections) is a considerably bigger piece of work and lives outside
+//! this module -- see `builder::mod` for the rest of the builder's
+//! pieces.
 
 use rusqlite::Connection;
 
-/// El DDL STRICT completo (tablas, índices, FKs) para `sde.db`.
+/// The complete STRICT DDL (tables, indexes, FKs) for `sde.db`.
 ///
-/// Mantenido en sincronía manualmente con `schema_corregido_strict.sql`
-/// del proyecto `databaseCreator` -- ver ese archivo para el historial de
-/// cambios y las notas sobre el rework del SDE de sept. 2025.
+/// Kept manually in sync with `schema_corregido_strict.sql` from the
+/// `databaseCreator` project -- see that file for the change history and
+/// notes on the September 2025 SDE rework.
 pub const SCHEMA_DDL: &str = include_str!("schema.sql");
 
-/// Crea el schema STRICT completo en `connection`, ejecutando
-/// [`SCHEMA_DDL`] de una sola vez.
+/// Creates the full STRICT schema on `connection`, running
+/// [`SCHEMA_DDL`] in one go.
 ///
-/// La primera sentencia del DDL es `PRAGMA foreign_keys = ON;`, así que
-/// tras esta llamada la conexión queda con FK enforcement activo para el
-/// resto de su vida (a menos que algo más la desactive explícitamente) --
-/// no hace falta volver a setear esa pragma antes de insertar datos sobre
-/// la misma `connection`.
+/// The DDL's first statement is `PRAGMA foreign_keys = ON;`, so after
+/// this call the connection has FK enforcement active for the rest of
+/// its life (unless something else explicitly disables it) -- there's
+/// no need to set that pragma again before inserting data on the same
+/// `connection`.
 ///
-/// El DDL no usa `CREATE TABLE IF NOT EXISTS` a propósito: llamar a esta
-/// función dos veces sobre la misma conexión falla (`table X already
-/// exists`) en vez de mezclarse silenciosamente con un schema parcial o
-/// corrupto de una corrida anterior. El llamador es responsable de pasar
-/// una conexión "limpia" (base de datos nueva o vacía).
+/// The DDL deliberately doesn't use `CREATE TABLE IF NOT EXISTS`:
+/// calling this function twice on the same connection fails (`table X
+/// already exists`) instead of silently mixing in with a partial or
+/// corrupted schema from a previous run. The caller is responsible for
+/// passing in a "clean" connection (a new or empty database).
 pub fn create_schema(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch(SCHEMA_DDL)
 }
 
-/// Nombres de las tablas declaradas por [`SCHEMA_DDL`], en el orden en que
-/// aparecen.
+/// Names of the tables declared by [`SCHEMA_DDL`], in the order they
+/// appear.
 ///
-/// Parseo deliberadamente simple (una pasada por línea buscando el
-/// prefijo `CREATE TABLE `): el DDL es un recurso estático y de confianza
-/// del propio crate, no input externo, así que no vale la pena traer un
-/// parser SQL real solo para esto. Sirve para verificaciones posteriores
-/// a la creación (p. ej. en tests) sin mantener una lista manual aparte
-/// que se pueda desincronizar del DDL real.
+/// Deliberately simple parsing (one pass per line looking for the
+/// `CREATE TABLE ` prefix): the DDL is a static, trusted resource owned
+/// by the crate itself, not external input, so it's not worth pulling in
+/// a real SQL parser just for this. Useful for post-creation checks
+/// (e.g. in tests) without keeping a separate manual list that could
+/// drift out of sync with the real DDL.
 pub fn table_names() -> Vec<&'static str> {
     SCHEMA_DDL
         .lines()
@@ -98,16 +99,16 @@ mod tests {
         expected.sort();
 
         assert_eq!(existing, expected);
-        // Ancla adicional: si este número cambia, seguramente cambió el
-        // DDL y vale la pena revisar el resto de este archivo de tests.
+        // Extra anchor: if this number changes, the DDL likely changed
+        // too, and it's worth reviewing the rest of this test file.
         assert_eq!(expected.len(), 19);
     }
 
     #[test]
     fn create_schema_fails_if_called_twice() {
-        // El DDL no usa `CREATE TABLE IF NOT EXISTS` a propósito: una
-        // segunda llamada sobre la misma conexión debe fallar de forma
-        // visible, no mezclarse en silencio con un schema anterior.
+        // The DDL deliberately doesn't use `CREATE TABLE IF NOT EXISTS`:
+        // a second call on the same connection must fail visibly, not
+        // silently mix in with a previous schema.
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
         assert!(create_schema(&connection).is_err());
@@ -118,11 +119,10 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
 
-        // invCategories.published es `INTEGER NOT NULL CHECK (published
-        // IN (0,1))`; en una tabla STRICT, insertar un TEXT en una columna
-        // INTEGER debe fallar directamente en vez de convertirse en
-        // silencio por afinidad (comportamiento SQLite estándar, no
-        // STRICT).
+        // invCategories.published is `INTEGER NOT NULL CHECK (published
+        // IN (0,1))`; in a STRICT table, inserting TEXT into an INTEGER
+        // column must fail outright instead of being silently coerced by
+        // affinity (standard, non-STRICT SQLite behavior).
         let result = connection.execute(
             "INSERT INTO invCategories (categoryId, categoryName, published) \
              VALUES (1, 'Test', 'yes')",
@@ -133,15 +133,14 @@ mod tests {
 
     #[test]
     fn create_schema_enforces_foreign_keys() {
-        // El propio DDL activa `PRAGMA foreign_keys = ON` como primera
-        // sentencia, así que no hace falta activarla aparte antes de
-        // llamar a create_schema().
+        // The DDL itself turns on `PRAGMA foreign_keys = ON` as its
+        // first statement, so there's no need to enable it separately
+        // before calling create_schema().
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
 
-        // invGroups.categoryId referencia invCategories(categoryId); no
-        // existe ninguna categoría con id 999, así que este INSERT debe
-        // ser rechazado.
+        // invGroups.categoryId references invCategories(categoryId); no
+        // category with id 999 exists, so this INSERT must be rejected.
         let result = connection.execute(
             "INSERT INTO invGroups (groupId, groupName, categoryId, anchorable) \
              VALUES (1, 'Test', 999, 0)",
@@ -152,9 +151,9 @@ mod tests {
 
     #[test]
     fn create_schema_accepts_valid_rows_respecting_fk_order() {
-        // Prueba de humo end-to-end: una fila válida en cada extremo de
-        // una relación FK (invCategories -> invGroups) debe insertarse
-        // sin problemas cuando el padre se crea primero.
+        // End-to-end smoke test: a valid row on each end of an FK
+        // relationship (invCategories -> invGroups) must insert without
+        // issues when the parent is created first.
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
 

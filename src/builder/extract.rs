@@ -1,29 +1,29 @@
-//! Descompresión del zip del SDE en el directorio de trabajo del
-//! builder, preservando `maps/` (los SVG de dotlan, que vienen de otra
-//! fuente y no deben perderse ni re-descargarse en cada build).
-//! Equivalente a la parte de `MiscUtils.zip_decompress()` +  la limpieza
-//! de `sde_path` que hace `database_builder.py` antes de invocar al
-//! parser.
+//! Decompression of the SDE zip into the builder's working directory,
+//! preserving `maps/` (dotlan's SVGs, which come from a different
+//! source and shouldn't be lost nor re-downloaded on every build).
+//! Equivalent to the `MiscUtils.zip_decompress()` part + the
+//! `sde_path` cleanup that `database_builder.py` does before invoking
+//! the parser.
 //!
-//! A diferencia de Python (que usa `zipfile.ZipFile(...).extractall()`),
-//! acá se usa `ZipArchive::extract()`, que ya viene incorporada en el
-//! propio crate `zip` (versión 8.x) -- no hizo falta ningún crate
-//! auxiliar como `zip-extensions`.
+//! Unlike Python (which uses `zipfile.ZipFile(...).extractall()`),
+//! `ZipArchive::extract()` is used here, which already ships in the
+//! `zip` crate itself (version 8.x) -- no auxiliary crate like
+//! `zip-extensions` was needed.
 
 use crate::builder::BuilderError;
 use std::path::Path;
 
-/// Descomprime `zip_path` en `destination` (lo crea si no existe).
-/// Sobrescribe archivos existentes -- mismo comportamiento que
-/// `zipfile.ZipFile.extractall()` en Python. Equivalente a
-/// `MiscUtils.zip_decompress()`, salvo que acá un zip corrupto/inválido
-/// se propaga como `Err` (vía `BuilderError::Zip`) en vez de devolver
-/// `false` -- consistente con el resto de este módulo (`extract_map_data`
-/// es la única función que distingue "falla recuperable, reintentar
-/// descarga" de "error genuino" con un `bool`, porque ahí forma parte de
-/// un flujo de reintento explícito; acá no hay reintento posible dentro
-/// de esta función, así que un `Err` directo es más claro que un `bool`
-/// que el caller tendría que interpretar).
+/// Decompresses `zip_path` into `destination` (creates it if it doesn't
+/// exist). Overwrites existing files -- same behavior as
+/// `zipfile.ZipFile.extractall()` in Python. Equivalent to
+/// `MiscUtils.zip_decompress()`, except that here a corrupt/invalid zip
+/// propagates as an `Err` (via `BuilderError::Zip`) instead of returning
+/// `false` -- consistent with the rest of this module (`extract_map_data`
+/// is the only function that distinguishes "recoverable failure, retry
+/// the download" from "genuine error" with a `bool`, because there it's
+/// part of an explicit retry flow; here there's no possible retry inside
+/// this function, so a direct `Err` is clearer than a `bool` the caller
+/// would have to interpret).
 pub fn unzip(zip_path: &Path, destination: &Path) -> Result<(), BuilderError> {
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
@@ -31,19 +31,20 @@ pub fn unzip(zip_path: &Path, destination: &Path) -> Result<(), BuilderError> {
     Ok(())
 }
 
-/// Vacía `sde_dir` (si ya existe) preservando `<sde_dir>/maps/` tal
-/// cual. No hace nada si `sde_dir` todavía no existe -- no hay nada que
-/// limpiar. Equivalente al loop `for item in sde_path.iterdir(): ...` de
+/// Empties `sde_dir` (if it already exists) while preserving
+/// `<sde_dir>/maps/` as-is. Does nothing if `sde_dir` doesn't exist yet
+/// -- there's nothing to clean up. Equivalent to the
+/// `for item in sde_path.iterdir(): ...` loop in
 /// `database_builder.py`.
 ///
-/// A diferencia de Python (que compara `item.resolve() ==
-/// maps_path.resolve()`, canonicalizando ambos paths), acá se compara
-/// directamente sin canonicalizar: alcanza porque tanto la entrada de
-/// `read_dir` como `maps_dir` se construyen a partir del mismo
-/// `sde_dir` de la misma forma, y canonicalizar `maps_dir` de antemano
-/// fallaría si esa carpeta todavía no existe (un caso perfectamente
-/// válido -- p. ej. la primera vez que se corre el builder, antes de
-/// que `dotlan::process()` descargue ningún mapa).
+/// Unlike Python (which compares `item.resolve() ==
+/// maps_path.resolve()`, canonicalizing both paths), here they're
+/// compared directly without canonicalizing: that's enough because both
+/// the `read_dir` entry and `maps_dir` are built from the same
+/// `sde_dir` the same way, and canonicalizing `maps_dir` upfront would
+/// fail if that folder doesn't exist yet (a perfectly valid case --
+/// e.g. the first time the builder runs, before `dotlan::process()` has
+/// downloaded any map).
 pub fn clean_except_maps(sde_dir: &Path) -> Result<(), BuilderError> {
     if !sde_dir.exists() {
         return Ok(());
@@ -63,9 +64,10 @@ pub fn clean_except_maps(sde_dir: &Path) -> Result<(), BuilderError> {
     Ok(())
 }
 
-/// Limpia `sde_dir` preservando `maps/` y descomprime `zip_path` ahí --
-/// composición directa de [`clean_except_maps`] seguido de [`unzip`], en
-/// ese orden, el mismo orden que usa `database_builder.py`.
+/// Cleans `sde_dir` while preserving `maps/` and decompresses
+/// `zip_path` into it -- a direct composition of [`clean_except_maps`]
+/// followed by [`unzip`], in that order, the same order
+/// `database_builder.py` uses.
 pub fn prepare_sde_directory(zip_path: &Path, sde_dir: &Path) -> Result<(), BuilderError> {
     clean_except_maps(sde_dir)?;
     unzip(zip_path, sde_dir)?;
@@ -83,11 +85,11 @@ mod tests {
         dir
     }
 
-    /// Crea un zip válido en `path` con las entradas dadas
-    /// `(nombre, contenido)`, incluyendo subcarpetas si el nombre trae
-    /// `/`. Usa `SimpleFileOptions` -- el tipo que la propia
-    /// documentación de `zip` 8.6.0 recomienda para el caso simple (sin
-    /// especificar a mano el parámetro genérico de `FileOptions`).
+    /// Creates a valid zip at `path` with the given
+    /// `(name, content)` entries, including subfolders if the name
+    /// carries a `/`. Uses `SimpleFileOptions` -- the type `zip` 8.6.0's
+    /// own documentation recommends for the simple case (without
+    /// specifying `FileOptions`'s generic parameter by hand).
     fn build_test_zip(path: &Path, entries: &[(&str, &str)]) {
         let file = std::fs::File::create(path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
@@ -126,7 +128,7 @@ mod tests {
     fn unzip_errors_on_invalid_zip() {
         let dir = temp_dir("invalid");
         let bad_zip = dir.join("not_a_zip.zip");
-        std::fs::write(&bad_zip, b"esto no es un zip").unwrap();
+        std::fs::write(&bad_zip, b"this is not a zip").unwrap();
         let destination = dir.join("out");
 
         let result = unzip(&bad_zip, &destination);
@@ -136,8 +138,8 @@ mod tests {
     #[test]
     fn clean_except_maps_does_nothing_when_directory_missing() {
         let dir = temp_dir("missing");
-        let sde_dir = dir.join("no_existe_todavia");
-        // no debe fallar aunque sde_dir no exista
+        let sde_dir = dir.join("does_not_exist_yet");
+        // must not fail even if sde_dir doesn't exist
         clean_except_maps(&sde_dir).unwrap();
     }
 
@@ -146,20 +148,20 @@ mod tests {
         let dir = temp_dir("preserve");
         let sde_dir = dir.join("sde");
         std::fs::create_dir_all(sde_dir.join("maps")).unwrap();
-        std::fs::write(sde_dir.join("maps").join("The_Forge.svg"), "svg viejo").unwrap();
-        std::fs::write(sde_dir.join("types.jsonl"), "datos viejos").unwrap();
+        std::fs::write(sde_dir.join("maps").join("The_Forge.svg"), "old svg").unwrap();
+        std::fs::write(sde_dir.join("types.jsonl"), "old data").unwrap();
         std::fs::create_dir_all(sde_dir.join("universe")).unwrap();
-        std::fs::write(sde_dir.join("universe").join("region.jsonl"), "mas datos viejos").unwrap();
+        std::fs::write(sde_dir.join("universe").join("region.jsonl"), "more old data").unwrap();
 
         clean_except_maps(&sde_dir).unwrap();
 
-        assert!(sde_dir.join("maps").exists(), "maps/ debe sobrevivir");
+        assert!(sde_dir.join("maps").exists(), "maps/ must survive");
         assert!(
             sde_dir.join("maps").join("The_Forge.svg").exists(),
-            "el contenido de maps/ tampoco debe tocarse"
+            "maps/'s content must not be touched either"
         );
-        assert!(!sde_dir.join("types.jsonl").exists(), "types.jsonl debe borrarse");
-        assert!(!sde_dir.join("universe").exists(), "universe/ debe borrarse completa");
+        assert!(!sde_dir.join("types.jsonl").exists(), "types.jsonl must be removed");
+        assert!(!sde_dir.join("universe").exists(), "universe/ must be removed entirely");
     }
 
     #[test]
@@ -167,8 +169,8 @@ mod tests {
         let dir = temp_dir("prepare");
         let sde_dir = dir.join("sde");
         std::fs::create_dir_all(sde_dir.join("maps")).unwrap();
-        std::fs::write(sde_dir.join("maps").join("Domain.svg"), "svg preservado").unwrap();
-        std::fs::write(sde_dir.join("old_data.jsonl"), "datos de un build anterior").unwrap();
+        std::fs::write(sde_dir.join("maps").join("Domain.svg"), "preserved svg").unwrap();
+        std::fs::write(sde_dir.join("old_data.jsonl"), "data from a previous build").unwrap();
 
         let zip_path = dir.join("new_sde.zip");
         build_test_zip(&zip_path, &[("types.jsonl", "{\"_key\": 1}\n")]);

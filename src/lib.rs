@@ -20,8 +20,8 @@ use std::rc::Rc;
 /// Module that has Data object abstractions to fill with the database data.
 pub mod objects;
 
-/// Lógica para (re)generar `sde.db` (feature `builder`, deshabilitada por
-/// default). Ver `src/builder/mod.rs` para el detalle.
+/// Logic to (re)generate `sde.db` (feature `builder`, disabled by
+/// default). See `src/builder/mod.rs` for the detail.
 #[cfg(feature = "builder")]
 pub mod builder;
 
@@ -50,17 +50,16 @@ impl<'a> SdeManager<'a> {
         }
     }
 
-    /// Aplica el factor de ajuste (`self.factor`) y, si `invert` es
-    /// `true`, invierte el signo de ambas componentes. Reemplaza a los
-    /// operadores `DivAssign`/`MulAssign` que antes proveía
-    /// `egui_map::RawPoint` -- misma lógica de siempre (dividir si el
-    /// factor es > 1, multiplicar por su valor absoluto si es < -1),
-    /// ahora sobre `[f32; 2]` directo. `invert` es un parámetro (no
-    /// siempre `self.invert_coordinates`) porque no todas las funciones
-    /// que llaman a este helper invierten: `get_systempoints`/
-    /// `get_connections` sí, `get_abstract_systems`/
-    /// `get_abstract_connections` no (así era también en el código
-    /// anterior, antes de esta migración).
+    /// Applies the adjustment factor (`self.factor`) and, if `invert` is
+    /// `true`, flips the sign of both components. Replaces the
+    /// `DivAssign`/`MulAssign` operators `egui_map::RawPoint` used to
+    /// provide -- same logic as always (divide if the factor is > 1,
+    /// multiply by its absolute value if it's < -1), now directly on
+    /// `[f32; 2]`. `invert` is a parameter (not always
+    /// `self.invert_coordinates`) because not every function calling
+    /// this helper inverts: `get_systempoints`/`get_connections` do,
+    /// `get_abstract_systems`/`get_abstract_connections` don't (that was
+    /// also the case in the previous code, before this migration).
     fn scale_coords(&self, mut coords: [f32; 2], invert: bool) -> [f32; 2] {
         if self.factor > 1 {
             let f = self.factor as f32;
@@ -78,23 +77,24 @@ impl<'a> SdeManager<'a> {
         coords
     }
 
-    /// Envuelve un `kdtree::ErrorKind` (de una llamada a `KdTree::add`)
-    /// como `rusqlite::Error`, para poder propagarlo con `?` desde
-    /// funciones que devuelven `Result<_, rusqlite::Error>` -- son dos
-    /// crates de error completamente distintos, sin ninguna conversión
-    /// nativa entre ellos. Usa `ToSqlConversionFailure` (disponible sin
-    /// gating de features, a diferencia de `ModuleError`, que requiere la
-    /// feature `vtab`) como la variante prevista por el propio
-    /// `rusqlite` para envolver cualquier error ajeno -- pese a que su
-    /// nombre sugiere que es solo para implementores de `ToSql`.
+    /// Wraps a `kdtree::ErrorKind` (from a `KdTree::add` call) as a
+    /// `rusqlite::Error`, so it can be propagated with `?` from
+    /// functions that return `Result<_, rusqlite::Error>` -- these are
+    /// two entirely different error crates, with no native conversion
+    /// between them. Uses `ToSqlConversionFailure` (available without
+    /// feature gating, unlike `ModuleError`, which requires the `vtab`
+    /// feature) as the variant `rusqlite` itself intends for wrapping
+    /// any foreign error -- even though its name suggests it's only for
+    /// `ToSql` implementors.
     ///
-    /// En la práctica esto no debería dispararse nunca (`KdTree::add`
-    /// solo falla por `ZeroCapacity`, imposible con `KdTree::new`, o por
-    /// coordenadas no-finitas, y `position2DX`/`position2DY` vienen
-    /// filtradas con `IS NOT NULL` en la consulta) -- se propaga como
-    /// error igual, en vez de asumirlo imposible con `expect`, porque acá
-    /// SÍ hay una vía teórica de dato corrupto (un `NaN` guardado en la
-    /// base) que en `map_points_to_vec` no existe.
+    /// In practice this should never actually fire (`KdTree::add` only
+    /// fails on `ZeroCapacity`, impossible with `KdTree::new`, or on
+    /// non-finite coordinates, and `position2DX`/`position2DY` come
+    /// filtered with `IS NOT NULL` in the query) -- it's still
+    /// propagated as an error rather than assumed impossible with
+    /// `expect`, because here there IS a theoretical path for corrupt
+    /// data (a `NaN` stored in the database) that doesn't exist in
+    /// `map_points_to_vec`.
     fn kdtree_error(err: kdtree::ErrorKind) -> Error {
         Error::ToSqlConversionFailure(Box::new(err))
     }
@@ -128,11 +128,12 @@ impl<'a> SdeManager<'a> {
         query += " FROM mapSolarSystems AS sos RIGHT OUTER JOIN mapSystemConnections AS msc";
         query += " ON (msc.systemA = sos.SolarSystemId OR msc.systemB = sos.SolarSystemId)";
         query += " WHERE sos.SolarSystemId BETWEEN ?1 AND ?2";
-        // position2DX/Y son NULL-ables (a diferencia de las antiguas
-        // projX/Y/Z, que siempre traían un valor con DEFAULT(0.0)): un
-        // sistema sin proyección 2D calculada (CCP no la trae y no se
-        // forzó el cálculo local, ver ParserConfig::force_isometric_position_2d)
-        // simplemente no aparece en el mapa, en vez de romper la consulta.
+        // position2DX/Y are nullable (unlike the old projX/Y/Z, which
+        // always carried a value via DEFAULT(0.0)): a system without a
+        // computed 2D projection (CCP doesn't provide one and local
+        // computation wasn't forced, see
+        // ParserConfig::force_isometric_position_2d) simply doesn't show
+        // up on the map, instead of breaking the query.
         query += " AND sos.position2DX IS NOT NULL AND sos.position2DY IS NOT NULL";
         query += " ORDER BY sos.SolarSystemId ASC";
         let mut statement = connection.prepare(query.as_str())?;
@@ -189,11 +190,11 @@ impl<'a> SdeManager<'a> {
         query += "INNER JOIN mapSolarSystems mss ON (mc.constellationId = mss.constellationId) ";
         query += " WHERE mr.regionId BETWEEN 10000000 AND 10999999 GROUP BY mr.regionId, mr.regionName, mc.constellationId) ";
         query += "AS reg GROUP BY reg.regionId ";
-        // position2DX/Y son NULL-ables; MAX()/MIN() ya ignoran los NULL
-        // individuales de cada sistema, pero si TODOS los sistemas de una
-        // región carecen de proyección 2D, el agregado final sigue dando
-        // NULL -- esa región se excluye acá en vez de romper la lectura
-        // de la fila (no hay bounding box que reportar para ella).
+        // position2DX/Y are nullable; MAX()/MIN() already ignore each
+        // individual system's NULLs, but if EVERY system in a region
+        // lacks a 2D projection, the final aggregate still comes out
+        // NULL -- that region is excluded here instead of breaking the
+        // row read (there's no bounding box to report for it).
         query += "HAVING MAX(reg.max_x) IS NOT NULL AND MAX(reg.max_y) IS NOT NULL ";
         query += "AND MIN(reg.min_x) IS NOT NULL AND MIN(reg.min_y) IS NOT NULL;";
         let mut statement = connection.prepare(query.as_str())?;
@@ -262,12 +263,12 @@ impl<'a> SdeManager<'a> {
     pub fn get_system_coords(&self, id_node: usize) -> Result<Option<SdePoint>, Error> {
         let connection = self.get_standart_connection()?;
 
-        // projX/Y/Z ya no existen (ver la nota en get_systempoints());
-        // esta función devuelve un SdePoint genuinamente 3D (a diferencia
-        // de get_systempoints()/get_connections(), que solo necesitan 2
-        // componentes), así que se migra a centerX/Y/Z -- las coordenadas
-        // 3D reales del sistema, siempre `NOT NULL` en el schema, sin la
-        // complejidad de nulls que tiene position2DX/Y.
+        // projX/Y/Z no longer exist (see the note in get_systempoints());
+        // this function returns a genuinely 3D SdePoint (unlike
+        // get_systempoints()/get_connections(), which only need 2
+        // components), so it's migrated to centerX/Y/Z -- the system's
+        // real 3D coordinates, always `NOT NULL` in the schema, without
+        // the null-handling complexity position2DX/Y has.
         let mut query = String::from("SELECT mss.centerX, mss.centerY, mss.centerZ ");
         query += "FROM mapSolarSystems AS mss WHERE mss.SolarSystemId = ?1; ";
 
@@ -301,10 +302,10 @@ impl<'a> SdeManager<'a> {
         query += "FROM mapSystemConnections AS msc INNER JOIN mapSolarSystems AS mssa ";
         query += "ON(msc.systemA = mssa.solarSystemId) INNER JOIN mapSolarSystems AS mssb ";
         query += "ON(msc.systemB = mssb.solarSystemId) ";
-        // Ambos extremos necesitan una proyección 2D válida para poder
-        // dibujar la línea; si a cualquiera de los dos le falta (ver la
-        // misma nota de NULL-ability en get_systempoints), la conexión
-        // completa se omite en vez de fallar la consulta entera.
+        // Both endpoints need a valid 2D projection to be able to draw
+        // the line; if either one is missing it (see the same
+        // nullability note in get_systempoints), the whole connection is
+        // skipped instead of failing the entire query.
         query += "WHERE mssa.position2DX IS NOT NULL AND mssa.position2DY IS NOT NULL ";
         query += "AND mssb.position2DX IS NOT NULL AND mssb.position2DY IS NOT NULL;";
 
@@ -376,9 +377,9 @@ impl<'a> SdeManager<'a> {
                         .map_err(Self::kdtree_error)?;
                 }
                 current_index = id;
-                // get_abstract_systems no invierte coordenadas -- así era
-                // también antes de esta migración (a diferencia de
-                // get_systempoints/get_connections, que sí).
+                // get_abstract_systems doesn't invert coordinates -- that
+                // was also the case before this migration (unlike
+                // get_systempoints/get_connections, which do).
                 let coords = self.scale_coords(
                     [row.get::<usize, f32>(1)?, row.get::<usize, f32>(2)?],
                     false,
@@ -600,12 +601,12 @@ impl<'a> SdeManager<'a> {
             object.real_coords.x = row.get::<_, f64>(3)? as i64; //i64
             object.real_coords.y = row.get::<_, f64>(4)? as i64; //i64
             object.real_coords.z = row.get::<_, f64>(5)? as i64; //i64
-            // A diferencia de get_systempoints()/get_connections() (que
-            // filtran sistemas sin proyección 2D), acá se mantiene la fila
-            // igual: este método alimenta datos generales del sistema
-            // (nombre, región, constelación, coordenadas reales), no solo
-            // el mapa, así que un position2D ausente cae a (0.0, 0.0) en
-            // vez de excluir el sistema por completo.
+            // Unlike get_systempoints()/get_connections() (which filter
+            // out systems without a 2D projection), the row is kept
+            // as-is here: this method feeds general system data (name,
+            // region, constellation, real coordinates), not just the
+            // map, so a missing position2D falls back to (0.0, 0.0)
+            // instead of excluding the system entirely.
             object.projected_coords.x = row.get::<_, Option<f64>>(6)?.unwrap_or(0.0) as i64;
             object.projected_coords.y = row.get::<_, Option<f64>>(7)?.unwrap_or(0.0) as i64;
 
