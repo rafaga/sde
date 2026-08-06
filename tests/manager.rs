@@ -9,10 +9,9 @@
 //! - 3 planets and 1 moon
 //! - 3 abstract systems (2 in Region Alpha, 1 in Region Beta)
 
-use egui_map::map::objects::RawPoint;
 use rusqlite::Connection;
 use sde::SdeManager;
-use sde::objects::SdePoint;
+use sde::objects::{SdePoint, map_points_to_vec};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -124,36 +123,29 @@ impl Drop for Fixture {
 fn systempoints_returns_only_k_space_systems() {
     let fixture = Fixture::new("systempoints_k_space");
     let manager = fixture.manager();
-    let points = manager.get_systempoints().unwrap();
+    let tree = manager.get_systempoints().unwrap();
     // W-Sys (31000001) is outside the K-Space id range and must be excluded
-    assert_eq!(points.len(), 3);
-    assert!(
-        points
-            .iter()
-            .find(|&y| y.get_id() == 31000001usize)
-            .is_none()
-    );
+    assert_eq!(tree.size(), 3);
+    let points = map_points_to_vec(&tree);
+    assert!(points.iter().find(|&y| y.id == 31000001usize).is_none());
 }
 
 #[test]
 fn systempoints_applies_factor_and_coordinate_inversion() {
     let fixture = Fixture::new("systempoints_factor");
     let manager = fixture.manager();
-    let points = manager.get_systempoints().unwrap();
-    let result = points.iter().find(|point| point.get_id() == 30000001usize);
+    let tree = manager.get_systempoints().unwrap();
+    let points = map_points_to_vec(&tree);
+    let result = points.iter().find(|point| point.id == 30000001usize);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().get_name(), String::from("Sys One"));
-    //let point = &points[&30000001];
-    //assert_eq!(point.get_id(), 30000001);
-    //assert_eq!(point.get_name(), "Sys One");
+    assert_eq!(result.unwrap().name, String::from("Sys One"));
     // (1000, 2000, 3000) / 100 = (10, 20, 30), inverted -> (-10, -20, -30)
-    // RawPoint holds (x, z)
-    assert_eq!(result.unwrap().raw_point.components, [-10.0, -30.0]);
+    // coords holds (position2DX, position2DY)
+    assert_eq!(result.unwrap().coords, [-10.0, -30.0]);
 
-    let result = points.iter().find(|point| point.get_id() == 30000002usize);
+    let result = points.iter().find(|point| point.id == 30000002usize);
     assert!(result.is_some());
-    //let point = &points[&30000002];
-    assert_eq!(result.unwrap().raw_point.components, [10.0, 30.0]);
+    assert_eq!(result.unwrap().coords, [10.0, 30.0]);
 }
 
 #[test]
@@ -161,10 +153,11 @@ fn systempoints_without_inversion_keeps_original_sign() {
     let fixture = Fixture::new("systempoints_no_invert");
     let mut manager = fixture.manager();
     manager.invert_coordinates = false;
-    let points = manager.get_systempoints().unwrap();
-    let result = points.iter().find(|point| point.get_id() == 30000001usize);
+    let tree = manager.get_systempoints().unwrap();
+    let points = map_points_to_vec(&tree);
+    let result = points.iter().find(|point| point.id == 30000001usize);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().raw_point.components, [10.0, 30.0]);
+    assert_eq!(result.unwrap().coords, [10.0, 30.0]);
 }
 
 #[test]
@@ -172,27 +165,28 @@ fn systempoints_with_negative_factor_multiplies() {
     let fixture = Fixture::new("systempoints_neg_factor");
     let mut manager = fixture.manager();
     manager.factor = -100; // negative factor multiplies by its absolute value
-    let points = manager.get_systempoints().unwrap();
+    let tree = manager.get_systempoints().unwrap();
+    let points = map_points_to_vec(&tree);
     // (1000 * 100) inverted -> -100000
-    let result = points.iter().find(|point| point.get_id() == 30000001usize);
+    let result = points.iter().find(|point| point.id == 30000001usize);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().raw_point.components, [-100000.0, -300000.0]);
+    assert_eq!(result.unwrap().coords, [-100000.0, -300000.0]);
 }
 
 #[test]
 fn system_connections_are_added_bidirectionally() {
     let fixture = Fixture::new("system_connections");
     let manager = fixture.manager();
-    let points = manager.get_systempoints().unwrap();
-    //let points = manager.get_system_connections().unwrap();
-    assert_eq!(points.len(),3);
-    let result = points.iter().find(|point| point.get_id() == 30000001usize);
+    let tree = manager.get_systempoints().unwrap();
+    assert_eq!(tree.size(), 3);
+    let points = map_points_to_vec(&tree);
+    let result = points.iter().find(|point| point.id == 30000001usize);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().connections.len(),1);
-    let result = points.iter().find(|point| point.get_id() == 30000002usize);
+    assert_eq!(result.unwrap().connections.len(), 1);
+    let result = points.iter().find(|point| point.id == 30000002usize);
     assert!(result.is_some());
     assert_eq!(result.unwrap().connections.len(), 2);
-    let result = points.iter().find(|point| point.get_id() == 30000003usize);
+    let result = points.iter().find(|point| point.id == 30000003usize);
     assert!(result.is_some());
     let connection = result
         .unwrap()
@@ -211,19 +205,18 @@ fn connections_returns_lines_with_scaled_inverted_coords() {
     let fixture = Fixture::new("connections");
     let manager = fixture.manager();
     let vec_segments = manager.get_connections().unwrap();
-    let rtree_segments = rstar::RTree::bulk_load(vec_segments);
     let expected_id = (30000001, 30000002);
 
-    assert_eq!(rtree_segments.size(), 2);
-    let line = rtree_segments
+    assert_eq!(vec_segments.len(), 2);
+    let line = vec_segments
         .iter()
         .find(|item| item.id == expected_id)
         .expect("conn-1-2 not found");
     assert_eq!(line.id, expected_id);
-    // point1 = system A (30000001): (x, z) scaled and inverted
-    assert_eq!(line.raw_line.points[0].components, [-10.0, -30.0]);
+    // point1 = system A (30000001): (x, y) scaled and inverted
+    assert_eq!(line.point1, [-10.0, -30.0]);
     // point2 = system B (30000002)
-    assert_eq!(line.raw_line.points[1].components, [10.0, 30.0]);
+    assert_eq!(line.point2, [10.0, 30.0]);
 }
 
 // -------------------------------------------------------------------------
@@ -428,19 +421,20 @@ fn moon_filtered_by_planet_returns_matching_moons() {
 fn abstract_systems_without_filter_returns_all() {
     let fixture = Fixture::new("abstract_all");
     let manager = fixture.manager();
-    let points = manager.get_abstract_systems(vec![]).unwrap();
+    let tree = manager.get_abstract_systems(vec![]).unwrap();
 
-    assert_eq!(points.len(), 3);
+    assert_eq!(tree.size(), 3);
+    let points = map_points_to_vec(&tree);
     // coordinates are divided by the factor (no inversion on the abstract map)
-    let result = points.iter().find(|point| point.get_id() == 30000001usize);
+    let result = points.iter().find(|point| point.id == 30000001usize);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().raw_point.components, [0.1, 0.2]);
-    let result = points.iter().find(|point| point.get_id() == 30000002usize);
+    assert_eq!(result.unwrap().coords, [0.1, 0.2]);
+    let result = points.iter().find(|point| point.id == 30000002usize);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().raw_point.components, [0.3, 0.4]);
-    let result = points.iter().find(|point| point.get_id() == 30000003usize);
+    assert_eq!(result.unwrap().coords, [0.3, 0.4]);
+    let result = points.iter().find(|point| point.id == 30000003usize);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().raw_point.components, [0.5, 0.6]);
+    assert_eq!(result.unwrap().coords, [0.5, 0.6]);
 }
 
 #[test]
@@ -448,15 +442,17 @@ fn abstract_systems_filtered_by_region() {
     let fixture = Fixture::new("abstract_by_region");
     let manager = fixture.manager();
 
-    let points = manager.get_abstract_systems(vec![10000001]).unwrap();
-    assert_eq!(points.len(), 2);
-    let result = points.iter().find(|point| point.get_id() == 30000001usize);
+    let tree = manager.get_abstract_systems(vec![10000001]).unwrap();
+    assert_eq!(tree.size(), 2);
+    let points = map_points_to_vec(&tree);
+    let result = points.iter().find(|point| point.id == 30000001usize);
     assert!(result.is_some());
-    let result = points.iter().find(|point| point.get_id() == 30000002usize);
+    let result = points.iter().find(|point| point.id == 30000002usize);
     assert!(result.is_some());
-    let points = manager.get_abstract_systems(vec![10000002]).unwrap();
-    assert_eq!(points.len(), 1);
-    let result = points.iter().find(|point| point.get_id() == 30000003usize);
+    let tree = manager.get_abstract_systems(vec![10000002]).unwrap();
+    assert_eq!(tree.size(), 1);
+    let points = map_points_to_vec(&tree);
+    let result = points.iter().find(|point| point.id == 30000003usize);
     assert!(result.is_some());
 }
 
@@ -464,16 +460,17 @@ fn abstract_systems_filtered_by_region() {
 fn abstract_system_connections_fill_names_and_connections() {
     let fixture = Fixture::new("abstract_sys_conn");
     let manager = fixture.manager();
-    let points = manager.get_abstract_systems(vec![]).unwrap();
+    let tree = manager.get_abstract_systems(vec![]).unwrap();
+    let points = map_points_to_vec(&tree);
 
-    let result = points.iter().find(|point| point.get_id() == 30000001usize);
+    let result = points.iter().find(|point| point.id == 30000001usize);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().get_name(), String::from("Sys One"));
+    assert_eq!(result.unwrap().name, String::from("Sys One"));
     assert_eq!(result.unwrap().connections.len(), 1);
-    let result = points.iter().find(|point| point.get_id() == 30000002usize);
+    let result = points.iter().find(|point| point.id == 30000002usize);
     assert!(result.is_some());
     assert_eq!(result.unwrap().connections.len(), 2);
-    let result = points.iter().find(|point| point.get_id() == 30000003usize);
+    let result = points.iter().find(|point| point.id == 30000003usize);
     assert!(result.is_some());
     assert_eq!(result.unwrap().connections.len(), 1);
 }
@@ -482,16 +479,17 @@ fn abstract_system_connections_fill_names_and_connections() {
 fn abstract_system_connections_respect_region_filter() {
     let fixture = Fixture::new("abstract_sys_conn_region");
     let manager = fixture.manager();
-    let points = manager.get_abstract_systems(vec![10000001u32]).unwrap();
+    let tree = manager.get_abstract_systems(vec![10000001u32]).unwrap();
 
-    assert_eq!(points.len(),2);
+    assert_eq!(tree.size(), 2);
+    let points = map_points_to_vec(&tree);
     // Only abstract systems inside Region Alpha are updated
-    let result = points.iter().find(|point| point.get_id() == 30000001usize);
+    let result = points.iter().find(|point| point.id == 30000001usize);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().get_name(), "Sys One");
-    let result = points.iter().find(|point| point.get_id() == 30000002usize);
+    assert_eq!(result.unwrap().name, "Sys One");
+    let result = points.iter().find(|point| point.id == 30000002usize);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().get_name(), "Sys Two");
+    assert_eq!(result.unwrap().name, "Sys Two");
 }
 
 #[test]
@@ -499,20 +497,19 @@ fn abstract_connections_without_filter_returns_all_lines() {
     let fixture = Fixture::new("abstract_conn_all");
     let manager = fixture.manager();
     let vec_lines = manager.get_abstract_connections(vec![]).unwrap();
-    let lines = rstar::RTree::bulk_load(vec_lines);
-    assert_eq!(lines.size(), 2);
-    let found = lines
+    assert_eq!(vec_lines.len(), 2);
+    let found = vec_lines
         .iter()
         .find(|item| item.id == (30000001, 30000002))
         .expect("conn-1-2 not found");
-    assert_eq!(found.raw_line.points[0], RawPoint::new(0.1, 0.2));
-    assert_eq!(found.raw_line.points[1], RawPoint::new(0.3, 0.4));
-    let found = lines
+    assert_eq!(found.point1, [0.1, 0.2]);
+    assert_eq!(found.point2, [0.3, 0.4]);
+    let found = vec_lines
         .iter()
         .find(|item| item.id == (30000002, 30000003))
         .expect("conn-2-3 not found");
-    assert_eq!(found.raw_line.points[0], RawPoint::new(0.3, 0.4));
-    assert_eq!(found.raw_line.points[1], RawPoint::new(0.5, 0.6));
+    assert_eq!(found.point1, [0.3, 0.4]);
+    assert_eq!(found.point2, [0.5, 0.6]);
 }
 
 #[test]
@@ -523,9 +520,13 @@ fn abstract_connections_filtered_by_region_requires_both_ends_inside() {
     // conn-2-3 spans Region Alpha and Region Beta, so it is excluded
     assert_eq!(lines.len(), 1);
     let expected_id = (30000001, 30000002);
-    assert!(lines.iter().any(|line| line.id == expected_id
-        && line.raw_line.points[0].components == [0.1, 0.2]
-        && line.raw_line.points[1].components == [0.3, 0.4]));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.id == expected_id
+                && line.point1 == [0.1, 0.2]
+                && line.point2 == [0.3, 0.4])
+    );
 }
 
 // -------------------------------------------------------------------------

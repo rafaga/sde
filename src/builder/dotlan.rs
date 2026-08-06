@@ -280,17 +280,25 @@ pub fn update_tables(connection: &Connection, config: &DotlanConfig) -> Result<(
 /// todo después del PRIMER punto); para un nombre de archivo típico como
 /// este, sin puntos de por medio, ambos dan el mismo resultado.
 ///
-/// # Nota: formato de los `id` no verificado contra un SVG real
+/// # Formato de los `id`: confirmado contra un mapa real de dotlan
 ///
-/// No tuve una muestra real de un mapa de dotlan para confirmar el
-/// formato exacto de los atributos `id` de sus `<rect>`/`<use>`. El
-/// código asume, fielmente a Python (`tag_id[3::]`), que cada `id` trae
-/// un prefijo de 3 caracteres antes del `solarSystemId` numérico (p. ej.
-/// `sys30000001`), y lo descarta con un slice de bytes -- seguro acá
-/// porque ese prefijo asumido es ASCII puro. Si el formato real difiere,
-/// esta función no rompe: cualquier `id`/`x`/`y` que no parsee como
-/// número simplemente se omite (con una advertencia en stderr), fila por
-/// fila, sin abortar el resto del parseo.
+/// Verificado contra `Derelik.svg` (un mapa regional real, agosto 2026):
+/// los `<rect class="i">` usan el prefijo `ice` (11 de 12 rects con esa
+/// clase traían `id="iceNNNNNNNN"`; el rect restante, sin `id` en
+/// absoluto, resultó ser una entrada de leyenda/referencia visual, no un
+/// sistema -- confirma que el guard `let Some(raw_id) = ... else {
+/// continue }` es necesario, no defensivo de más). Los `<use>` (sistemas
+/// abstractos) usan el prefijo `sys` -- los 125 `<use>` del archivo
+/// traían `id`/`x`/`y` completos, sin faltantes. Ambos prefijos son de 3
+/// caracteres, coincidiendo con el `tag_id[3::]` de Python -- el código
+/// no depende del TEXTO del prefijo (nunca lo compara), solo descarta 3
+/// bytes fijos, así que funciona igual para `ice`/`sys` o cualquier otro
+/// prefijo de 3 caracteres ASCII que aparezca en otras regiones.
+///
+/// Si algún otro mapa regional trajera un formato distinto de todos
+/// modos, esta función no rompe: cualquier `id`/`x`/`y` que no parsee
+/// como número simplemente se omite (con una advertencia en stderr),
+/// fila por fila, sin abortar el resto del parseo.
 ///
 /// A diferencia de Python (que pasa el `id` como string tal cual,
 /// confiando en la coerción de tipos clásica de SQLite -- su
@@ -594,6 +602,77 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM mapAbstractSystems", [], |row| row.get(0))
             .unwrap();
         assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn extract_map_data_handles_real_dotlan_excerpt() {
+        // Extracto textual EXACTO de un mapa real de dotlan (Derelik.svg,
+        // agosto 2026) -- no sintetizado a mano: el rect de leyenda sin
+        // `id`, dos rects de icebelt reales (prefijo `ice`), y dos `<use>`
+        // reales (prefijo `sys`), tal como aparecen en el archivo
+        // original.
+        let svg = concat!(
+            "<svg version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" ",
+            "xmlns:xlink=\"http://www.w3.org/1999/xlink\">",
+            "<rect x=\"872\" y=\"726\" rx=\"5.5\" ry=\"5.5\" width=\"15.4\" height=\"11\" class=\"i\" />",
+            "<rect id=\"ice30000072\" x=\"1\" y=\"0.5\" rx=\"14\" ry=\"13\" width=\"56\" height=\"28\" class=\"i\" />",
+            "<rect id=\"ice30000087\" x=\"1\" y=\"0.5\" rx=\"14\" ry=\"13\" width=\"56\" height=\"28\" class=\"i\" />",
+            "<use id=\"sys30000071\" x=\"0\" y=\"500\" width=\"62.5\" height=\"30\" xlink:href=\"#def30000071\" />",
+            "<use id=\"sys30000074\" x=\"0\" y=\"555\" width=\"62.5\" height=\"30\" xlink:href=\"#def30000074\" />",
+            "</svg>",
+        );
+
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapRegions (regionId, regionName, nebula, centerX, centerY, centerZ) \
+                 VALUES (10000005, 'Derelik', 5, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapConstellations \
+                 (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
+                 VALUES (20000005, 'Konora', 10000005, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        for id in [30000071, 30000072, 30000074, 30000087] {
+            connection
+                .execute(
+                    "INSERT INTO mapSolarSystems \
+                     (solarSystemId, solarSystemName, constellationId, radius, centerX, centerY, centerZ, security) \
+                     VALUES (?1, ?1, 20000005, 1.0, 0, 0, 0, 0.5)",
+                    rusqlite::params![id],
+                )
+                .unwrap();
+        }
+        create_abstract_map(&connection).unwrap();
+        create_icebelts(&connection).unwrap();
+
+        let path = write_temp_svg("real_excerpt", "Derelik.svg", svg);
+        let config = DotlanConfig { with_icebelts: true, ..DotlanConfig::default() };
+        let ok = extract_map_data(&connection, &path, &config).unwrap();
+        assert!(ok);
+
+        // El rect de leyenda (sin id) no debe generar ningun UPDATE de mas
+        // -- solo los dos con id real quedan marcados.
+        let ice_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM mapSolarSystems WHERE iceBelt = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(ice_count, 2);
+
+        let (region_id, x, y): (i64, f64, f64) = connection
+            .query_row(
+                "SELECT regionId, x, y FROM mapAbstractSystems WHERE solarSystemId = 30000071",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(region_id, 10000005);
+        assert_eq!((x, y), (0.0, 500.0));
     }
 
     #[test]

@@ -6,8 +6,10 @@
 //! there are these advantages:
 //!
 //!
-use crate::objects::{Constellation, Moon, Planet, Region, SdePoint, SolarSystem, Universe};
-use egui_map::map::objects::{MapPoint, MapSegment, RawPoint};
+use crate::objects::{
+    Constellation, MapPoint, MapSegment, Moon, Planet, Region, SdePoint, SolarSystem, Universe,
+};
+use kdtree::KdTree;
 use objects::EveRegionArea;
 use rusqlite::ToSql;
 use rusqlite::{Connection, Error, OpenFlags, params, vtab::array};
@@ -48,6 +50,55 @@ impl<'a> SdeManager<'a> {
         }
     }
 
+    /// Aplica el factor de ajuste (`self.factor`) y, si `invert` es
+    /// `true`, invierte el signo de ambas componentes. Reemplaza a los
+    /// operadores `DivAssign`/`MulAssign` que antes proveía
+    /// `egui_map::RawPoint` -- misma lógica de siempre (dividir si el
+    /// factor es > 1, multiplicar por su valor absoluto si es < -1),
+    /// ahora sobre `[f32; 2]` directo. `invert` es un parámetro (no
+    /// siempre `self.invert_coordinates`) porque no todas las funciones
+    /// que llaman a este helper invierten: `get_systempoints`/
+    /// `get_connections` sí, `get_abstract_systems`/
+    /// `get_abstract_connections` no (así era también en el código
+    /// anterior, antes de esta migración).
+    fn scale_coords(&self, mut coords: [f32; 2], invert: bool) -> [f32; 2] {
+        if self.factor > 1 {
+            let f = self.factor as f32;
+            coords[0] /= f;
+            coords[1] /= f;
+        } else if self.factor < -1 {
+            let f = self.factor.unsigned_abs() as f32;
+            coords[0] *= f;
+            coords[1] *= f;
+        }
+        if invert {
+            coords[0] *= -1.0;
+            coords[1] *= -1.0;
+        }
+        coords
+    }
+
+    /// Envuelve un `kdtree::ErrorKind` (de una llamada a `KdTree::add`)
+    /// como `rusqlite::Error`, para poder propagarlo con `?` desde
+    /// funciones que devuelven `Result<_, rusqlite::Error>` -- son dos
+    /// crates de error completamente distintos, sin ninguna conversión
+    /// nativa entre ellos. Usa `ToSqlConversionFailure` (disponible sin
+    /// gating de features, a diferencia de `ModuleError`, que requiere la
+    /// feature `vtab`) como la variante prevista por el propio
+    /// `rusqlite` para envolver cualquier error ajeno -- pese a que su
+    /// nombre sugiere que es solo para implementores de `ToSql`.
+    ///
+    /// En la práctica esto no debería dispararse nunca (`KdTree::add`
+    /// solo falla por `ZeroCapacity`, imposible con `KdTree::new`, o por
+    /// coordenadas no-finitas, y `position2DX`/`position2DY` vienen
+    /// filtradas con `IS NOT NULL` en la consulta) -- se propaga como
+    /// error igual, en vez de asumirlo imposible con `expect`, porque acá
+    /// SÍ hay una vía teórica de dato corrupto (un `NaN` guardado en la
+    /// base) que en `map_points_to_vec` no existe.
+    fn kdtree_error(err: kdtree::ErrorKind) -> Error {
+        Error::ToSqlConversionFailure(Box::new(err))
+    }
+
     /// Method that retrieve all Eve Online universe data and some dictionaries to quick
     /// access the available data.
     ///
@@ -66,11 +117,10 @@ impl<'a> SdeManager<'a> {
 
     /// Function to get all the K-Space solar systems coordinates from the SDE including data to build a map
     /// and search for basic stuff
-    pub fn get_systempoints(&self) -> Result<Vec<MapPoint>, Error> {
+    pub fn get_systempoints(&self) -> Result<KdTree<f32, MapPoint, [f32; 2]>, Error> {
         let connection = self.get_standart_connection()?;
 
-        //let mut hash_map: HashMap<usize, MapPoint> = HashMap::new();
-        let mut results = Vec::new();
+        let mut tree = KdTree::new(2);
         // centerX, centerY, centerZ,
         let mut query = String::from(
             "SELECT sos.SolarSystemId, sos.position2DX, sos.position2DY, sos.SolarSystemName, msc.systemA, msc.systemB ",
@@ -88,42 +138,41 @@ impl<'a> SdeManager<'a> {
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows = statement.query(params![30000000, 30999999])?;
         let mut last_id = isize::MIN;
-        let mut point = MapPoint::new(0, RawPoint::default());
+        let mut point = MapPoint {
+            id: 0,
+            name: String::new(),
+            coords: [0.0, 0.0],
+            connections: Vec::new(),
+        };
         while let Some(row) = rows.next()? {
             let id = row.get::<usize, isize>(0)?;
             if id != last_id {
                 if last_id != isize::MIN {
-                    results.push(point.clone());
+                    tree.add(point.coords, point.clone())
+                        .map_err(Self::kdtree_error)?;
                 }
                 last_id = id;
                 let x = row.get::<usize, f32>(1)?;
                 let y = row.get::<usize, f32>(2)?;
 
                 //we get the coordinate point and multiply with the adjust factor
-                let mut coord = RawPoint::new(x, y);
-                if self.factor > 1 {
-                    coord /= self.factor;
-                } else if self.factor < -1 {
-                    coord *= self.factor.abs();
-                }
-                if self.invert_coordinates {
-                    coord *= -1;
-                }
-                point = MapPoint::new(id.try_into().unwrap(), coord);
-                point.set_name(row.get::<usize, String>(3)?);
-                //hash_map.insert(id.try_into().unwrap(), point);
+                let coords = self.scale_coords([x, y], self.invert_coordinates);
+                point = MapPoint {
+                    id: id.try_into().unwrap(),
+                    name: row.get::<usize, String>(3)?,
+                    coords,
+                    connections: Vec::new(),
+                };
             }
-            // TODO: Implement correct connection handling
-            /*point.connections.push((
+            point.connections.push((
                 row.get::<usize, i64>(4)? as usize,
                 row.get::<usize, i64>(5)? as usize,
-            ));*/
-
+            ));
         }
         if last_id != isize::MIN {
-            results.push(point.clone());
+            tree.add(point.coords, point).map_err(Self::kdtree_error)?;
         }
-        Ok(results)
+        Ok(tree)
     }
 
     pub fn get_region_coordinates(&self) -> Result<Vec<EveRegionArea>, Error> {
@@ -263,31 +312,27 @@ impl<'a> SdeManager<'a> {
         let mut rows = statement.query([])?;
         let mut results = vec![];
         while let Some(row) = rows.next()? {
-            let mut point1 = RawPoint::new(row.get::<usize, f32>(2)?, row.get::<usize, f32>(3)?);
-            let mut point2 = RawPoint::new(row.get::<usize, f32>(4)?, row.get::<usize, f32>(5)?);
-            if self.factor > 1 {
-                point1 /= self.factor;
-                point2 /= self.factor;
-            } else if self.factor < -1 {
-                point1 *= self.factor.abs();
-                point2 *= self.factor.abs();
-            }
-            if self.invert_coordinates {
-                point1 *= -1;
-                point2 *= -1;
-            }
+            let point1 = self.scale_coords(
+                [row.get::<usize, f32>(2)?, row.get::<usize, f32>(3)?],
+                self.invert_coordinates,
+            );
+            let point2 = self.scale_coords(
+                [row.get::<usize, f32>(4)?, row.get::<usize, f32>(5)?],
+                self.invert_coordinates,
+            );
             let id = (
                 row.get::<usize, i64>(0)? as usize,
                 row.get::<usize, i64>(1)? as usize,
             );
-            // TODO: implement correct connection handling
-            //let segment = MapSegment::new(id, point1, point2);
-            //results.push(segment);
+            results.push(MapSegment { id, point1, point2 });
         }
         Ok(results)
     }
 
-    pub fn get_abstract_systems(&self, regions: Vec<u32>) -> Result<Vec<MapPoint>, Error> {
+    pub fn get_abstract_systems(
+        &self,
+        regions: Vec<u32>,
+    ) -> Result<KdTree<f32, MapPoint, [f32; 2]>, Error> {
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT mas.solarSystemId, mas.x, mas.y, mas.regionId, ");
@@ -302,7 +347,7 @@ impl<'a> SdeManager<'a> {
 
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows;
-        let mut result = Vec::new();
+        let mut tree = KdTree::new(2);
 
         if regions.is_empty() {
             rows = statement.query([])?;
@@ -317,34 +362,43 @@ impl<'a> SdeManager<'a> {
         }
 
         let mut current_index = isize::MIN;
-        let mut point = MapPoint::new(0usize, RawPoint::default());
+        let mut point = MapPoint {
+            id: 0,
+            name: String::new(),
+            coords: [0.0, 0.0],
+            connections: Vec::new(),
+        };
         while let Some(row) = rows.next()? {
             let id = row.get::<usize, isize>(0)?;
             if current_index != id {
                 if current_index != isize::MIN {
-                    result.push(point.clone());
+                    tree.add(point.coords, point.clone())
+                        .map_err(Self::kdtree_error)?;
                 }
                 current_index = id;
-                let mut raw_point =
-                    RawPoint::new(row.get::<usize, f32>(1)?, row.get::<usize, f32>(2)?);
-                if self.factor > 1 {
-                    raw_point /= self.factor;
-                } else if self.factor < -1 {
-                    raw_point *= self.factor.abs();
-                }
-                point = MapPoint::new(id.try_into().unwrap(), raw_point);
-                point.set_name(row.get::<usize, String>(6)?);
+                // get_abstract_systems no invierte coordenadas -- así era
+                // también antes de esta migración (a diferencia de
+                // get_systempoints/get_connections, que sí).
+                let coords = self.scale_coords(
+                    [row.get::<usize, f32>(1)?, row.get::<usize, f32>(2)?],
+                    false,
+                );
+                point = MapPoint {
+                    id: id.try_into().unwrap(),
+                    name: row.get::<usize, String>(6)?,
+                    coords,
+                    connections: Vec::new(),
+                };
             }
-            // TODO: Implement correct connection handling
-            /*point.connections.push((
+            point.connections.push((
                 row.get::<usize, i64>(4)? as usize,
                 row.get::<usize, i64>(5)? as usize,
-            ));*/
+            ));
         }
         if current_index != isize::MIN {
-            result.push(point.clone());
+            tree.add(point.coords, point).map_err(Self::kdtree_error)?;
         }
-        Ok(result)
+        Ok(tree)
     }
 
     pub fn get_abstract_connections(&self, regions: Vec<u32>) -> Result<Vec<MapSegment>, Error> {
@@ -375,22 +429,19 @@ impl<'a> SdeManager<'a> {
 
         let mut results = vec![];
         while let Some(row) = rows.next()? {
-            let mut point1 = RawPoint::new(row.get::<usize, f32>(2)?, row.get::<usize, f32>(3)?);
-            let mut point2 = RawPoint::new(row.get::<usize, f32>(4)?, row.get::<usize, f32>(5)?);
-            if self.factor > 1 {
-                point1 /= self.factor;
-                point2 /= self.factor;
-            } else if self.factor < -1 {
-                point1 *= self.factor.abs();
-                point2 *= self.factor.abs();
-            }
+            let point1 = self.scale_coords(
+                [row.get::<usize, f32>(2)?, row.get::<usize, f32>(3)?],
+                false,
+            );
+            let point2 = self.scale_coords(
+                [row.get::<usize, f32>(4)?, row.get::<usize, f32>(5)?],
+                false,
+            );
             let id = (
                 row.get::<usize, i64>(0)? as usize,
                 row.get::<usize, i64>(1)? as usize,
             );
-            // TODO: implement correct connection handling
-            /*let line = MapSegment::new(id, point1, point2);
-            results.push(line);*/
+            results.push(MapSegment { id, point1, point2 });
         }
         Ok(results)
     }
