@@ -13,7 +13,7 @@
 //! -- el id del grupo "Sun" y el mapeo `typeId -> starTypeId` que detecta
 //! `parse_types()` -- se pasa explícitamente vía [`StarTypeState`].
 //!
-//! ## Alcance de este archivo (fase 1 + fase 2 + fase 3 + fase 4 + fase 5)
+//! ## Alcance de este archivo (fase 1 a fase 7)
 //!
 //! Cubre las tablas "base" que el resto de entidades referencian por FK y
 //! que no dependen de ninguna tabla de mapa: `invCategories`, `invGroups`,
@@ -39,8 +39,20 @@
 //! particular necesita correr dentro de una transacción explícita (no es
 //! solo una cuestión de atomicidad, como en el resto del pipeline).
 //!
+//! La fase 6 suma `mapStars` ([`parse_stars`]), equivalente a
+//! `_parse_stars()` en Python. El shape exacto de `mapStars.jsonl` se
+//! confirmó contra una muestra real de datos (no solo contra el código
+//! Python, que en este punto traía una nota del propio autor advirtiendo
+//! que el shape no estaba verificado) -- ver el docstring de
+//! [`parse_stars`] para el detalle.
+//!
+//! La fase 7 suma `mapPlanets` ([`parse_planets`]), equivalente a
+//! `_parse_planets()` en Python -- mismo caso que `mapStars`, shape
+//! confirmado contra una muestra real de 68407 registros (ver el
+//! docstring de [`parse_planets`]).
+//!
 //! Deliberadamente NO incluye todavía (quedan para una siguiente fase):
-//! `mapStars`, `mapPlanets`, `mapMoons` ni `mapSystemConnections`.
+//! `mapMoons` ni `mapSystemConnections`.
 //!
 //! ## Formato de archivo soportado
 //!
@@ -460,6 +472,40 @@ fn required_nested_i64(record: &Value, outer: &str, inner: &str) -> Result<i64, 
         BuilderError::Data(format!("registro sin campo requerido `{outer}`: {record}"))
     })?;
     required_i64(outer_val, inner)
+}
+
+/// Extrae un campo entero opcional que puede venir en el nivel superior
+/// del registro o anidado bajo `nested_field` (p. ej. `statistics`), con
+/// el nivel superior con prioridad. Aproxima el patrón Python
+/// `record.get(field, nested.get(field))` (donde `nested =
+/// record.get(nested_field) or {}`), usado en `_parse_stars()` para
+/// `radius`/`locked` -- con una diferencia menor: Python distingue "la
+/// clave está pero es `null`" (no cae al nested) de "la clave no está"
+/// (sí cae); acá ambos casos caen al nested por igual, ya que
+/// `optional_i64` no distingue "ausente" de "presente pero de tipo
+/// incorrecto/null".
+fn optional_i64_with_nested_fallback(record: &Value, field: &str, nested_field: &str) -> Option<i64> {
+    optional_i64(record, field)
+        .or_else(|| record.get(nested_field).and_then(|nested| optional_i64(nested, field)))
+}
+
+/// Igual que [`optional_i64_with_nested_fallback`], pero para campos
+/// booleanos (p. ej. `locked`).
+fn optional_bool_with_nested_fallback(
+    record: &Value,
+    field: &str,
+    nested_field: &str,
+) -> Option<bool> {
+    optional_bool(record, field)
+        .or_else(|| record.get(nested_field).and_then(|nested| optional_bool(nested, field)))
+}
+
+/// Igual que [`optional_i64_with_nested_fallback`], pero para campos de
+/// punto flotante -- usado para `mapPlanets.radius` (columna `REAL`, a
+/// diferencia de `mapStars.radius`, que es `INTEGER`).
+fn optional_f64_with_nested_fallback(record: &Value, field: &str, nested_field: &str) -> Option<f64> {
+    optional_f64(record, field)
+        .or_else(|| record.get(nested_field).and_then(|nested| optional_f64(nested, field)))
 }
 
 /// Extrae un campo string plano opcional. Equivalente a `dict.get(key)`
@@ -1014,6 +1060,158 @@ pub fn parse_stargates(
 }
 
 // ---------------------------------------------------------------------
+// mapStars
+// ---------------------------------------------------------------------
+
+/// Puebla `mapStars` desde `<sde_directory>/mapStars.jsonl`, filtrando
+/// por `state.systems_in_scope` (poblado por [`parse_solar_systems`]).
+/// Requiere que [`parse_types`] ya haya corrido -- necesita
+/// `star_state.star_type_ids`, el mapeo `typeId -> starTypeId` -- y que
+/// `mapSolarSystems`/`typeStar` ya estén pobladas (FKs). Devuelve la
+/// cantidad de filas insertadas. Equivalente a `_parse_stars()` en
+/// Python.
+///
+/// Confirmado contra una muestra real de `mapStars.jsonl` (8089
+/// registros, EVE Online, agosto 2026): `radius` siempre viene en el
+/// nivel superior como entero (nunca hace falta el fallback anidado a
+/// `statistics.radius`), `statistics` siempre está presente, y `locked`
+/// **nunca** aparece -- ni en el nivel superior ni dentro de
+/// `statistics` -- así que en la práctica esa columna siempre sale
+/// `NULL`. El fallback anidado (ver [`optional_i64_with_nested_fallback`]/
+/// [`optional_bool_with_nested_fallback`]) se deja igual, fielmente
+/// portado desde Python, por si otra versión del SDE sí llega a traerlo.
+///
+/// # Desviación de Python: `starTypeId` no encontrado
+///
+/// Python resuelve el tipo de estrella con
+/// `self._stars.entity_type.get(star['typeID'], star['typeID'])`: si el
+/// `typeID` de la estrella no está en el mapa (es decir, `_parse_types()`
+/// no lo detectó como perteneciente al grupo "Sun"), usa el `typeID`
+/// CRUDO como si fuera un `starTypeId` -- casi seguro violando la FK
+/// `mapStars.starTypeId -> typeStar.starTypeId` al insertar, ya que son
+/// secuencias de ids completamente distintas (una es `invTypes.typeId`,
+/// la otra un `ROWID` autoasignado de `typeStar`). Acá, en cambio, no
+/// encontrar el `typeId` en el mapa es un [`BuilderError::Data`] directo
+/// -- mismo criterio que el resto del archivo: fallar temprano con un
+/// mensaje claro en vez de dejar que SQLite rechace un valor que de
+/// todos modos iba a ser inválido.
+pub fn parse_stars(
+    connection: &Connection,
+    sde_directory: &Path,
+    state: &SystemScopeState,
+    star_state: &StarTypeState,
+) -> Result<usize, BuilderError> {
+    let mut insert_star = connection.prepare(
+        "INSERT INTO mapStars (starId, solarSystemId, locked, radius, starTypeId) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+
+    let mut count = 0usize;
+    for record in iter_jsonl_records(sde_directory, "mapStars")? {
+        let record = record?;
+        let solar_system_id = required_i64(&record, "solarSystemID")?;
+        if !state.systems_in_scope.contains(&solar_system_id) {
+            continue;
+        }
+
+        let star_id = required_i64(&record, "_key")?;
+        let locked = optional_bool_with_nested_fallback(&record, "locked", "statistics");
+        let radius = optional_i64_with_nested_fallback(&record, "radius", "statistics");
+        let type_id = required_i64(&record, "typeID")?;
+        let star_type_id = star_state.star_type_ids.get(&type_id).copied().ok_or_else(|| {
+            BuilderError::Data(format!(
+                "estrella {star_id}: typeId {type_id} no está en star_type_ids \
+                 (parse_types() no lo detectó como tipo de estrella)"
+            ))
+        })?;
+
+        insert_star.execute(rusqlite::params![
+            star_id,
+            solar_system_id,
+            locked,
+            radius,
+            star_type_id
+        ])?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+// ---------------------------------------------------------------------
+// mapPlanets
+// ---------------------------------------------------------------------
+
+/// Puebla `mapPlanets` desde `<sde_directory>/mapPlanets.jsonl`, filtrando
+/// por `state.systems_in_scope` (poblado por [`parse_solar_systems`]).
+/// Requiere que `mapSolarSystems`/`invTypes` ya estén pobladas (FKs).
+/// Devuelve la cantidad de filas insertadas. Equivalente a
+/// `_parse_planets()` en Python.
+///
+/// Confirmado contra una muestra real de `mapPlanets.jsonl` (68407
+/// registros, EVE Online, agosto 2026):
+/// - `celestialIndex`, `position`, `typeID` y `solarSystemID` están
+///   presentes en el 100% de los registros -- a diferencia de Python
+///   (que lee `celestialIndex` con `.get()`, opcional), acá se tratan
+///   como requeridos ([`required_i64`]/[`required_position`]), mismo
+///   criterio usado en todo este archivo para columnas `NOT NULL`
+///   (`mapPlanets.planetaryIndex` lo es) cuando la fuente real confirma
+///   que el dato siempre está: falla temprano con un mensaje claro en
+///   vez de dejar que SQLite rechace un `NULL` más abajo.
+/// - `radius` está **siempre** en el nivel superior (nunca hace falta el
+///   fallback anidado a `statistics.radius`) -- pero a diferencia de
+///   `mapStars.radius` (columna `INTEGER`), `mapPlanets.radius` es
+///   `REAL`, así que se lee con [`optional_f64_with_nested_fallback`],
+///   no la variante `i64`.
+/// - `fragmented` **nunca** aparece, ni en el nivel superior ni anidado
+///   (0 de 68407) -- en la práctica esta columna siempre sale `NULL`.
+/// - `locked`, en cambio, está **siempre** anidado bajo `statistics`
+///   (nunca en el nivel superior) -- lo opuesto a `radius`. Acá sí hace
+///   falta el fallback para no perder el dato.
+pub fn parse_planets(
+    connection: &Connection,
+    sde_directory: &Path,
+    state: &SystemScopeState,
+) -> Result<usize, BuilderError> {
+    let mut insert_planet = connection.prepare(
+        "INSERT INTO mapPlanets (planetId, solarSystemId, planetaryIndex, fragmented, radius, \
+         locked, typeId, positionX, positionY, positionZ) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    )?;
+
+    let mut count = 0usize;
+    for record in iter_jsonl_records(sde_directory, "mapPlanets")? {
+        let record = record?;
+        let solar_system_id = required_i64(&record, "solarSystemID")?;
+        if !state.systems_in_scope.contains(&solar_system_id) {
+            continue;
+        }
+
+        let id = required_i64(&record, "_key")?;
+        let planet_index = required_i64(&record, "celestialIndex")?;
+        let fragmented = optional_bool_with_nested_fallback(&record, "fragmented", "statistics");
+        let radius = optional_f64_with_nested_fallback(&record, "radius", "statistics");
+        let locked = optional_bool_with_nested_fallback(&record, "locked", "statistics");
+        let type_id = required_i64(&record, "typeID")?;
+        let (pos_x, pos_y, pos_z) = required_position(&record)?;
+
+        insert_planet.execute(rusqlite::params![
+            id,
+            solar_system_id,
+            planet_index,
+            fragmented,
+            radius,
+            locked,
+            type_id,
+            pos_x,
+            pos_y,
+            pos_z,
+        ])?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+// ---------------------------------------------------------------------
 // Orquestador
 // ---------------------------------------------------------------------
 
@@ -1037,6 +1235,8 @@ pub struct ParseSummary {
     /// `config.with_gates` estaba en `false` (en ese caso, la fase ni
     /// siquiera se corre) -- no se distingue entre ambos casos.
     pub stargates: usize,
+    pub stars: usize,
+    pub planets: usize,
 }
 
 /// Corre el pipeline de parseo completo sobre `sde_directory`, en el mismo
@@ -1059,14 +1259,13 @@ pub struct ParseSummary {
 ///
 /// ## Alcance actual
 ///
-/// Hoy en día cubre las 10 funciones ya portadas (fase 1 + fase 2 + fase 3
-/// + fase 4 + fase 5): categorías, grupos, tipos (+ `typeStar`), razas,
-/// corporaciones NPC, facciones (+ `factionRace`), regiones,
-/// constelaciones, sistemas solares y stargates (condicional a
-/// `config.with_gates`). A medida que se porten más fases (estrellas,
-/// planetas, lunas, conexiones) se van agregando más llamadas aquí, en el
-/// mismo orden que Python, hasta llegar a paridad completa con
-/// `parse_data()`.
+/// Hoy en día cubre las 12 funciones ya portadas (fase 1 a fase 7):
+/// categorías, grupos, tipos (+ `typeStar`), razas, corporaciones NPC,
+/// facciones (+ `factionRace`), regiones, constelaciones, sistemas
+/// solares, stargates (condicional a `config.with_gates`), estrellas y
+/// planetas. A medida que se porten más fases (lunas, conexiones) se van
+/// agregando más llamadas aquí, en el mismo orden que Python, hasta
+/// llegar a paridad completa con `parse_data()`.
 pub fn parse_data(
     connection: &mut Connection,
     sde_directory: &Path,
@@ -1090,6 +1289,8 @@ pub fn parse_data(
     } else {
         0
     };
+    let stars = parse_stars(&tx, sde_directory, &scope, &state)?;
+    let planets = parse_planets(&tx, sde_directory, &scope)?;
 
     tx.commit()?;
 
@@ -1105,6 +1306,8 @@ pub fn parse_data(
         constellations,
         solar_systems,
         stargates,
+        stars,
+        planets,
     })
 }
 
@@ -2100,6 +2303,328 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Setup común de los tests de `parse_stars`: crea el schema, un
+    /// tipo de estrella detectado ("Sun" > "Yellow G5 (ffcc00)") vía
+    /// `parse_groups`/`parse_types` directamente contra fixtures propios
+    /// (para obtener un `StarTypeState` real, no simulado a mano), y un
+    /// sistema solar en scope. Devuelve `(connection, star_state, scope)`.
+    fn setup_for_parse_stars(dir_prefix: &str) -> (Connection, StarTypeState, SystemScopeState) {
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+
+        let types_dir = TempSdeDir::new(
+            dir_prefix,
+            &[
+                (
+                    "groups.jsonl",
+                    "{\"_key\": 6, \"categoryID\": 6, \"name\": {\"en\": \"Sun\"}, \"anchorable\": false}\n",
+                ),
+                (
+                    "types.jsonl",
+                    "{\"_key\": 3000, \"groupID\": 6, \"name\": {\"en\": \"Yellow G5 (ffcc00)\"}, \
+                     \"iconID\": 100, \"published\": true, \"volume\": 0.0}\n",
+                ),
+            ],
+        );
+        connection
+            .execute(
+                "INSERT INTO invCategories (categoryId, categoryName, published) \
+                 VALUES (6, 'Celestial', 1)",
+                [],
+            )
+            .unwrap();
+        let config = ParserConfig::default();
+        let mut star_state = StarTypeState::default();
+        parse_groups(&connection, &types_dir.path, &config, &mut star_state).unwrap();
+        parse_types(&connection, &types_dir.path, &config, &mut star_state).unwrap();
+
+        connection
+            .execute(
+                "INSERT INTO mapRegions \
+                 (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
+                 VALUES (10000002, 'The Forge', NULL, 0, 0, 0, 5, NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapConstellations \
+                 (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
+                 VALUES (20000020, 'Kimotoro', 10000002, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapSolarSystems \
+                 (solarSystemId, solarSystemName, constellationId, radius, centerX, centerY, centerZ, security) \
+                 VALUES (30000001, 'A', 20000020, 1.0, 0, 0, 0, 0.5)",
+                [],
+            )
+            .unwrap();
+
+        let mut scope = SystemScopeState::default();
+        scope.systems_in_scope.insert(30000001);
+
+        (connection, star_state, scope)
+    }
+
+    #[test]
+    fn parse_stars_inserts_row_using_real_sde_shape() {
+        // Registro con el shape confirmado contra una muestra real de
+        // mapStars.jsonl (agosto 2026): radius entero en el nivel
+        // superior, statistics presente, sin locked en ningún lado.
+        let dir = TempSdeDir::new(
+            "stars_real_shape",
+            &[(
+                "mapStars.jsonl",
+                "{\"_key\": 40000001, \"radius\": 63350000, \"solarSystemID\": 30000001, \
+                 \"statistics\": {\"age\": 4.5e17, \"life\": 6.9e17, \"luminosity\": 0.01575, \
+                 \"spectralClass\": \"K2 V\", \"temperature\": 4567.0}, \"typeID\": 3000}\n",
+            )],
+        );
+        let (connection, star_state, scope) = setup_for_parse_stars("stars_setup_real");
+
+        let count = parse_stars(&connection, &dir.path, &scope, &star_state).unwrap();
+        assert_eq!(count, 1);
+
+        let (solar_system_id, locked, radius): (i64, Option<i64>, i64) = connection
+            .query_row(
+                "SELECT solarSystemId, locked, radius FROM mapStars WHERE starId = 40000001",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(solar_system_id, 30000001);
+        assert_eq!(locked, None);
+        assert_eq!(radius, 63350000);
+    }
+
+    #[test]
+    fn parse_stars_locked_falls_back_to_nested_statistics() {
+        // Sintético -- la SDE real nunca trae `locked` (ni en el nivel
+        // superior ni en `statistics`), pero el fallback se porta igual
+        // desde Python por si otra versión del SDE sí lo trae.
+        let dir = TempSdeDir::new(
+            "stars_locked_fallback",
+            &[(
+                "mapStars.jsonl",
+                "{\"_key\": 40000001, \"solarSystemID\": 30000001, \"typeID\": 3000, \
+                 \"statistics\": {\"locked\": true}}\n",
+            )],
+        );
+        let (connection, star_state, scope) = setup_for_parse_stars("stars_setup_fallback");
+
+        parse_stars(&connection, &dir.path, &scope, &star_state).unwrap();
+
+        let locked: Option<i64> = connection
+            .query_row("SELECT locked FROM mapStars WHERE starId = 40000001", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(locked, Some(1));
+    }
+
+    #[test]
+    fn parse_stars_skips_systems_outside_scope() {
+        let dir = TempSdeDir::new(
+            "stars_scope",
+            &[(
+                "mapStars.jsonl",
+                "{\"_key\": 40000001, \"radius\": 1, \"solarSystemID\": 30000099, \"typeID\": 3000}\n",
+            )],
+        );
+        let (connection, star_state, scope) = setup_for_parse_stars("stars_setup_scope");
+        // 30000099 no está en el scope (solo 30000001 lo está).
+
+        let count = parse_stars(&connection, &dir.path, &scope, &star_state).unwrap();
+        assert_eq!(count, 0);
+
+        let total: i64 = connection
+            .query_row("SELECT COUNT(*) FROM mapStars", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn parse_stars_unknown_star_type_errors() {
+        let dir = TempSdeDir::new(
+            "stars_unknown_type",
+            &[(
+                "mapStars.jsonl",
+                // typeID 9999 nunca fue detectado como tipo de estrella
+                // por parse_types() en este fixture.
+                "{\"_key\": 40000001, \"radius\": 1, \"solarSystemID\": 30000001, \"typeID\": 9999}\n",
+            )],
+        );
+        let (connection, star_state, scope) = setup_for_parse_stars("stars_setup_unknown");
+
+        let result = parse_stars(&connection, &dir.path, &scope, &star_state);
+        assert!(result.is_err());
+    }
+
+    /// Setup común de los tests de `parse_planets`: schema, un `invTypes`
+    /// mínimo para satisfacer la FK de `typeId`, y un sistema solar en
+    /// scope. Devuelve `(connection, scope)`.
+    fn setup_for_parse_planets() -> (Connection, SystemScopeState) {
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO invCategories (categoryId, categoryName, published) \
+                 VALUES (1, 'Celestial', 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO invGroups (groupId, categoryId, groupName, anchorable) \
+                 VALUES (1, 1, 'Planet', 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO invTypes (typeId, groupId, typeName, published) \
+                 VALUES (11, 1, 'Planet (Barren)', 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapRegions \
+                 (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
+                 VALUES (10000002, 'The Forge', NULL, 0, 0, 0, 5, NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapConstellations \
+                 (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
+                 VALUES (20000020, 'Kimotoro', 10000002, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapSolarSystems \
+                 (solarSystemId, solarSystemName, constellationId, radius, centerX, centerY, centerZ, security) \
+                 VALUES (30000001, 'A', 20000020, 1.0, 0, 0, 0, 0.5)",
+                [],
+            )
+            .unwrap();
+
+        let mut scope = SystemScopeState::default();
+        scope.systems_in_scope.insert(30000001);
+        (connection, scope)
+    }
+
+    #[test]
+    fn parse_planets_inserts_row_using_real_sde_shape() {
+        // Registro real de mapPlanets.jsonl (agosto 2026, EVE Online):
+        // celestialIndex/position/typeID/solarSystemID siempre presentes;
+        // radius en el nivel superior; locked SIEMPRE anidado bajo
+        // statistics (nunca en el nivel superior); fragmented ausente.
+        let dir = TempSdeDir::new(
+            "planets_real_shape",
+            &[(
+                "mapPlanets.jsonl",
+                "{\"_key\": 40000002, \"celestialIndex\": 1, \
+                 \"position\": {\"x\": 161891117336.0, \"y\": 21288951986.0, \"z\": -73529712226.0}, \
+                 \"radius\": 5060000, \"solarSystemID\": 30000001, \
+                 \"statistics\": {\"locked\": false}, \"typeID\": 11}\n",
+            )],
+        );
+        let (connection, scope) = setup_for_parse_planets();
+
+        let count = parse_planets(&connection, &dir.path, &scope).unwrap();
+        assert_eq!(count, 1);
+
+        let (planetary_index, fragmented, radius, locked, type_id): (
+            i64,
+            Option<i64>,
+            f64,
+            i64,
+            i64,
+        ) = connection
+            .query_row(
+                "SELECT planetaryIndex, fragmented, radius, locked, typeId \
+                 FROM mapPlanets WHERE planetId = 40000002",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(planetary_index, 1);
+        assert_eq!(fragmented, None);
+        assert_eq!(radius, 5060000.0);
+        assert_eq!(locked, 0);
+        assert_eq!(type_id, 11);
+    }
+
+    #[test]
+    fn parse_planets_skips_systems_outside_scope() {
+        let dir = TempSdeDir::new(
+            "planets_scope",
+            &[(
+                "mapPlanets.jsonl",
+                "{\"_key\": 40000002, \"celestialIndex\": 1, \
+                 \"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}, \
+                 \"radius\": 1, \"solarSystemID\": 30000099, \"typeID\": 11}\n",
+            )],
+        );
+        let (connection, scope) = setup_for_parse_planets();
+        // 30000099 no está en el scope (solo 30000001 lo está).
+
+        let count = parse_planets(&connection, &dir.path, &scope).unwrap();
+        assert_eq!(count, 0);
+
+        let total: i64 = connection
+            .query_row("SELECT COUNT(*) FROM mapPlanets", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn parse_planets_missing_celestial_index_errors() {
+        let dir = TempSdeDir::new(
+            "planets_missing_index",
+            &[(
+                "mapPlanets.jsonl",
+                "{\"_key\": 40000002, \"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}, \
+                 \"radius\": 1, \"solarSystemID\": 30000001, \"typeID\": 11}\n",
+            )],
+        );
+        let (connection, scope) = setup_for_parse_planets();
+
+        let result = parse_planets(&connection, &dir.path, &scope);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_planets_missing_position_errors() {
+        let dir = TempSdeDir::new(
+            "planets_missing_position",
+            &[(
+                "mapPlanets.jsonl",
+                "{\"_key\": 40000002, \"celestialIndex\": 1, \
+                 \"radius\": 1, \"solarSystemID\": 30000001, \"typeID\": 11}\n",
+            )],
+        );
+        let (connection, scope) = setup_for_parse_planets();
+
+        let result = parse_planets(&connection, &dir.path, &scope);
+        assert!(result.is_err());
+    }
+
     #[test]
     fn parse_data_happy_path_returns_summary_and_commits() {
         let dir = TempSdeDir::new(
@@ -2157,10 +2682,24 @@ mod tests {
                      \"destination\": {\"stargateID\": 50000001, \"solarSystemID\": 30000142}}\n",
                 ),
                 (
+                    "mapStars.jsonl",
+                    "{\"_key\": 40000001, \"radius\": 63350000, \"solarSystemID\": 30000142, \
+                     \"statistics\": {\"age\": 4.5e17, \"life\": 6.9e17, \"luminosity\": 0.01575, \
+                     \"spectralClass\": \"K2 V\", \"temperature\": 4567.0}, \"typeID\": 3000}\n",
+                ),
+                (
+                    "mapPlanets.jsonl",
+                    "{\"_key\": 40000002, \"celestialIndex\": 1, \
+                     \"position\": {\"x\": 161891117336.0, \"y\": 21288951986.0, \"z\": -73529712226.0}, \
+                     \"radius\": 5060000, \"solarSystemID\": 30000142, \
+                     \"statistics\": {\"locked\": false}, \"typeID\": 11}\n",
+                ),
+                (
                     "types.jsonl",
                     "{\"_key\": 3000, \"groupID\": 6, \"name\": {\"en\": \"Yellow G5 (ffcc00)\"}, \
                      \"iconID\": 100, \"published\": true, \"volume\": 0.0}\n\
-                     {\"_key\": 16, \"groupID\": 7, \"name\": {\"en\": \"Stargate\"}, \"published\": true}\n",
+                     {\"_key\": 16, \"groupID\": 7, \"name\": {\"en\": \"Stargate\"}, \"published\": true}\n\
+                     {\"_key\": 11, \"groupID\": 7, \"name\": {\"en\": \"Planet (Barren)\"}, \"published\": true}\n",
                 ),
             ],
         );
@@ -2174,7 +2713,7 @@ mod tests {
             ParseSummary {
                 categories: 1,
                 groups: 2,
-                types: 2,
+                types: 3,
                 races: 1,
                 npc_corporations: 1,
                 factions: 1,
@@ -2183,6 +2722,8 @@ mod tests {
                 constellations: 1,
                 solar_systems: 2,
                 stargates: 2,
+                stars: 1,
+                planets: 1,
             }
         );
 
