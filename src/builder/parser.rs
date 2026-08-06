@@ -1,11 +1,14 @@
 //! Población de datos del SDE en las tablas creadas por [`super::schema`].
 //!
-//! Puerto (parcial, ver "Alcance" más abajo) de los métodos `_parse_*` de
-//! `SdeParser` en el prototipo Python (`sde_parser.py`). Cada `_parse_*`
-//! de Python corresponde aquí a una función `parse_*` que recibe la
-//! conexión ya abierta (con el schema ya creado por
-//! [`super::schema::create_schema`]) y el directorio donde viven los
-//! archivos planos del SDE (`categories.jsonl`, `types.jsonl`, etc.).
+//! Puerto **completo** de los métodos `_parse_*`/`parse_*` de `SdeParser`
+//! en el prototipo Python (`sde_parser.py`) -- ver "Alcance" más abajo
+//! para el detalle fase por fase. Cada método de Python corresponde aquí
+//! a una función `parse_*` que recibe la conexión ya abierta (con el
+//! schema ya creado por [`super::schema::create_schema`]) y el directorio
+//! donde viven los archivos planos del SDE (`categories.jsonl`,
+//! `types.jsonl`, etc.) -- con la excepción de [`parse_connections`], que
+//! no lee ningún archivo (deriva sus datos de `mapSystemGates`, ya
+//! insertada por una fase anterior).
 //!
 //! A diferencia de Python (donde `SdeParser` es una clase con estado
 //! mutable en `self`), aquí las funciones son libres y sin estado propio;
@@ -13,7 +16,7 @@
 //! -- el id del grupo "Sun" y el mapeo `typeId -> starTypeId` que detecta
 //! `parse_types()` -- se pasa explícitamente vía [`StarTypeState`].
 //!
-//! ## Alcance de este archivo (fase 1 a fase 8)
+//! ## Alcance de este archivo (fase 1 a fase 9 -- paridad completa)
 //!
 //! Cubre las tablas "base" que el resto de entidades referencian por FK y
 //! que no dependen de ninguna tabla de mapa: `invCategories`, `invGroups`,
@@ -60,8 +63,11 @@
 //! el detalle de qué queda como inferencia (no verificación) en esta
 //! fase.
 //!
-//! Deliberadamente NO incluye todavía (queda para una siguiente fase):
-//! `mapSystemConnections`.
+//! La fase 9 suma `mapSystemConnections` ([`parse_connections`]),
+//! equivalente a `parse_connections()` en Python -- la más simple de
+//! todas: una sola sentencia SQL que deriva las conexiones directamente
+//! de `mapSystemGates`, sin leer ningún archivo del SDE. Con esto,
+//! `parser.rs` alcanza paridad completa con `parse_data()` de Python.
 //!
 //! ## Formato de archivo soportado
 //!
@@ -1315,6 +1321,50 @@ pub fn parse_moons(
 }
 
 // ---------------------------------------------------------------------
+// mapSystemConnections
+// ---------------------------------------------------------------------
+
+/// Puebla `mapSystemConnections` a partir de `mapSystemGates`, uniendo
+/// cada gate con el gate al que apunta (`destinationGateId`) para
+/// derivar el par de sistemas solares que conecta. A diferencia de todas
+/// las demás funciones de este archivo, esta NO lee ningún archivo del
+/// SDE -- toda la lógica es una sola sentencia SQL sobre datos ya
+/// insertados por [`parse_stargates`], por eso no recibe `sde_directory`.
+/// Devuelve la cantidad de filas insertadas. Equivalente a
+/// `parse_connections()` en Python (sí, sin guion bajo al inicio -- es el
+/// único `_parse_*`/`parse_*` público en el prototipo).
+///
+/// Requiere que `mapSystemGates` ya esté poblada. Si `config.with_gates`
+/// fue `false` (así que [`parse_stargates`] nunca corrió) o simplemente
+/// no había gates que importar, esta consulta no encuentra filas para
+/// unir y no inserta nada -- no es un error, devuelve `0`.
+///
+/// El `WHERE msga.solarSystemId < msgb.solarSystemId` filtra a un solo
+/// registro por par de sistemas conectados: los stargates siempre vienen
+/// en pares mutuos (A apunta a B, B apunta a A), así que sin este filtro
+/// se insertaría cada conexión dos veces (una por sentido), violando el
+/// `CHECK (systemA < systemB)` del schema en el segundo intento. Los
+/// `MIN`/`MAX` de la sentencia son la forma escalar de 2 argumentos (no
+/// la agregada de 1 argumento que se usa en otras partes de este crate,
+/// p. ej. en `get_region_coordinates` de `src/lib.rs`) -- calculan el
+/// mínimo/máximo *por fila*, no a través de filas; dado el `WHERE` de
+/// arriba, en la práctica siempre devuelven
+/// `(msga.solarSystemId, msgb.solarSystemId)` en ese orden, pero se
+/// portan literalmente como están en Python.
+pub fn parse_connections(connection: &Connection) -> Result<usize, BuilderError> {
+    let count = connection.execute(
+        "INSERT INTO mapSystemConnections (systemA, systemB) \
+         SELECT MIN(msga.solarSystemId, msgb.solarSystemId), \
+                MAX(msga.solarSystemId, msgb.solarSystemId) \
+         FROM mapSystemGates AS msga \
+         INNER JOIN mapSystemGates AS msgb ON (msgb.systemGateId = msga.destinationGateId) \
+         WHERE msga.solarSystemId < msgb.solarSystemId",
+        [],
+    )?;
+    Ok(count)
+}
+
+// ---------------------------------------------------------------------
 // Orquestador
 // ---------------------------------------------------------------------
 
@@ -1344,6 +1394,7 @@ pub struct ParseSummary {
     /// `config.with_moons` estaba en `false` -- no se distingue entre
     /// ambos casos, mismo criterio que `stargates`.
     pub moons: usize,
+    pub connections: usize,
 }
 
 /// Corre el pipeline de parseo completo sobre `sde_directory`, en el mismo
@@ -1366,13 +1417,12 @@ pub struct ParseSummary {
 ///
 /// ## Alcance actual
 ///
-/// Hoy en día cubre las 13 funciones ya portadas (fase 1 a fase 8):
+/// Cubre las 14 funciones que porta este archivo (fase 1 a fase 9):
 /// categorías, grupos, tipos (+ `typeStar`), razas, corporaciones NPC,
 /// facciones (+ `factionRace`), regiones, constelaciones, sistemas
 /// solares, stargates (condicional a `config.with_gates`), estrellas,
-/// planetas y lunas (condicional a `config.with_moons`). Solo queda
-/// `_parse_connections()`/`parse_connections()` en Python para llegar a
-/// paridad completa con `parse_data()`.
+/// planetas, lunas (condicional a `config.with_moons`) y conexiones --
+/// **paridad completa** con `parse_data()` de Python.
 pub fn parse_data(
     connection: &mut Connection,
     sde_directory: &Path,
@@ -1403,6 +1453,7 @@ pub fn parse_data(
     } else {
         0
     };
+    let connections = parse_connections(&tx)?;
 
     tx.commit()?;
 
@@ -1421,6 +1472,7 @@ pub fn parse_data(
         stars,
         planets,
         moons,
+        connections,
     })
 }
 
@@ -2922,6 +2974,104 @@ mod tests {
     }
 
     #[test]
+    fn parse_connections_derives_single_pair_from_mutual_gates() {
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO invCategories (categoryId, categoryName, published) \
+                 VALUES (1, 'Celestial', 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO invGroups (groupId, categoryId, groupName, anchorable) \
+                 VALUES (1, 1, 'Stargate Group', 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO invTypes (typeId, groupId, typeName, published) \
+                 VALUES (16, 1, 'Stargate', 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapRegions \
+                 (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
+                 VALUES (10000002, 'The Forge', NULL, 0, 0, 0, 5, NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapConstellations \
+                 (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
+                 VALUES (20000020, 'Kimotoro', 10000002, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        // A propósito, el gate con solarSystemId MENOR (30000001) se
+        // inserta como fila #2 y el de solarSystemId MAYOR (30000002)
+        // como fila #1, para confirmar que el orden de inserción no
+        // afecta el resultado.
+        for (id, name) in [(30000002, "B"), (30000001, "A")] {
+            connection
+                .execute(
+                    "INSERT INTO mapSolarSystems \
+                     (solarSystemId, solarSystemName, constellationId, radius, centerX, centerY, centerZ, security) \
+                     VALUES (?1, ?2, 20000020, 1.0, 0, 0, 0, 0.5)",
+                    rusqlite::params![id, name],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO mapSystemGates \
+                 (systemGateId, solarSystemId, typeId, positionX, positionY, positionZ, destinationGateId, destinationSystemId) \
+                 VALUES (50000001, 30000002, 16, 0, 0, 0, 50000002, 30000001)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapSystemGates \
+                 (systemGateId, solarSystemId, typeId, positionX, positionY, positionZ, destinationGateId, destinationSystemId) \
+                 VALUES (50000002, 30000001, 16, 0, 0, 0, 50000001, 30000002)",
+                [],
+            )
+            .unwrap();
+
+        let count = parse_connections(&connection).unwrap();
+        assert_eq!(count, 1);
+
+        let (system_a, system_b): (i64, i64) = connection
+            .query_row("SELECT systemA, systemB FROM mapSystemConnections", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        // systemA < systemB, sin importar el orden de inserción de los gates.
+        assert_eq!((system_a, system_b), (30000001, 30000002));
+    }
+
+    #[test]
+    fn parse_connections_returns_zero_when_no_gates() {
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+
+        let count = parse_connections(&connection).unwrap();
+        assert_eq!(count, 0);
+
+        let total: i64 = connection
+            .query_row("SELECT COUNT(*) FROM mapSystemConnections", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total, 0);
+    }
+
+    #[test]
     fn parse_data_happy_path_returns_summary_and_commits() {
         let dir = TempSdeDir::new(
             "parse_data_happy",
@@ -3028,6 +3178,7 @@ mod tests {
                 stars: 1,
                 planets: 1,
                 moons: 1,
+                connections: 1,
             }
         );
 
@@ -3035,6 +3186,15 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM factionRace", [], |row| row.get(0))
             .unwrap();
         assert_eq!(total_faction_race, 1);
+
+        let (conn_system_a, conn_system_b): (i64, i64) = connection
+            .query_row(
+                "SELECT systemA, systemB FROM mapSystemConnections",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((conn_system_a, conn_system_b), (30000142, 30002187));
 
         let (dest_gate, dest_system): (i64, i64) = connection
             .query_row(
