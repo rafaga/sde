@@ -12,19 +12,24 @@ pub mod http;
 pub mod manifest;
 pub mod parser;
 pub mod schema;
+pub mod sde_index;
 
 // Próximos submódulos (aún no portados desde el prototipo en Python):
-// pub mod sde_index;  // parseo de latest.jsonl y comparación de build number
+// pub mod extract;    // descompresión del zip del SDE, preservando maps/
 //
 // `schema` (DDL STRICT) ya está portado -- ver builder::schema::create_schema().
-// `parser` (escritura de datos) está parcialmente portado -- ver el
-// docstring de builder::parser para el alcance exacto de lo que ya cubre
-// y lo que falta (regiones/constelaciones/sistemas/gates/estrellas/
-// planetas/lunas/conexiones, npcCorporations, factions).
-// `dotlan` (datos comunitarios externos al SDE) está parcialmente
-// portado -- ver el docstring de builder::dotlan para el alcance: el DDL
-// dinámico y el poblado de listas estáticas (Jove/Triglavian) ya están,
-// falta el parseo de los SVG regionales y el orquestador de descarga.
+// `parser` (escritura de datos) ya está portado por completo -- 14
+// funciones, paridad total con parse_data() de Python. Ver el docstring
+// de builder::parser para el detalle fase por fase.
+// `dotlan` (datos comunitarios externos al SDE) ya está portado por
+// completo -- DDL dinámico, poblado de listas estáticas, parseo de SVG
+// (validado contra un mapa real de dotlan) y el orquestador de descarga
+// con reintentos. Ver el docstring de builder::dotlan para el detalle.
+// `sde_index` (chequeo de build number + descarga condicional del SDE)
+// ya está portado -- ver el docstring de builder::sde_index. Falta
+// `builder::extract` para descomprimir el zip descargado, y el
+// orquestador de nivel superior que une todo esto (aún un stub en
+// src/bin/cli.rs).
 
 /// Errores del proceso de build. Sin `thiserror` a propósito: es el mismo
 /// patrón "sin abstracción" que ya usa `SdeManager` (propaga los errores de

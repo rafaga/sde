@@ -87,6 +87,22 @@ pub async fn fingerprint_many(
         .collect()
 }
 
+/// Descarga `url` y devuelve su cuerpo como texto -- pensado para
+/// respuestas chicas que conviene tener en memoria en vez de escribir a
+/// disco (p. ej. `latest.jsonl`, el índice de build number del SDE que
+/// consume [`crate::builder::sde_index`]). A diferencia de [`download`],
+/// no escribe nada a disco ni reporta progreso.
+pub async fn fetch_text(client: &Client, url: &str) -> Result<String, BuilderError> {
+    let response = client.get(url).send().await?;
+    if !response.status().is_success() {
+        return Err(BuilderError::HttpStatus {
+            url: url.to_string(),
+            status: response.status().as_u16(),
+        });
+    }
+    Ok(response.text().await?)
+}
+
 /// Descarga `url` a `destination` (lo sobrescribe si ya existe), reportando
 /// progreso por chunk vía `on_progress`. Regresa el total de bytes bajados.
 pub async fn download(
@@ -164,6 +180,36 @@ mod tests {
         let client = build_client().unwrap();
         let url = format!("{}/No_Existe.svg", server.uri());
         assert!(fingerprint(&client, &url).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_text_returns_body_on_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/latest.jsonl"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"_key\":\"sde\"}\n"))
+            .mount(&server)
+            .await;
+
+        let client = build_client().unwrap();
+        let url = format!("{}/latest.jsonl", server.uri());
+        let text = fetch_text(&client, &url).await.unwrap();
+        assert_eq!(text, "{\"_key\":\"sde\"}\n");
+    }
+
+    #[tokio::test]
+    async fn fetch_text_errors_on_non_success_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/latest.jsonl"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let client = build_client().unwrap();
+        let url = format!("{}/latest.jsonl", server.uri());
+        let result = fetch_text(&client, &url).await;
+        assert!(matches!(result, Err(BuilderError::HttpStatus { status: 404, .. })));
     }
 
     #[tokio::test]
