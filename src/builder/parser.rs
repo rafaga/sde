@@ -13,7 +13,7 @@
 //! -- el id del grupo "Sun" y el mapeo `typeId -> starTypeId` que detecta
 //! `parse_types()` -- se pasa explícitamente vía [`StarTypeState`].
 //!
-//! ## Alcance de este archivo (fase 1 a fase 7)
+//! ## Alcance de este archivo (fase 1 a fase 8)
 //!
 //! Cubre las tablas "base" que el resto de entidades referencian por FK y
 //! que no dependen de ninguna tabla de mapa: `invCategories`, `invGroups`,
@@ -51,8 +51,17 @@
 //! confirmado contra una muestra real de 68407 registros (ver el
 //! docstring de [`parse_planets`]).
 //!
-//! Deliberadamente NO incluye todavía (quedan para una siguiente fase):
-//! `mapMoons` ni `mapSystemConnections`.
+//! La fase 8 suma `mapMoons` ([`parse_moons`], condicional a
+//! `config.with_moons`), equivalente a `_parse_moons()` en Python. A
+//! diferencia de `mapStars`/`mapPlanets`, acá NO hubo una muestra real
+//! disponible para verificar (el archivo real pesa más de 200 MiB) -- el
+//! puerto se basa únicamente en el código Python, cuyo docstring SÍ
+//! confirma la lista de campos. Ver el docstring de [`parse_moons`] para
+//! el detalle de qué queda como inferencia (no verificación) en esta
+//! fase.
+//!
+//! Deliberadamente NO incluye todavía (queda para una siguiente fase):
+//! `mapSystemConnections`.
 //!
 //! ## Formato de archivo soportado
 //!
@@ -206,6 +215,10 @@ pub struct ParserConfig {
     /// solo filtra sus resultados. Default `true`, igual que
     /// `SdeConfig.with_gates` en Python.
     pub with_gates: bool,
+    /// Si es `false`, [`parse_data`] omite la fase de lunas
+    /// ([`parse_moons`]) por completo -- no la llama en absoluto. Default
+    /// `true`, igual que `SdeConfig.with_moons` en Python.
+    pub with_moons: bool,
 }
 
 impl Default for ParserConfig {
@@ -219,6 +232,7 @@ impl Default for ParserConfig {
             map_abyssal: true,
             map_void: false,
             with_gates: true,
+            with_moons: true,
         }
     }
 }
@@ -1212,6 +1226,95 @@ pub fn parse_planets(
 }
 
 // ---------------------------------------------------------------------
+// mapMoons
+// ---------------------------------------------------------------------
+
+/// Puebla `mapMoons` desde `<sde_directory>/mapMoons.jsonl`, filtrando
+/// por `state.systems_in_scope` (poblado por [`parse_solar_systems`]).
+/// Requiere que `mapSolarSystems` ya esté poblada (FK). Devuelve la
+/// cantidad de filas insertadas. Equivalente a `_parse_moons()` en
+/// Python.
+///
+/// # Nota: sin verificación contra datos reales
+///
+/// A diferencia de `mapStars`/`mapPlanets` (fases 6 y 7), acá **no** tuve
+/// una muestra real de `mapMoons.jsonl` para verificar campo por campo
+/// (el archivo pesa más de 200 MiB) -- este puerto se basa únicamente en
+/// el código Python. Vale la pena aclarar que `mapMoons` es, según el
+/// propio docstring de `_parse_moons()` en Python, la ENTIDAD DE
+/// REFERENCIA cuyo shape sí está confirmado (`_key`, `attributes`,
+/// `celestialIndex`, `npcStationIDs`, `orbitID`, `orbitIndex`,
+/// `position`, `radius`, `solarSystemID`, `statistics`, `typeID`,
+/// `uniqueName`) -- es la que se usó de base para *inferir sin verificar
+/// independientemente* el shape de `mapStars`/`mapPlanets` en las dos
+/// fases anteriores. Aun así, "confirmado" en ese docstring parece
+/// referirse a los NOMBRES de los campos, no necesariamente a que estén
+/// SIEMPRE presentes en todo registro -- ver la nota sobre `moonIndex`
+/// más abajo.
+///
+/// `moonIndex` (`orbitIndex` en el JSON) se trata como requerido
+/// ([`required_i64`]) aunque Python lo lee opcional
+/// (`moon.get('orbitIndex')`) -- mismo criterio de siempre para columnas
+/// `NOT NULL` (`mapMoons.moonIndex` lo es): si el campo genuinamente
+/// faltara alguna vez, Python fallaría igual al insertar (constraint
+/// violation), así que tratarlo como requerido acá no cambia el
+/// resultado final (falla en ambos casos), solo da un mensaje más claro
+/// y más temprano. La diferencia con `planetaryIndex` en la fase
+/// anterior es que ahí sí pude confirmar con 68407 registros reales que
+/// el campo nunca falta; acá es una inferencia a partir de ese mismo
+/// patrón (y de la restricción `NOT NULL` del schema), no un hecho
+/// verificado para `mapMoons` en particular.
+///
+/// `typeId` también se trata como requerido ([`required_i64`]),
+/// coincidiendo con el acceso `moon['typeID']` (bracket) de Python -- a
+/// pesar de que la columna en sí es nullable en el schema (`typeId
+/// INTEGER REFERENCES invTypes(typeId)`, sin `NOT NULL`). Acá no hay
+/// desviación de Python: el docstring confirma `typeID` como campo
+/// presente en `mapMoons`, así que exigirlo es fidelidad al
+/// comportamiento real de Python, no un endurecimiento propio.
+pub fn parse_moons(
+    connection: &Connection,
+    sde_directory: &Path,
+    state: &SystemScopeState,
+) -> Result<usize, BuilderError> {
+    let mut insert_moon = connection.prepare(
+        "INSERT INTO mapMoons (moonId, solarSystemId, moonIndex, planetId, typeId, radius, \
+         positionX, positionY, positionZ) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )?;
+
+    let mut count = 0usize;
+    for record in iter_jsonl_records(sde_directory, "mapMoons")? {
+        let record = record?;
+        let solar_system_id = required_i64(&record, "solarSystemID")?;
+        if !state.systems_in_scope.contains(&solar_system_id) {
+            continue;
+        }
+
+        let id = required_i64(&record, "_key")?;
+        let moon_index = required_i64(&record, "orbitIndex")?;
+        let planet_id = optional_i64(&record, "orbitID");
+        let type_id = required_i64(&record, "typeID")?;
+        let radius = optional_i64_with_nested_fallback(&record, "radius", "statistics");
+        let (pos_x, pos_y, pos_z) = required_position(&record)?;
+
+        insert_moon.execute(rusqlite::params![
+            id,
+            solar_system_id,
+            moon_index,
+            planet_id,
+            type_id,
+            radius,
+            pos_x,
+            pos_y,
+            pos_z,
+        ])?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+// ---------------------------------------------------------------------
 // Orquestador
 // ---------------------------------------------------------------------
 
@@ -1237,6 +1340,10 @@ pub struct ParseSummary {
     pub stargates: usize,
     pub stars: usize,
     pub planets: usize,
+    /// `0` tanto si no había lunas que importar como si
+    /// `config.with_moons` estaba en `false` -- no se distingue entre
+    /// ambos casos, mismo criterio que `stargates`.
+    pub moons: usize,
 }
 
 /// Corre el pipeline de parseo completo sobre `sde_directory`, en el mismo
@@ -1259,13 +1366,13 @@ pub struct ParseSummary {
 ///
 /// ## Alcance actual
 ///
-/// Hoy en día cubre las 12 funciones ya portadas (fase 1 a fase 7):
+/// Hoy en día cubre las 13 funciones ya portadas (fase 1 a fase 8):
 /// categorías, grupos, tipos (+ `typeStar`), razas, corporaciones NPC,
 /// facciones (+ `factionRace`), regiones, constelaciones, sistemas
-/// solares, stargates (condicional a `config.with_gates`), estrellas y
-/// planetas. A medida que se porten más fases (lunas, conexiones) se van
-/// agregando más llamadas aquí, en el mismo orden que Python, hasta
-/// llegar a paridad completa con `parse_data()`.
+/// solares, stargates (condicional a `config.with_gates`), estrellas,
+/// planetas y lunas (condicional a `config.with_moons`). Solo queda
+/// `_parse_connections()`/`parse_connections()` en Python para llegar a
+/// paridad completa con `parse_data()`.
 pub fn parse_data(
     connection: &mut Connection,
     sde_directory: &Path,
@@ -1291,6 +1398,11 @@ pub fn parse_data(
     };
     let stars = parse_stars(&tx, sde_directory, &scope, &state)?;
     let planets = parse_planets(&tx, sde_directory, &scope)?;
+    let moons = if config.with_moons {
+        parse_moons(&tx, sde_directory, &scope)?
+    } else {
+        0
+    };
 
     tx.commit()?;
 
@@ -1308,6 +1420,7 @@ pub fn parse_data(
         stargates,
         stars,
         planets,
+        moons,
     })
 }
 
@@ -2625,6 +2738,189 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Setup común de los tests de `parse_moons`: schema, un `invTypes`
+    /// para el planeta y otro para la luna, un sistema solar y un
+    /// planeta en scope (para poder probar `planetId` con un valor real
+    /// además de `NULL`). Devuelve `(connection, scope)`.
+    fn setup_for_parse_moons() -> (Connection, SystemScopeState) {
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO invCategories (categoryId, categoryName, published) \
+                 VALUES (1, 'Celestial', 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO invGroups (groupId, categoryId, groupName, anchorable) \
+                 VALUES (1, 1, 'Celestial Group', 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO invTypes (typeId, groupId, typeName, published) \
+                 VALUES (11, 1, 'Planet (Barren)', 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO invTypes (typeId, groupId, typeName, published) \
+                 VALUES (12, 1, 'Moon', 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapRegions \
+                 (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
+                 VALUES (10000002, 'The Forge', NULL, 0, 0, 0, 5, NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapConstellations \
+                 (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
+                 VALUES (20000020, 'Kimotoro', 10000002, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapSolarSystems \
+                 (solarSystemId, solarSystemName, constellationId, radius, centerX, centerY, centerZ, security) \
+                 VALUES (30000001, 'A', 20000020, 1.0, 0, 0, 0, 0.5)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapPlanets \
+                 (planetId, solarSystemId, planetaryIndex, typeId, positionX, positionY, positionZ) \
+                 VALUES (40000002, 30000001, 1, 11, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+
+        let mut scope = SystemScopeState::default();
+        scope.systems_in_scope.insert(30000001);
+        (connection, scope)
+    }
+
+    #[test]
+    fn parse_moons_inserts_row_with_planet_reference() {
+        let dir = TempSdeDir::new(
+            "moons_with_planet",
+            &[(
+                "mapMoons.jsonl",
+                "{\"_key\": 40000004, \"solarSystemID\": 30000001, \"orbitIndex\": 1, \
+                 \"orbitID\": 40000002, \"typeID\": 12, \"radius\": 100000, \
+                 \"position\": {\"x\": 1.0, \"y\": 2.0, \"z\": 3.0}}\n",
+            )],
+        );
+        let (connection, scope) = setup_for_parse_moons();
+
+        let count = parse_moons(&connection, &dir.path, &scope).unwrap();
+        assert_eq!(count, 1);
+
+        let (moon_index, planet_id, type_id, radius): (i64, Option<i64>, i64, Option<i64>) =
+            connection
+                .query_row(
+                    "SELECT moonIndex, planetId, typeId, radius FROM mapMoons WHERE moonId = 40000004",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+        assert_eq!(moon_index, 1);
+        assert_eq!(planet_id, Some(40000002));
+        assert_eq!(type_id, 12);
+        assert_eq!(radius, Some(100000));
+    }
+
+    #[test]
+    fn parse_moons_without_orbit_id_leaves_planet_id_null() {
+        // orbitID (planetId) es opcional -- tanto en Python
+        // (`moon.get('orbitID')`) como en el schema (columna nullable).
+        let dir = TempSdeDir::new(
+            "moons_no_planet",
+            &[(
+                "mapMoons.jsonl",
+                "{\"_key\": 40000005, \"solarSystemID\": 30000001, \"orbitIndex\": 2, \
+                 \"typeID\": 12, \"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}}\n",
+            )],
+        );
+        let (connection, scope) = setup_for_parse_moons();
+
+        parse_moons(&connection, &dir.path, &scope).unwrap();
+
+        let planet_id: Option<i64> = connection
+            .query_row(
+                "SELECT planetId FROM mapMoons WHERE moonId = 40000005",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(planet_id, None);
+    }
+
+    #[test]
+    fn parse_moons_skips_systems_outside_scope() {
+        let dir = TempSdeDir::new(
+            "moons_scope",
+            &[(
+                "mapMoons.jsonl",
+                "{\"_key\": 40000004, \"solarSystemID\": 30000099, \"orbitIndex\": 1, \
+                 \"typeID\": 12, \"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}}\n",
+            )],
+        );
+        let (connection, scope) = setup_for_parse_moons();
+        // 30000099 no está en el scope (solo 30000001 lo está).
+
+        let count = parse_moons(&connection, &dir.path, &scope).unwrap();
+        assert_eq!(count, 0);
+
+        let total: i64 = connection
+            .query_row("SELECT COUNT(*) FROM mapMoons", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn parse_moons_missing_orbit_index_errors() {
+        let dir = TempSdeDir::new(
+            "moons_missing_index",
+            &[(
+                "mapMoons.jsonl",
+                "{\"_key\": 40000004, \"solarSystemID\": 30000001, \"typeID\": 12, \
+                 \"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}}\n",
+            )],
+        );
+        let (connection, scope) = setup_for_parse_moons();
+
+        let result = parse_moons(&connection, &dir.path, &scope);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_moons_missing_type_id_errors() {
+        let dir = TempSdeDir::new(
+            "moons_missing_type",
+            &[(
+                "mapMoons.jsonl",
+                "{\"_key\": 40000004, \"solarSystemID\": 30000001, \"orbitIndex\": 1, \
+                 \"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}}\n",
+            )],
+        );
+        let (connection, scope) = setup_for_parse_moons();
+
+        let result = parse_moons(&connection, &dir.path, &scope);
+        assert!(result.is_err());
+    }
+
     #[test]
     fn parse_data_happy_path_returns_summary_and_commits() {
         let dir = TempSdeDir::new(
@@ -2695,11 +2991,18 @@ mod tests {
                      \"statistics\": {\"locked\": false}, \"typeID\": 11}\n",
                 ),
                 (
+                    "mapMoons.jsonl",
+                    "{\"_key\": 40000004, \"solarSystemID\": 30000142, \"orbitIndex\": 1, \
+                     \"orbitID\": 40000002, \"typeID\": 12, \"radius\": 100000, \
+                     \"position\": {\"x\": 1.0, \"y\": 2.0, \"z\": 3.0}}\n",
+                ),
+                (
                     "types.jsonl",
                     "{\"_key\": 3000, \"groupID\": 6, \"name\": {\"en\": \"Yellow G5 (ffcc00)\"}, \
                      \"iconID\": 100, \"published\": true, \"volume\": 0.0}\n\
                      {\"_key\": 16, \"groupID\": 7, \"name\": {\"en\": \"Stargate\"}, \"published\": true}\n\
-                     {\"_key\": 11, \"groupID\": 7, \"name\": {\"en\": \"Planet (Barren)\"}, \"published\": true}\n",
+                     {\"_key\": 11, \"groupID\": 7, \"name\": {\"en\": \"Planet (Barren)\"}, \"published\": true}\n\
+                     {\"_key\": 12, \"groupID\": 7, \"name\": {\"en\": \"Moon\"}, \"published\": true}\n",
                 ),
             ],
         );
@@ -2713,7 +3016,7 @@ mod tests {
             ParseSummary {
                 categories: 1,
                 groups: 2,
-                types: 3,
+                types: 4,
                 races: 1,
                 npc_corporations: 1,
                 factions: 1,
@@ -2724,6 +3027,7 @@ mod tests {
                 stargates: 2,
                 stars: 1,
                 planets: 1,
+                moons: 1,
             }
         );
 
