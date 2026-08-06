@@ -7,6 +7,7 @@
 //! Los binarios `sde` (CLI) y `sde-gui` habilitan esta feature y llaman a
 //! las funciones de este módulo.
 
+pub mod dotlan;
 pub mod http;
 pub mod manifest;
 pub mod parser;
@@ -14,13 +15,16 @@ pub mod schema;
 
 // Próximos submódulos (aún no portados desde el prototipo en Python):
 // pub mod sde_index;  // parseo de latest.jsonl y comparación de build number
-// pub mod dotlan;     // descarga + parseo de mapas SVG (roxmltree)
 //
 // `schema` (DDL STRICT) ya está portado -- ver builder::schema::create_schema().
 // `parser` (escritura de datos) está parcialmente portado -- ver el
 // docstring de builder::parser para el alcance exacto de lo que ya cubre
 // y lo que falta (regiones/constelaciones/sistemas/gates/estrellas/
 // planetas/lunas/conexiones, npcCorporations, factions).
+// `dotlan` (datos comunitarios externos al SDE) está parcialmente
+// portado -- ver el docstring de builder::dotlan para el alcance: el DDL
+// dinámico y el poblado de listas estáticas (Jove/Triglavian) ya están,
+// falta el parseo de los SVG regionales y el orquestador de descarga.
 
 /// Errores del proceso de build. Sin `thiserror` a propósito: es el mismo
 /// patrón "sin abstracción" que ya usa `SdeManager` (propaga los errores de
