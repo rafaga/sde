@@ -8,15 +8,13 @@
 //! las funciones de este módulo.
 
 pub mod dotlan;
+pub mod extract;
 pub mod http;
 pub mod manifest;
 pub mod parser;
 pub mod schema;
 pub mod sde_index;
 
-// Próximos submódulos (aún no portados desde el prototipo en Python):
-// pub mod extract;    // descompresión del zip del SDE, preservando maps/
-//
 // `schema` (DDL STRICT) ya está portado -- ver builder::schema::create_schema().
 // `parser` (escritura de datos) ya está portado por completo -- 14
 // funciones, paridad total con parse_data() de Python. Ver el docstring
@@ -26,10 +24,15 @@ pub mod sde_index;
 // (validado contra un mapa real de dotlan) y el orquestador de descarga
 // con reintentos. Ver el docstring de builder::dotlan para el detalle.
 // `sde_index` (chequeo de build number + descarga condicional del SDE)
-// ya está portado -- ver el docstring de builder::sde_index. Falta
-// `builder::extract` para descomprimir el zip descargado, y el
-// orquestador de nivel superior que une todo esto (aún un stub en
-// src/bin/cli.rs).
+// ya está portado -- ver el docstring de builder::sde_index.
+// `extract` (descompresión del zip del SDE, preservando maps/) ya está
+// portado -- ver el docstring de builder::extract.
+//
+// Solo falta el orquestador de nivel superior que une todo esto (hoy un
+// stub en src/bin/cli.rs): sde_index::update_as_needed() ->
+// extract::prepare_sde_directory() -> parser::parse_data() ->
+// dotlan::process(), en ese orden -- el mismo que sigue
+// database_builder.py.
 
 /// Errores del proceso de build. Sin `thiserror` a propósito: es el mismo
 /// patrón "sin abstracción" que ya usa `SdeManager` (propaga los errores de
@@ -45,6 +48,8 @@ pub enum BuilderError {
     /// Error al ejecutar una consulta SQL (creación de schema, inserts del
     /// parser, etc.).
     Sqlite(rusqlite::Error),
+    /// Error al leer/descomprimir un archivo zip (`builder::extract`).
+    Zip(zip::result::ZipError),
     /// Un registro del SDE no tiene la forma esperada (campo requerido
     /// ausente, o de un tipo distinto al esperado). No es un error de
     /// sintaxis JSON (`Json` ya cubre eso, cuando el archivo ni siquiera
@@ -63,6 +68,7 @@ impl std::fmt::Display for BuilderError {
                 write!(f, "{url} responded with status {status}")
             },
             BuilderError::Sqlite(err) => write!(f, "SQLite error: {err}"),
+            BuilderError::Zip(err) => write!(f, "Zip error: {err}"),
             BuilderError::Data(message) => write!(f, "malformed SDE record: {message}"),
         }
     }
@@ -79,6 +85,12 @@ impl From<std::io::Error> for BuilderError {
 impl From<rusqlite::Error> for BuilderError {
     fn from(err: rusqlite::Error) -> Self {
         BuilderError::Sqlite(err)
+    }
+}
+
+impl From<zip::result::ZipError> for BuilderError {
+    fn from(err: zip::result::ZipError) -> Self {
+        BuilderError::Zip(err)
     }
 }
 
