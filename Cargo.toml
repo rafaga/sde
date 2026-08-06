@@ -84,3 +84,4 @@ anyhow = { version = "1", optional = true }
 eframe = { version = "0.35", optional = true }
 
 [dev-dependencies]
+wiremock = "0.6"

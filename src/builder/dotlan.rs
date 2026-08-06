@@ -33,7 +33,9 @@
 //! (`process()`), que reusará [`super::http`]/[`super::manifest`] ya
 //! portados -- queda para una fase siguiente.
 
-use crate::builder::BuilderError;
+use crate::builder::manifest::{self, Manifest};
+use crate::builder::{http, BuilderError};
+use reqwest::Client;
 use rusqlite::Connection;
 use std::path::Path;
 
@@ -391,6 +393,126 @@ pub fn extract_map_data(
     Ok(true)
 }
 
+/// Trae `(regionId, regionName)` de todas las regiones "reales" del SDE
+/// (excluye w-space/abyssal, con `regionId >= 11000000`). Equivalente a
+/// `get_all_regions()` en Python -- salvo que acá un error de SQL se
+/// propaga como `Err` en vez de imprimirse y devolver `None`: Python
+/// atrapa `DatabaseError` ahí puntualmente y sigue con `rows = None`
+/// (que luego rompería `process()` de otra forma al iterar sobre
+/// `None`), así que no hay comportamiento útil que replicar en ese
+/// camino de error.
+fn get_all_regions(connection: &Connection) -> Result<Vec<(i64, String)>, BuilderError> {
+    let mut statement =
+        connection.prepare("SELECT regionId, regionName FROM mapRegions WHERE regionId < ?1")?;
+    let rows = statement
+        .query_map(rusqlite::params![11_000_000_i64], |row| {
+            Ok((row.get::<usize, i64>(0)?, row.get::<usize, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Descarga (con caché vía manifiesto) y parsea el mapa SVG de cada
+/// región "real" del SDE ([`get_all_regions`]), con hasta 3 intentos por
+/// región si el parseo falla. Corre [`update_tables`] primero -- mismo
+/// orden que Python, donde `_update_tables()` es el primer paso de
+/// `process()`, sin excepción. Equivalente a `process()` en Python.
+///
+/// `map_url_base` debe terminar en `/` (p. ej.
+/// `"https://evemaps.dotlan.net/svg/"`) -- se concatena directamente con
+/// `<NombreRegión con guiones bajos>.svg`, igual que Python
+/// (`self.map_url + region_name.replace(' ', '_') + ".svg"`, sin
+/// normalizar la barra final).
+///
+/// `sde_directory` es el directorio raíz de trabajo del builder; los
+/// mapas y el manifiesto ([`manifest`]) viven en
+/// `<sde_directory>/maps/`.
+///
+/// # Diferencias de comportamiento respecto a Python
+///
+/// - Si la descarga misma falla (error de red, status HTTP no-2xx) --no
+///   solo "el archivo vino corrupto"-- se trata igual que datos
+///   inválidos: se loguea y se reintenta, igual que el caso
+///   `file_size is None` de Python (que en su `MiscUtils.download_file`
+///   cubre esencialmente lo mismo).
+/// - Borrar el archivo tras un intento fallido usa
+///   `let _ = std::fs::remove_file(...)`, ignorando el resultado --
+///   Python primero chequea `.exists()` y después hace `.unlink()`
+///   (que sí podría propagar un error de permisos sin atrapar); acá se
+///   simplifica a un intento silencioso, aceptable dado que en el peor
+///   caso un archivo inválido que no se pudo borrar termina
+///   sobrescribiéndose en el siguiente intento exitoso de todos modos.
+/// - `urlparse(map_url)` en Python no hace nada observable (el
+///   resultado no se usa) -- no se porta, es código muerto en el
+///   original.
+pub async fn process(
+    connection: &Connection,
+    client: &Client,
+    sde_directory: &Path,
+    map_url_base: &str,
+    config: &DotlanConfig,
+) -> Result<(), BuilderError> {
+    update_tables(connection, config)?;
+    let regions = get_all_regions(connection)?;
+
+    let maps_dir = sde_directory.join("maps");
+    let mut manifest: Manifest = manifest::load(&maps_dir);
+    let mut manifest_changed = false;
+
+    for (_region_id, region_name) in regions {
+        let file_name = format!("{}.svg", region_name.replace(' ', "_"));
+        let map_path = maps_dir.join(&file_name);
+        let map_url = format!("{map_url_base}{file_name}");
+
+        let remote_fingerprint = http::fingerprint(client, &map_url).await;
+        let mut needs_download = manifest::needs_download(
+            map_path.exists(),
+            manifest.get(&region_name),
+            remote_fingerprint.as_ref(),
+        );
+
+        for attempt in 1..=3 {
+            if needs_download {
+                match http::download(client, &map_url, &map_path, |_| {}).await {
+                    Ok(size) if size > 100 => {
+                        println!("dotlan: mapa descargado para {region_name}");
+                        if let Some(fp) = &remote_fingerprint {
+                            manifest.insert(region_name.clone(), fp.clone());
+                            manifest_changed = true;
+                        }
+                    }
+                    Ok(_) => {
+                        let _ = std::fs::remove_file(&map_path);
+                        eprintln!("dotlan: datos inválidos recibidos para {region_name}");
+                    }
+                    Err(err) => {
+                        let _ = std::fs::remove_file(&map_path);
+                        eprintln!("dotlan: error descargando el mapa de {region_name}: {err}");
+                    }
+                }
+            } else {
+                println!("dotlan: {region_name} sin cambios, se omite la descarga.");
+            }
+
+            println!("dotlan: parseando datos de {region_name}");
+            if extract_map_data(connection, &map_path, config)? {
+                break;
+            }
+            needs_download = true;
+            let _ = std::fs::remove_file(&map_path);
+            eprintln!(
+                "dotlan: datos inválidos para {region_name}, reintentando descarga ({attempt})."
+            );
+        }
+    }
+
+    if manifest_changed {
+        manifest::save(&maps_dir, &manifest)?;
+    }
+
+    Ok(())
+}
+
 const EDENCOM_MINOR_VICTORY: &[i64] = &[
     30003088, 30003894, 30004302, 30005074, 30003570, 30003463, 30003788, 30002724, 30002999,
     30000102, 30003919, 30004978, 30004287, 30002051, 30003823, 30005267, 30003587, 30003904,
@@ -673,6 +795,188 @@ mod tests {
             .unwrap();
         assert_eq!(region_id, 10000005);
         assert_eq!((x, y), (0.0, 500.0));
+    }
+
+    /// Prerrequisitos comunes de los tests de `process()`: schema +
+    /// región "Test Region" (regionId 10000099, bajo el umbral de
+    /// w-space/abyssal) con dos sistemas solares que coinciden con los
+    /// del `SAMPLE_SVG` (30003088, 30000001), más una región abyssal
+    /// (regionId >= 11000000) para probar el filtro de
+    /// `get_all_regions`. Devuelve `Connection`.
+    fn setup_for_process() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapRegions (regionId, regionName, nebula, centerX, centerY, centerZ) \
+                 VALUES (10000099, 'Test Region', 5, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapRegions (regionId, regionName, nebula, centerX, centerY, centerZ) \
+                 VALUES (11000001, 'A-R00001', 5, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapConstellations \
+                 (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
+                 VALUES (20000099, 'Test Constellation', 10000099, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        for id in [30003088, 30000001] {
+            connection
+                .execute(
+                    "INSERT INTO mapSolarSystems \
+                     (solarSystemId, solarSystemName, constellationId, radius, centerX, centerY, centerZ, security) \
+                     VALUES (?1, ?1, 20000099, 1.0, 0, 0, 0, 0.5)",
+                    rusqlite::params![id],
+                )
+                .unwrap();
+        }
+        connection
+    }
+
+    fn temp_sde_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("sde-dotlan-process-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn get_all_regions_excludes_wormhole_and_abyssal() {
+        let connection = setup_for_process();
+        let regions = get_all_regions(&connection).unwrap();
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0], (10000099, "Test Region".to_string()));
+    }
+
+    #[tokio::test]
+    async fn process_downloads_new_region_and_populates_database() {
+        let connection = setup_for_process();
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("HEAD"))
+            .and(wiremock::matchers::path("/Test_Region.svg"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).insert_header("ETag", "\"v1\""),
+            )
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/Test_Region.svg"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(SAMPLE_SVG))
+            .mount(&server)
+            .await;
+
+        let client = http::build_client().unwrap();
+        let sde_dir = temp_sde_dir("new_region");
+        let map_url_base = format!("{}/", server.uri());
+        let config = DotlanConfig::default();
+
+        process(&connection, &client, &sde_dir, &map_url_base, &config)
+            .await
+            .unwrap();
+
+        let total: i64 = connection
+            .query_row("SELECT COUNT(*) FROM mapAbstractSystems", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total, 1);
+
+        // El manifiesto debe haberse guardado con el fingerprint nuevo.
+        let manifest = manifest::load(&sde_dir.join("maps"));
+        assert!(manifest.contains_key("Test Region"));
+        assert_eq!(manifest["Test Region"].etag.as_deref(), Some("\"v1\""));
+    }
+
+    #[tokio::test]
+    async fn process_skips_download_when_manifest_matches() {
+        let connection = setup_for_process();
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("HEAD"))
+            .and(wiremock::matchers::path("/Test_Region.svg"))
+            .respond_with(wiremock::ResponseTemplate::new(200).insert_header("ETag", "\"same\""))
+            .mount(&server)
+            .await;
+        // GET nunca debería llamarse -- 0 esperado explícitamente.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/Test_Region.svg"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(SAMPLE_SVG))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let client = http::build_client().unwrap();
+        let sde_dir = temp_sde_dir("unchanged");
+        let maps_dir = sde_dir.join("maps");
+        std::fs::create_dir_all(&maps_dir).unwrap();
+        std::fs::write(maps_dir.join("Test_Region.svg"), SAMPLE_SVG).unwrap();
+
+        // Manifiesto pre-poblado con el MISMO fingerprint que devuelve el HEAD.
+        let mut manifest: Manifest = Manifest::new();
+        manifest.insert(
+            "Test Region".to_string(),
+            manifest::MapFingerprint {
+                etag: Some("\"same\"".to_string()),
+                last_modified: None,
+                content_length: None,
+            },
+        );
+        manifest::save(&maps_dir, &manifest).unwrap();
+
+        let map_url_base = format!("{}/", server.uri());
+        let config = DotlanConfig::default();
+        process(&connection, &client, &sde_dir, &map_url_base, &config)
+            .await
+            .unwrap();
+
+        // El archivo local (ya existente) igual se parseo -- sin descarga.
+        let total: i64 = connection
+            .query_row("SELECT COUNT(*) FROM mapAbstractSystems", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total, 1);
+        // wiremock verifica el .expect(0) del GET al hacer drop del server.
+    }
+
+    #[tokio::test]
+    async fn process_retries_after_invalid_download_then_succeeds() {
+        let connection = setup_for_process();
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("HEAD"))
+            .and(wiremock::matchers::path("/Test_Region.svg"))
+            .respond_with(wiremock::ResponseTemplate::new(200).insert_header("ETag", "\"v1\""))
+            .mount(&server)
+            .await;
+        // Primer GET: cuerpo invalido (<=100 bytes) -- fuerza reintento.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/Test_Region.svg"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("x"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        // Segundo GET en adelante: contenido valido.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/Test_Region.svg"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(SAMPLE_SVG))
+            .mount(&server)
+            .await;
+
+        let client = http::build_client().unwrap();
+        let sde_dir = temp_sde_dir("retry");
+        let map_url_base = format!("{}/", server.uri());
+        let config = DotlanConfig::default();
+
+        process(&connection, &client, &sde_dir, &map_url_base, &config)
+            .await
+            .unwrap();
+
+        let total: i64 = connection
+            .query_row("SELECT COUNT(*) FROM mapAbstractSystems", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total, 1, "debe terminar exitoso tras reintentar la descarga");
     }
 
     #[test]
