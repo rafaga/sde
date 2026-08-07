@@ -3,7 +3,7 @@
 //! Requiere la feature `gui` (que a su vez activa `builder`).
 
 fn main() -> eframe::Result<()> {
-    eframe::run_simple_native(
+    eframe::run_ui_native(
         "SDE Builder",
         eframe::NativeOptions::default(),
         |ctx, _frame| {
