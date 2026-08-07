@@ -77,6 +77,39 @@ impl<'a> SdeManager<'a> {
         coords
     }
 
+    /// Same logic as [`Self::scale_coords`], but operating on `[f64; 2]`
+    /// throughout -- used by [`Self::get_systempoints`]/
+    /// [`Self::get_abstract_systems`] (which build [`objects::MapPoint`],
+    /// `coords: [f64; 3]`) instead of the `f32` version, which stays in
+    /// use for [`Self::get_connections`]/[`Self::get_abstract_connections`]
+    /// (building [`objects::MapSegment`], `point1`/`point2: [f32; 2]` --
+    /// unaffected by the `SdePoint`/`MapPoint` merge).
+    ///
+    /// Routing `MapPoint`'s coordinates through the `f32` version would
+    /// silently reintroduce the precision loss the merge to `f64` was
+    /// meant to avoid: `some_f32_value as f64` doesn't recover the
+    /// precision lost when the value was first narrowed to `f32` --
+    /// e.g. `0.1_f32 as f64` is `0.10000000149011612`, not `0.1`.
+    /// Reading `position2DX`/`position2DY`/`mapAbstractSystems.x`/`.y`
+    /// (all `REAL`, i.e. already `f64`-precision in SQLite) directly as
+    /// `f64` and scaling in `f64` avoids that round-trip entirely.
+    fn scale_coords_f64(&self, mut coords: [f64; 2], invert: bool) -> [f64; 2] {
+        if self.factor > 1 {
+            let f = self.factor as f64;
+            coords[0] /= f;
+            coords[1] /= f;
+        } else if self.factor < -1 {
+            let f = self.factor.unsigned_abs() as f64;
+            coords[0] *= f;
+            coords[1] *= f;
+        }
+        if invert {
+            coords[0] *= -1.0;
+            coords[1] *= -1.0;
+        }
+        coords
+    }
+
     /// Wraps a `kdtree::ErrorKind` (from a `KdTree::add` call) as a
     /// `rusqlite::Error`, so it can be propagated with `?` from
     /// functions that return `Result<_, rusqlite::Error>` -- these are
@@ -153,15 +186,15 @@ impl<'a> SdeManager<'a> {
                         .map_err(Self::kdtree_error)?;
                 }
                 last_id = id;
-                let x = row.get::<usize, f32>(1)?;
-                let y = row.get::<usize, f32>(2)?;
+                let x = row.get::<usize, f64>(1)?;
+                let y = row.get::<usize, f64>(2)?;
 
                 //we get the coordinate point and multiply with the adjust factor
-                let [x, y] = self.scale_coords([x, y], self.invert_coordinates);
+                let [x, y] = self.scale_coords_f64([x, y], self.invert_coordinates);
                 point = MapPoint {
                     id: Some(id.try_into().unwrap()),
                     name: Some(row.get::<usize, String>(3)?),
-                    coords: [x as f64, y as f64, 0.0],
+                    coords: [x, y, 0.0],
                     connections: Vec::new(),
                 };
             }
@@ -381,14 +414,14 @@ impl<'a> SdeManager<'a> {
                 // get_abstract_systems doesn't invert coordinates -- that
                 // was also the case before this migration (unlike
                 // get_systempoints/get_connections, which do).
-                let [x, y] = self.scale_coords(
-                    [row.get::<usize, f32>(1)?, row.get::<usize, f32>(2)?],
+                let [x, y] = self.scale_coords_f64(
+                    [row.get::<usize, f64>(1)?, row.get::<usize, f64>(2)?],
                     false,
                 );
                 point = MapPoint {
                     id: Some(id.try_into().unwrap()),
                     name: Some(row.get::<usize, String>(6)?),
-                    coords: [x as f64, y as f64, 0.0],
+                    coords: [x, y, 0.0],
                     connections: Vec::new(),
                 };
             }

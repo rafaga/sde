@@ -670,12 +670,18 @@ mod tests {
 
     #[test]
     fn extract_map_data_updates_icebelt_only_when_enabled() {
+        // Two separate connections -- extract_map_data's mapAbstractSystems
+        // INSERT is unconditional (runs every call regardless of
+        // with_icebelts), so calling it twice against the same connection
+        // with the same SVG (same solarSystemId/regionId pair) would hit
+        // mapAbstractSystems's PRIMARY KEY constraint on the second call.
+        // Each config gets its own fresh connection instead.
+        let path = write_temp_svg("icebelt_toggle", "The_Forge.svg", SAMPLE_SVG);
+
         let connection = Connection::open_in_memory().unwrap();
         setup(&connection);
         create_abstract_map(&connection).unwrap();
         create_icebelts(&connection).unwrap();
-
-        let path = write_temp_svg("icebelt_disabled", "The_Forge.svg", SAMPLE_SVG);
         // with_icebelts=false (default): the rect gets parsed but NOT written.
         let config = DotlanConfig::default();
         extract_map_data(&connection, &path, &config).unwrap();
@@ -688,12 +694,16 @@ mod tests {
             .unwrap();
         assert_eq!(ice_belt, 0, "with_icebelts=false shouldn't write anything");
 
+        let connection_enabled = Connection::open_in_memory().unwrap();
+        setup(&connection_enabled);
+        create_abstract_map(&connection_enabled).unwrap();
+        create_icebelts(&connection_enabled).unwrap();
         let config_enabled = DotlanConfig {
             with_icebelts: true,
             ..config
         };
-        extract_map_data(&connection, &path, &config_enabled).unwrap();
-        let ice_belt: i64 = connection
+        extract_map_data(&connection_enabled, &path, &config_enabled).unwrap();
+        let ice_belt: i64 = connection_enabled
             .query_row(
                 "SELECT iceBelt FROM mapSolarSystems WHERE solarSystemId = 30003088",
                 [],

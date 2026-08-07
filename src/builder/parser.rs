@@ -3000,7 +3000,7 @@ mod tests {
 
     #[test]
     fn parse_connections_derives_single_pair_from_mutual_gates() {
-        let connection = Connection::open_in_memory().unwrap();
+        let mut connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         connection
             .execute(
@@ -3053,22 +3053,33 @@ mod tests {
                 )
                 .unwrap();
         }
-        connection
-            .execute(
+        // The two gates reference each other mutually
+        // (destinationGateId), and that FK is DEFERRABLE INITIALLY
+        // DEFERRED -- exactly the case documented in parse_stargates's
+        // own docstring: outside an explicit transaction, each INSERT
+        // is its own implicit transaction in autocommit mode, so the
+        // first gate inserted fails immediately (its destinationGateId
+        // doesn't exist yet). Wrapping both inserts in one transaction
+        // defers the FK check until the commit, by which point both
+        // gates exist.
+        {
+            let tx = connection.transaction().unwrap();
+            tx.execute(
                 "INSERT INTO mapSystemGates \
                  (systemGateId, solarSystemId, typeId, positionX, positionY, positionZ, destinationGateId, destinationSystemId) \
                  VALUES (50000001, 30000002, 16, 0, 0, 0, 50000002, 30000001)",
                 [],
             )
             .unwrap();
-        connection
-            .execute(
+            tx.execute(
                 "INSERT INTO mapSystemGates \
                  (systemGateId, solarSystemId, typeId, positionX, positionY, positionZ, destinationGateId, destinationSystemId) \
                  VALUES (50000002, 30000001, 16, 0, 0, 0, 50000001, 30000002)",
                 [],
             )
             .unwrap();
+            tx.commit().unwrap();
+        }
 
         let count = parse_connections(&connection).unwrap();
         assert_eq!(count, 1);
