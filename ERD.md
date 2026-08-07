@@ -39,8 +39,8 @@ erDiagram
         int corporationId FK
     }
     factionRace {
-        int factionId PK_FK
-        int raceId PK_FK
+        int factionId PK, FK
+        int raceId PK, FK
     }
     mapRegions {
         int regionId PK
@@ -62,19 +62,19 @@ erDiagram
         int specialOreAnom
     }
     factionSolarSystem {
-        int solarSystemId PK_FK
-        int factionId PK_FK
+        int solarSystemId PK, FK
+        int factionId PK, FK
     }
     mapSystemGates {
         int systemGateId PK
-        int solarSystemId PK_FK
+        int solarSystemId PK, FK
         int destinationGateId FK
         int destinationSystemId FK
         int typeId FK
     }
     mapSystemConnections {
-        int systemA PK_FK
-        int systemB PK_FK
+        int systemA PK, FK
+        int systemB PK, FK
     }
     mapPlanets {
         int planetId PK
@@ -93,7 +93,7 @@ erDiagram
     }
     mapMoons {
         int moonId
-        int solarSystemId PK_FK
+        int solarSystemId PK, FK
         int planetId FK
         int typeId FK
     }
@@ -103,15 +103,15 @@ erDiagram
         int solarSystemId FK
     }
     staCorporations {
-        int solarSystemId PK_FK
-        int corporationId PK_FK
+        int solarSystemId PK, FK
+        int corporationId PK, FK
     }
 
     %% -- Everything below this line is dynamic DDL, added at runtime by
     %% -- builder::dotlan (not part of schema.sql) -- see the note below.
     mapAbstractSystems {
-        int solarSystemId PK_FK
-        int regionId PK_FK
+        int solarSystemId PK, FK
+        int regionId PK, FK
     }
     mapTriglavianStatus {
         int trigStatusId PK
@@ -161,6 +161,8 @@ erDiagram
   `mapSolarSystems` (`solarSystemId`, `destinationSystemId`) plus a
   self-reference (`destinationGateId`, the paired gate on the other
   end of the connection) — shown as three separate relationship lines.
+- `mapSystemConnections` likewise has two foreign keys into
+  `mapSolarSystems` (`systemA`, `systemB`).
 
 ### Static vs. dynamic
 
@@ -184,5 +186,3 @@ canonical schema would blur that line.
 | `mapTriglavianStatus` + `trigStatusID` | Only if `with_triglavian_status` |
 | `joveObservatory` (on `mapSolarSystems`) | Only if `with_jove_observatories` |
 | `specialOreAnom` (on `mapSolarSystems`) | Only if `with_special_ore` |
-- `mapSystemConnections` likewise has two foreign keys into
-  `mapSolarSystems` (`systemA`, `systemB`).
