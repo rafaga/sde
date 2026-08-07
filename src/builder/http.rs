@@ -7,11 +7,11 @@
 //! to run many checks in parallel (`fingerprint_many`) instead of one at
 //! a time.
 
-use crate::builder::manifest::MapFingerprint;
 use crate::builder::BuilderError;
+use crate::builder::manifest::MapFingerprint;
 use futures::StreamExt;
-use reqwest::header::{HeaderMap, HeaderName};
 use reqwest::Client;
+use reqwest::header::{HeaderMap, HeaderName};
 use std::collections::HashMap;
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
@@ -30,7 +30,11 @@ pub struct DownloadProgress {
 /// that advantage away).
 pub fn build_client() -> reqwest::Result<Client> {
     Client::builder()
-        .user_agent(concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!(
+            env!("CARGO_PKG_NAME"),
+            "/",
+            env!("CARGO_PKG_VERSION")
+        ))
         .build()
 }
 
@@ -52,7 +56,10 @@ pub async fn fingerprint(client: &Client, url: &str) -> Option<MapFingerprint> {
         }
     };
     if !response.status().is_success() {
-        eprintln!("http: HEAD {url} responded with status {}", response.status());
+        eprintln!(
+            "http: HEAD {url} responded with status {}",
+            response.status()
+        );
         return None;
     }
     let headers = response.headers();
@@ -164,7 +171,9 @@ mod tests {
 
         let client = build_client().unwrap();
         let url = format!("{}/The_Forge.svg", server.uri());
-        let fp = fingerprint(&client, &url).await.expect("should return Some");
+        let fp = fingerprint(&client, &url)
+            .await
+            .expect("should return Some");
 
         assert_eq!(fp.etag.as_deref(), Some("\"abc123\""));
         assert_eq!(fp.content_length.as_deref(), Some("184320"));
@@ -211,7 +220,10 @@ mod tests {
         let client = build_client().unwrap();
         let url = format!("{}/latest.jsonl", server.uri());
         let result = fetch_text(&client, &url).await;
-        assert!(matches!(result, Err(BuilderError::HttpStatus { status: 404, .. })));
+        assert!(matches!(
+            result,
+            Err(BuilderError::HttpStatus { status: 404, .. })
+        ));
     }
 
     #[tokio::test]
@@ -282,6 +294,9 @@ mod tests {
         let destination = dir.join("Does_Not_Exist.svg");
 
         let result = download(&client, &url, &destination, |_| {}).await;
-        assert!(matches!(result, Err(BuilderError::HttpStatus { status: 500, .. })));
+        assert!(matches!(
+            result,
+            Err(BuilderError::HttpStatus { status: 500, .. })
+        ));
     }
 }

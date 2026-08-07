@@ -34,7 +34,7 @@
 //! [`super::manifest`], already ported -- left for a later phase.
 
 use crate::builder::manifest::{self, Manifest};
-use crate::builder::{http, BuilderError};
+use crate::builder::{BuilderError, http};
 use reqwest::Client;
 use rusqlite::Connection;
 use std::path::Path;
@@ -173,9 +173,8 @@ pub fn setup_triglavian_status(connection: &Connection) -> Result<(), BuilderErr
         (3, FORTRESS),
         (4, TRIGLAVIAN_MINOR_VICTORY),
     ] {
-        let mut statement = connection.prepare(
-            "UPDATE mapSolarSystems SET trigStatusID = ?1 WHERE solarSystemId = ?2",
-        )?;
+        let mut statement = connection
+            .prepare("UPDATE mapSolarSystems SET trigStatusID = ?1 WHERE solarSystemId = ?2")?;
         for &solar_system_id in ids {
             statement.execute(rusqlite::params![status_id, solar_system_id])?;
         }
@@ -314,7 +313,10 @@ pub fn extract_map_data(
     config: &DotlanConfig,
 ) -> Result<bool, BuilderError> {
     if !map_path.exists() {
-        eprintln!("dotlan: {} doesn't exist, skipping parsing", map_path.display());
+        eprintln!(
+            "dotlan: {} doesn't exist, skipping parsing",
+            map_path.display()
+        );
         return Ok(false);
     }
 
@@ -345,8 +347,8 @@ pub fn extract_map_data(
         }
     }
     if !icebelt_ids.is_empty() && config.with_icebelts {
-        let mut statement =
-            connection.prepare("UPDATE mapSolarSystems SET iceBelt = 1 WHERE solarSystemId = ?1")?;
+        let mut statement = connection
+            .prepare("UPDATE mapSolarSystems SET iceBelt = 1 WHERE solarSystemId = ?1")?;
         for id in &icebelt_ids {
             statement.execute(rusqlite::params![id])?;
         }
@@ -368,7 +370,10 @@ pub fn extract_map_data(
         "INSERT INTO mapAbstractSystems (solarSystemId, regionId, x, y) \
          VALUES (?1, (SELECT regionId FROM mapRegions WHERE regionName = ?2), ?3, ?4)",
     )?;
-    for tag in doc.descendants().filter(|n| n.has_tag_name((SVG_NS, "use"))) {
+    for tag in doc
+        .descendants()
+        .filter(|n| n.has_tag_name((SVG_NS, "use")))
+    {
         let (Some(raw_id), Some(raw_x), Some(raw_y)) =
             (tag.attribute("id"), tag.attribute("x"), tag.attribute("y"))
         else {
@@ -498,9 +503,7 @@ pub async fn process(
             }
             needs_download = true;
             let _ = std::fs::remove_file(&map_path);
-            eprintln!(
-                "dotlan: invalid data for {region_name}, retrying download ({attempt})."
-            );
+            eprintln!("dotlan: invalid data for {region_name}, retrying download ({attempt}).");
         }
     }
 
@@ -636,11 +639,7 @@ mod tests {
         setup(&connection);
         create_abstract_map(&connection).unwrap();
 
-        let path = write_temp_svg(
-            "malformed",
-            "The_Forge.svg",
-            "<svg><rect></svg>",
-        );
+        let path = write_temp_svg("malformed", "The_Forge.svg", "<svg><rect></svg>");
         let config = DotlanConfig::default();
         let result = extract_map_data(&connection, &path, &config).unwrap();
         assert!(!result);
@@ -689,7 +688,10 @@ mod tests {
             .unwrap();
         assert_eq!(ice_belt, 0, "with_icebelts=false shouldn't write anything");
 
-        let config_enabled = DotlanConfig { with_icebelts: true, ..config };
+        let config_enabled = DotlanConfig {
+            with_icebelts: true,
+            ..config
+        };
         extract_map_data(&connection, &path, &config_enabled).unwrap();
         let ice_belt: i64 = connection
             .query_row(
@@ -710,7 +712,7 @@ mod tests {
         let svg = concat!(
             "<svg xmlns=\"http://www.w3.org/2000/svg\">",
             "<use id=\"sys30000001\" x=\"1.0\"/>", // missing y
-            "<use x=\"1.0\" y=\"2.0\"/>",           // missing id
+            "<use x=\"1.0\" y=\"2.0\"/>",          // missing id
             "</svg>",
         );
         let path = write_temp_svg("incomplete_use", "The_Forge.svg", svg);
@@ -719,7 +721,9 @@ mod tests {
         assert!(ok, "un <use> incompleto se omite, no aborta el parseo");
 
         let total: i64 = connection
-            .query_row("SELECT COUNT(*) FROM mapAbstractSystems", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM mapAbstractSystems", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(total, 0);
     }
@@ -773,14 +777,21 @@ mod tests {
         create_icebelts(&connection).unwrap();
 
         let path = write_temp_svg("real_excerpt", "Derelik.svg", svg);
-        let config = DotlanConfig { with_icebelts: true, ..DotlanConfig::default() };
+        let config = DotlanConfig {
+            with_icebelts: true,
+            ..DotlanConfig::default()
+        };
         let ok = extract_map_data(&connection, &path, &config).unwrap();
         assert!(ok);
 
         // The legend rect (without an id) shouldn't generate any extra UPDATE
         // -- only the two with a real id end up marked.
         let ice_count: i64 = connection
-            .query_row("SELECT COUNT(*) FROM mapSolarSystems WHERE iceBelt = 1", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM mapSolarSystems WHERE iceBelt = 1",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(ice_count, 2);
 
@@ -840,7 +851,8 @@ mod tests {
     }
 
     fn temp_sde_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("sde-dotlan-process-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("sde-dotlan-process-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -859,9 +871,7 @@ mod tests {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("HEAD"))
             .and(wiremock::matchers::path("/Test_Region.svg"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200).insert_header("ETag", "\"v1\""),
-            )
+            .respond_with(wiremock::ResponseTemplate::new(200).insert_header("ETag", "\"v1\""))
             .mount(&server)
             .await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
@@ -880,7 +890,9 @@ mod tests {
             .unwrap();
 
         let total: i64 = connection
-            .query_row("SELECT COUNT(*) FROM mapAbstractSystems", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM mapAbstractSystems", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(total, 1);
 
@@ -933,7 +945,9 @@ mod tests {
 
         // The local (already existing) file still gets parsed -- no download.
         let total: i64 = connection
-            .query_row("SELECT COUNT(*) FROM mapAbstractSystems", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM mapAbstractSystems", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(total, 1);
         // wiremock verifies the GET's .expect(0) when the server drops.
@@ -972,17 +986,26 @@ mod tests {
             .unwrap();
 
         let total: i64 = connection
-            .query_row("SELECT COUNT(*) FROM mapAbstractSystems", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM mapAbstractSystems", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(total, 1, "should succeed after retrying the download");
     }
 
     #[test]
     fn jove_observatory_list_has_no_duplicates_and_no_blank_lines() {
-        let names: Vec<&str> = JOVE_OBSERVATORY_SYSTEMS.lines().filter(|l| !l.trim().is_empty()).collect();
+        let names: Vec<&str> = JOVE_OBSERVATORY_SYSTEMS
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
         assert_eq!(names.len(), 1029);
         let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
-        assert_eq!(unique.len(), 1029, "no duplicates should remain after deduplication");
+        assert_eq!(
+            unique.len(),
+            1029,
+            "no duplicates should remain after deduplication"
+        );
     }
 
     #[test]
@@ -1048,7 +1071,9 @@ mod tests {
         setup_triglavian_status(&connection).unwrap();
 
         let status_count: i64 = connection
-            .query_row("SELECT COUNT(*) FROM mapTriglavianStatus", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM mapTriglavianStatus", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(status_count, 5);
 
@@ -1076,7 +1101,9 @@ mod tests {
     #[test]
     fn setup_triglavian_status_foreign_key_still_enforced() {
         let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap();
         setup(&connection);
         setup_triglavian_status(&connection).unwrap();
 
@@ -1144,7 +1171,11 @@ mod tests {
             )
             .unwrap();
         let star_type_id: i64 = connection
-            .query_row("SELECT starTypeId FROM typeStar WHERE typeId = 3000", [], |row| row.get(0))
+            .query_row(
+                "SELECT starTypeId FROM typeStar WHERE typeId = 3000",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         connection
             .execute(
@@ -1206,7 +1237,12 @@ mod tests {
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
-        for optional in ["iceBelt", "trigStatusID", "joveObservatory", "specialOreAnom"] {
+        for optional in [
+            "iceBelt",
+            "trigStatusID",
+            "joveObservatory",
+            "specialOreAnom",
+        ] {
             assert!(
                 !columns.iter().any(|c| c == optional),
                 "{optional} shouldn't exist with every flag set to false"
@@ -1234,9 +1270,16 @@ mod tests {
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
-        for expected in ["iceBelt", "trigStatusID", "joveObservatory", "specialOreAnom"] {
-            assert!(columns.iter().any(|c| c == expected), "missing column {expected}");
+        for expected in [
+            "iceBelt",
+            "trigStatusID",
+            "joveObservatory",
+            "specialOreAnom",
+        ] {
+            assert!(
+                columns.iter().any(|c| c == expected),
+                "missing column {expected}"
+            );
         }
     }
 }
-

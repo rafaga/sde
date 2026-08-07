@@ -80,7 +80,8 @@ mod tests {
     use std::io::Write;
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("sde-extract-test-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("sde-extract-test-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -93,8 +94,8 @@ mod tests {
     fn build_test_zip(path: &Path, entries: &[(&str, &str)]) {
         let file = std::fs::File::create(path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
-        let options =
-            zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
         for (name, content) in entries {
             writer.start_file(*name, options).unwrap();
             writer.write_all(content.as_bytes()).unwrap();
@@ -151,7 +152,11 @@ mod tests {
         std::fs::write(sde_dir.join("maps").join("The_Forge.svg"), "old svg").unwrap();
         std::fs::write(sde_dir.join("types.jsonl"), "old data").unwrap();
         std::fs::create_dir_all(sde_dir.join("universe")).unwrap();
-        std::fs::write(sde_dir.join("universe").join("region.jsonl"), "more old data").unwrap();
+        std::fs::write(
+            sde_dir.join("universe").join("region.jsonl"),
+            "more old data",
+        )
+        .unwrap();
 
         clean_except_maps(&sde_dir).unwrap();
 
@@ -160,8 +165,14 @@ mod tests {
             sde_dir.join("maps").join("The_Forge.svg").exists(),
             "maps/'s content must not be touched either"
         );
-        assert!(!sde_dir.join("types.jsonl").exists(), "types.jsonl must be removed");
-        assert!(!sde_dir.join("universe").exists(), "universe/ must be removed entirely");
+        assert!(
+            !sde_dir.join("types.jsonl").exists(),
+            "types.jsonl must be removed"
+        );
+        assert!(
+            !sde_dir.join("universe").exists(),
+            "universe/ must be removed entirely"
+        );
     }
 
     #[test]

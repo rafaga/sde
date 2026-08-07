@@ -3,9 +3,13 @@
 //! Requiere la feature `gui` (que a su vez activa `builder`).
 
 fn main() -> eframe::Result<()> {
-    eframe::run_simple_native("SDE Builder", eframe::NativeOptions::default(), |ctx, _frame| {
-        eframe::egui::CentralPanel::default().show(ctx, |ui| {
-            ui.label("sde-gui: aún no implementado.");
-        });
-    })
+    eframe::run_simple_native(
+        "SDE Builder",
+        eframe::NativeOptions::default(),
+        |ctx, _frame| {
+            eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                ui.label("sde-gui: aún no implementado.");
+            });
+        },
+    )
 }

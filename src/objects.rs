@@ -623,7 +623,11 @@ mod tests {
         // pivot-based TryInto<[f32;2]> would return Err on all three
         // branches, and telescope's `.unwrap()` would panic. `to_2d`
         // can't fail -- it doesn't guess, the caller picks the axis.
-        let point = MapPoint::new(1_003_094_336_444_825.0, -2_005_029_375_317_114.0, 3_001_839_229_715_087.0);
+        let point = MapPoint::new(
+            1_003_094_336_444_825.0,
+            -2_005_029_375_317_114.0,
+            3_001_839_229_715_087.0,
+        );
         let _ = point.to_2d(ProjectedAxis::Y); // must not panic
     }
 

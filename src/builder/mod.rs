@@ -44,7 +44,10 @@ pub enum BuilderError {
     Json(serde_json::Error),
     Http(reqwest::Error),
     /// The server responded, but with a non-2xx HTTP status.
-    HttpStatus { url: String, status: u16 },
+    HttpStatus {
+        url: String,
+        status: u16,
+    },
     /// Error running a SQL query (schema creation, parser inserts,
     /// etc.).
     Sqlite(rusqlite::Error),
@@ -67,7 +70,7 @@ impl std::fmt::Display for BuilderError {
             BuilderError::Http(err) => write!(f, "HTTP error: {err}"),
             BuilderError::HttpStatus { url, status } => {
                 write!(f, "{url} responded with status {status}")
-            },
+            }
             BuilderError::Sqlite(err) => write!(f, "SQLite error: {err}"),
             BuilderError::Zip(err) => write!(f, "Zip error: {err}"),
             BuilderError::Data(message) => write!(f, "malformed SDE record: {message}"),

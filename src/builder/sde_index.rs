@@ -10,8 +10,8 @@
 //! (preserving `maps/`, see [`super::manifest::manifest_path`]) is
 //! `builder::extract`'s job.
 
-use crate::builder::http;
 use crate::builder::BuilderError;
+use crate::builder::http;
 use reqwest::Client;
 use std::path::Path;
 
@@ -190,7 +190,8 @@ mod tests {
     }
 
     fn temp_data_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("sde-index-test-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("sde-index-test-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -210,7 +211,9 @@ mod tests {
             .and(wiremock::matchers::path(
                 "/eve-online-static-data-123-jsonl.zip",
             ))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(b"zip content".to_vec()))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_bytes(b"zip content".to_vec()),
+            )
             .mount(&server)
             .await;
 

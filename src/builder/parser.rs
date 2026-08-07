@@ -462,7 +462,9 @@ fn optional_i64_array(record: &Value, field: &str) -> Result<Vec<i64>, BuilderEr
 /// error.
 fn required_position(record: &Value) -> Result<(f64, f64, f64), BuilderError> {
     let position = record.get("position").ok_or_else(|| {
-        BuilderError::Data(format!("record missing required field `position`: {record}"))
+        BuilderError::Data(format!(
+            "record missing required field `position`: {record}"
+        ))
     })?;
     let x = required_f64(position, "x")?;
     let y = required_f64(position, "y")?;
@@ -492,9 +494,16 @@ fn required_nested_i64(record: &Value, outer: &str, inner: &str) -> Result<i64, 
 /// here both cases fall through to nested alike, since `optional_i64`
 /// doesn't distinguish "absent" from "present but of the wrong
 /// type/null".
-fn optional_i64_with_nested_fallback(record: &Value, field: &str, nested_field: &str) -> Option<i64> {
-    optional_i64(record, field)
-        .or_else(|| record.get(nested_field).and_then(|nested| optional_i64(nested, field)))
+fn optional_i64_with_nested_fallback(
+    record: &Value,
+    field: &str,
+    nested_field: &str,
+) -> Option<i64> {
+    optional_i64(record, field).or_else(|| {
+        record
+            .get(nested_field)
+            .and_then(|nested| optional_i64(nested, field))
+    })
 }
 
 /// Same as [`optional_i64_with_nested_fallback`], but for boolean
@@ -504,16 +513,26 @@ fn optional_bool_with_nested_fallback(
     field: &str,
     nested_field: &str,
 ) -> Option<bool> {
-    optional_bool(record, field)
-        .or_else(|| record.get(nested_field).and_then(|nested| optional_bool(nested, field)))
+    optional_bool(record, field).or_else(|| {
+        record
+            .get(nested_field)
+            .and_then(|nested| optional_bool(nested, field))
+    })
 }
 
 /// Same as [`optional_i64_with_nested_fallback`], but for floating-point
 /// fields -- used for `mapPlanets.radius` (a `REAL` column, unlike
 /// `mapStars.radius`, which is `INTEGER`).
-fn optional_f64_with_nested_fallback(record: &Value, field: &str, nested_field: &str) -> Option<f64> {
-    optional_f64(record, field)
-        .or_else(|| record.get(nested_field).and_then(|nested| optional_f64(nested, field)))
+fn optional_f64_with_nested_fallback(
+    record: &Value,
+    field: &str,
+    nested_field: &str,
+) -> Option<f64> {
+    optional_f64(record, field).or_else(|| {
+        record
+            .get(nested_field)
+            .and_then(|nested| optional_f64(nested, field))
+    })
 }
 
 /// Extracts an optional plain string field. Equivalent to
@@ -653,7 +672,9 @@ pub fn parse_types(
         let published = optional_bool(&record, "published");
         let volume = optional_f64(&record, "volume");
 
-        insert_type.execute(rusqlite::params![id, group_id, name, icon_id, published, volume])?;
+        insert_type.execute(rusqlite::params![
+            id, group_id, name, icon_id, published, volume
+        ])?;
 
         if state.sun_group_id == Some(group_id) {
             let parts: Vec<&str> = name.split(' ').collect();
@@ -732,7 +753,9 @@ pub fn parse_npc_corporations(
         let icon_id = optional_i64(&record, "iconID");
         let race_id = optional_i64(&record, "raceID");
 
-        insert_corp.execute(rusqlite::params![id, name, ticker, deleted, icon_id, race_id])?;
+        insert_corp.execute(rusqlite::params![
+            id, name, ticker, deleted, icon_id, race_id
+        ])?;
         count += 1;
     }
     Ok(count)
@@ -1127,12 +1150,16 @@ pub fn parse_stars(
         let locked = optional_bool_with_nested_fallback(&record, "locked", "statistics");
         let radius = optional_i64_with_nested_fallback(&record, "radius", "statistics");
         let type_id = required_i64(&record, "typeID")?;
-        let star_type_id = star_state.star_type_ids.get(&type_id).copied().ok_or_else(|| {
-            BuilderError::Data(format!(
-                "star {star_id}: typeId {type_id} isn't in star_type_ids \
+        let star_type_id = star_state
+            .star_type_ids
+            .get(&type_id)
+            .copied()
+            .ok_or_else(|| {
+                BuilderError::Data(format!(
+                    "star {star_id}: typeId {type_id} isn't in star_type_ids \
                  (parse_types() didn't detect it as a star type)"
-            ))
-        })?;
+                ))
+            })?;
 
         insert_star.execute(rusqlite::params![
             star_id,
@@ -1657,7 +1684,8 @@ mod tests {
             language: "fr".to_string(),
             ..Default::default()
         };
-        let record: Value = serde_json::from_str(r#"{"name": {"en": "Jita", "de": "Jita"}}"#).unwrap();
+        let record: Value =
+            serde_json::from_str(r#"{"name": {"en": "Jita", "de": "Jita"}}"#).unwrap();
         // "fr" isn't present -> falls back to "en".
         assert_eq!(localized(&record, "name", &config), Some("Jita"));
     }
@@ -1732,23 +1760,22 @@ mod tests {
         let count = parse_npc_corporations(&connection, &dir.path, &config).unwrap();
         assert_eq!(count, 1);
 
-        let (name, ticker, deleted, icon_id, race_id): (String, String, i64, i64, i64) =
-            connection
-                .query_row(
-                    "SELECT corporationName, tickerName, deleted, iconId, raceId \
+        let (name, ticker, deleted, icon_id, race_id): (String, String, i64, i64, i64) = connection
+            .query_row(
+                "SELECT corporationName, tickerName, deleted, iconId, raceId \
                      FROM npcCorporations WHERE corporationId = 1000004",
-                    [],
-                    |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get(1)?,
-                            row.get(2)?,
-                            row.get(3)?,
-                            row.get(4)?,
-                        ))
-                    },
-                )
-                .unwrap();
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
         assert_eq!(name, "CBD Corporation");
         assert_eq!(ticker, "CBD");
         assert_eq!(deleted, 0);
@@ -2352,8 +2379,7 @@ mod tests {
     /// Fixture of two mutually-referencing stargates: gate 50000001 (in
     /// system 30000001) points to 50000002 (in 30000002), and vice
     /// versa -- the typical case in real SDE data.
-    const MUTUAL_STARGATES_JSONL: &str =
-        "{\"_key\": 50000001, \"solarSystemID\": 30000001, \"typeID\": 16, \
+    const MUTUAL_STARGATES_JSONL: &str = "{\"_key\": 50000001, \"solarSystemID\": 30000001, \"typeID\": 16, \
          \"position\": {\"x\": 1.0, \"y\": 2.0, \"z\": 3.0}, \
          \"destination\": {\"stargateID\": 50000002, \"solarSystemID\": 30000002}}\n\
          {\"_key\": 50000002, \"solarSystemID\": 30000002, \"typeID\": 16, \
@@ -2368,7 +2394,10 @@ mod tests {
         // transaction), so destinationGateId's DEFERRABLE FK still
         // gets validated immediately -- and the first gate of the pair
         // necessarily references one that doesn't exist yet.
-        let dir = TempSdeDir::new("stargates_no_tx", &[("mapStargates.jsonl", MUTUAL_STARGATES_JSONL)]);
+        let dir = TempSdeDir::new(
+            "stargates_no_tx",
+            &[("mapStargates.jsonl", MUTUAL_STARGATES_JSONL)],
+        );
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         insert_stargate_prerequisites(&connection);
@@ -2382,7 +2411,10 @@ mod tests {
 
     #[test]
     fn parse_stargates_within_transaction_inserts_mutual_reference() {
-        let dir = TempSdeDir::new("stargates_tx", &[("mapStargates.jsonl", MUTUAL_STARGATES_JSONL)]);
+        let dir = TempSdeDir::new(
+            "stargates_tx",
+            &[("mapStargates.jsonl", MUTUAL_STARGATES_JSONL)],
+        );
         let mut connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         insert_stargate_prerequisites(&connection);
@@ -2574,9 +2606,11 @@ mod tests {
         parse_stars(&connection, &dir.path, &scope, &star_state).unwrap();
 
         let locked: Option<i64> = connection
-            .query_row("SELECT locked FROM mapStars WHERE starId = 40000001", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT locked FROM mapStars WHERE starId = 40000001",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(locked, Some(1));
     }
@@ -3040,9 +3074,11 @@ mod tests {
         assert_eq!(count, 1);
 
         let (system_a, system_b): (i64, i64) = connection
-            .query_row("SELECT systemA, systemB FROM mapSystemConnections", [], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+            .query_row(
+                "SELECT systemA, systemB FROM mapSystemConnections",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .unwrap();
         // systemA < systemB, regardless of the gates' insertion order.
         assert_eq!((system_a, system_b), (30000001, 30000002));
@@ -3057,7 +3093,9 @@ mod tests {
         assert_eq!(count, 0);
 
         let total: i64 = connection
-            .query_row("SELECT COUNT(*) FROM mapSystemConnections", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM mapSystemConnections", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(total, 0);
     }
@@ -3076,7 +3114,10 @@ mod tests {
                     "{\"_key\": 6, \"categoryID\": 6, \"name\": {\"en\": \"Sun\"}, \"anchorable\": false}\n\
                      {\"_key\": 7, \"categoryID\": 6, \"name\": {\"en\": \"Frigate\"}, \"anchorable\": false}\n",
                 ),
-                ("races.jsonl", "{\"_key\": 1, \"name\": {\"en\": \"Caldari\"}}\n"),
+                (
+                    "races.jsonl",
+                    "{\"_key\": 1, \"name\": {\"en\": \"Caldari\"}}\n",
+                ),
                 (
                     "npcCorporations.jsonl",
                     "{\"_key\": 1000004, \"name\": {\"en\": \"CBD Corporation\"}, \
@@ -3217,7 +3258,10 @@ mod tests {
                     "{\"_key\": 3000, \"groupID\": 6, \"name\": {\"en\": \"Yellow G5 (ffcc00)\"}, \
                      \"iconID\": 100, \"published\": true, \"volume\": 0.0}\n",
                 ),
-                ("races.jsonl", "{\"_key\": 1, \"name\": {\"en\": \"Caldari\"}}\n"),
+                (
+                    "races.jsonl",
+                    "{\"_key\": 1, \"name\": {\"en\": \"Caldari\"}}\n",
+                ),
                 (
                     "npcCorporations.jsonl",
                     "{\"_key\": 1000004, \"name\": {\"en\": \"CBD Corporation\"}, \

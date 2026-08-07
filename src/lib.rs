@@ -183,7 +183,8 @@ impl<'a> SdeManager<'a> {
         query += "MAX(reg.max_x) AS region_max_x, MAX(reg.max_y) AS region_max_y, ";
         query += "MIN(reg.min_x) AS region_min_x, MIN(reg.min_y) AS region_min_y ";
         query += "FROM (SELECT mr.regionId, mr.regionName, ";
-        query += "mc.constellationId, MAX(mss.position2DX) AS max_x, MAX(mss.position2DY) AS max_y, ";
+        query +=
+            "mc.constellationId, MAX(mss.position2DX) AS max_x, MAX(mss.position2DY) AS max_y, ";
         query += "MIN(mss.position2DX) AS min_x, MIN(mss.position2DY) AS min_y ";
         query += "FROM mapRegions AS mr ";
         query += "INNER JOIN mapConstellations mc ON (mc.regionId = mr.regionId) ";
@@ -598,25 +599,29 @@ impl<'a> SdeManager<'a> {
             object.id = row.get(0)?;
             object.name = row.get(1)?;
             object.constellation = row.get(8)?;
-            object.real_coords.x = row.get::<_, f64>(3)? as i64; //i64
-            object.real_coords.y = row.get::<_, f64>(4)? as i64; //i64
-            object.real_coords.z = row.get::<_, f64>(5)? as i64; //i64
+            let point = MapPoint::new(
+                row.get::<_, f64>(3)?,
+                row.get::<_, f64>(4)?,
+                row.get::<_, f64>(5)?,
+            );
+            object.real_coords = point;
             // Unlike get_systempoints()/get_connections() (which filter
             // out systems without a 2D projection), the row is kept
             // as-is here: this method feeds general system data (name,
             // region, constellation, real coordinates), not just the
             // map, so a missing position2D falls back to (0.0, 0.0)
             // instead of excluding the system entirely.
-            object.projected_coords.x = row.get::<_, Option<f64>>(6)?.unwrap_or(0.0) as i64;
-            object.projected_coords.y = row.get::<_, Option<f64>>(7)?.unwrap_or(0.0) as i64;
+            let projected_point = MapPoint::new(
+                row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
+                row.get::<_, Option<f64>>(7)?.unwrap_or(0.0),
+                0.0,
+            );
+            object.projected_coords = projected_point;
 
             // Invert coordinates if needed
             if self.invert_coordinates {
-                object.real_coords.x *= -1;
-                object.real_coords.y *= -1;
-                object.real_coords.z *= -1;
-                object.projected_coords.x *= -1;
-                object.projected_coords.y *= -1;
+                object.real_coords *= -1;
+                object.projected_coords *= -1;
             }
             object.region = row.get(2)?;
             result.insert(row.get(0)?, object);
