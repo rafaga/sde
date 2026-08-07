@@ -1,0 +1,188 @@
+# Entity-Relationship Diagram
+
+Generated from `src/builder/schema.sql` (19 tables, the static schema
+that's always present), plus the tables/columns `builder::dotlan` adds
+at runtime rather than declaring statically (see the note below the
+diagram). Attribute lists are trimmed to primary/foreign keys plus one
+identifying name field per table, for readability — see `schema.sql`
+and `builder/dotlan.rs` for the full column list, types, and
+constraints.
+
+```mermaid
+erDiagram
+    invCategories {
+        int categoryId PK
+        string categoryName
+    }
+    invGroups {
+        int groupId PK
+        string groupName
+        int categoryId FK
+    }
+    invTypes {
+        int typeId PK
+        string typeName
+        int groupId FK
+    }
+    races {
+        int raceId PK
+        string raceName
+    }
+    npcCorporations {
+        int corporationId PK
+        string corporationName
+        int raceId FK
+    }
+    factions {
+        int factionId PK
+        string factionName
+        int corporationId FK
+    }
+    factionRace {
+        int factionId PK_FK
+        int raceId PK_FK
+    }
+    mapRegions {
+        int regionId PK
+        string regionName
+        int factionId FK
+    }
+    mapConstellations {
+        int constellationId PK
+        string constellationName
+        int regionId FK
+    }
+    mapSolarSystems {
+        int solarSystemId PK
+        string solarSystemName
+        int constellationId FK
+        int iceBelt
+        int trigStatusID FK
+        int joveObservatory
+        int specialOreAnom
+    }
+    factionSolarSystem {
+        int solarSystemId PK_FK
+        int factionId PK_FK
+    }
+    mapSystemGates {
+        int systemGateId PK
+        int solarSystemId PK_FK
+        int destinationGateId FK
+        int destinationSystemId FK
+        int typeId FK
+    }
+    mapSystemConnections {
+        int systemA PK_FK
+        int systemB PK_FK
+    }
+    mapPlanets {
+        int planetId PK
+        int solarSystemId FK
+        int typeId FK
+    }
+    typeStar {
+        int starTypeId PK
+        int typeId FK
+        string name
+    }
+    mapStars {
+        int starId PK
+        int solarSystemId FK
+        int starTypeId FK
+    }
+    mapMoons {
+        int moonId
+        int solarSystemId PK_FK
+        int planetId FK
+        int typeId FK
+    }
+    staStation {
+        int stationId PK
+        string stationName
+        int solarSystemId FK
+    }
+    staCorporations {
+        int solarSystemId PK_FK
+        int corporationId PK_FK
+    }
+
+    %% -- Everything below this line is dynamic DDL, added at runtime by
+    %% -- builder::dotlan (not part of schema.sql) -- see the note below.
+    mapAbstractSystems {
+        int solarSystemId PK_FK
+        int regionId PK_FK
+    }
+    mapTriglavianStatus {
+        int trigStatusId PK
+        string trigStatusName
+    }
+
+    invCategories ||--|{ invGroups : ""
+    invGroups ||--o{ invTypes : ""
+    races ||--o{ npcCorporations : ""
+    npcCorporations ||--o{ factions : ""
+    factions ||--|{ factionRace : ""
+    races ||--|{ factionRace : ""
+    factions ||--o{ mapRegions : ""
+    mapRegions ||--|{ mapConstellations : ""
+    mapConstellations ||--o{ mapSolarSystems : ""
+    mapSolarSystems ||--|{ factionSolarSystem : ""
+    factions ||--|{ factionSolarSystem : ""
+    mapSolarSystems ||--|{ mapSystemGates : "origin"
+    mapSolarSystems ||--|{ mapSystemGates : "destination"
+    mapSystemGates ||--|{ mapSystemGates : "leads to"
+    invTypes ||--|{ mapSystemGates : ""
+    mapSolarSystems ||--|{ mapSystemConnections : "systemA"
+    mapSolarSystems ||--|{ mapSystemConnections : "systemB"
+    mapSolarSystems ||--o{ mapPlanets : ""
+    invTypes ||--|{ mapPlanets : ""
+    invTypes ||--|{ typeStar : ""
+    mapSolarSystems ||--o{ mapStars : ""
+    typeStar ||--|{ mapStars : ""
+    mapSolarSystems ||--o{ mapMoons : ""
+    mapPlanets ||--o{ mapMoons : ""
+    invTypes ||--o{ mapMoons : ""
+    mapSolarSystems ||--o{ staStation : ""
+    mapSolarSystems ||--|{ staCorporations : ""
+    npcCorporations ||--|{ staCorporations : ""
+    mapSolarSystems ||--|{ mapAbstractSystems : ""
+    mapRegions ||--|{ mapAbstractSystems : ""
+    mapTriglavianStatus ||--o{ mapSolarSystems : ""
+```
+
+## Reading the diagram
+
+- `||--|{` — the referenced row is required (`NOT NULL` foreign key).
+- `||--o{` — the reference is optional (nullable foreign key).
+- `factionRace`, `factionSolarSystem`, and `staCorporations` are pure
+  join tables (composite primary key, no columns of their own).
+- `mapSystemGates` has two separate foreign keys into
+  `mapSolarSystems` (`solarSystemId`, `destinationSystemId`) plus a
+  self-reference (`destinationGateId`, the paired gate on the other
+  end of the connection) — shown as three separate relationship lines.
+
+### Static vs. dynamic
+
+Everything above the `%%` comment inside the diagram comes from
+`schema.sql` and is always present. `mapAbstractSystems`,
+`mapTriglavianStatus`, and the four extra `mapSolarSystems` columns
+(`iceBelt`, `trigStatusID`, `joveObservatory`, `specialOreAnom`) are
+different: they don't exist in `schema.sql` at all. `builder::dotlan`
+adds each of them at runtime (`CREATE TABLE`/`ALTER TABLE`), and,
+except for `mapAbstractSystems`, each is gated by its own config flag
+— a database built with a given flag off simply doesn't have that
+table/column, rather than having it sit there empty. This is why
+they're kept out of the static schema in the first place: this data
+comes from outside CCP's official SDE, and folding it into the
+canonical schema would blur that line.
+
+| Addition | Always added? |
+|---|---|
+| `mapAbstractSystems` | Yes, unconditionally |
+| `iceBelt` (on `mapSolarSystems`) | Only if `with_icebelts` |
+| `mapTriglavianStatus` + `trigStatusID` | Only if `with_triglavian_status` |
+| `joveObservatory` (on `mapSolarSystems`) | Only if `with_jove_observatories` |
+| `specialOreAnom` (on `mapSolarSystems`) | Only if `with_special_ore` |
+- `mapSystemConnections` likewise has two foreign keys into
+  `mapSolarSystems` (`systemA`, `systemB`).

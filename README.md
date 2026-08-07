@@ -40,8 +40,7 @@ already provided.
 ## Usage
 
 ```toml
-[dependencies]
-sde = "0.0.19"
+cargo add sde
 ```
 
 Read an existing `sde.db`:
