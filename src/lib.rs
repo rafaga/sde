@@ -7,7 +7,7 @@
 //!
 //!
 use crate::objects::{
-    Constellation, MapPoint, MapSegment, Moon, Planet, Region, SdePoint, SolarSystem, Universe,
+    Constellation, MapPoint, MapSegment, Moon, Planet, Region, SolarSystem, Universe,
 };
 use kdtree::KdTree;
 use objects::EveRegionArea;
@@ -117,10 +117,10 @@ impl<'a> SdeManager<'a> {
 
     /// Function to get all the K-Space solar systems coordinates from the SDE including data to build a map
     /// and search for basic stuff
-    pub fn get_systempoints(&self) -> Result<KdTree<f32, MapPoint, [f32; 2]>, Error> {
+    pub fn get_systempoints(&self) -> Result<KdTree<f64, MapPoint, [f64; 3]>, Error> {
         let connection = self.get_standart_connection()?;
 
-        let mut tree = KdTree::new(2);
+        let mut tree = KdTree::new(3);
         // centerX, centerY, centerZ,
         let mut query = String::from(
             "SELECT sos.SolarSystemId, sos.position2DX, sos.position2DY, sos.SolarSystemName, msc.systemA, msc.systemB ",
@@ -140,9 +140,9 @@ impl<'a> SdeManager<'a> {
         let mut rows = statement.query(params![30000000, 30999999])?;
         let mut last_id = isize::MIN;
         let mut point = MapPoint {
-            id: 0,
-            name: String::new(),
-            coords: [0.0, 0.0],
+            id: None,
+            name: None,
+            coords: [0.0, 0.0, 0.0],
             connections: Vec::new(),
         };
         while let Some(row) = rows.next()? {
@@ -157,11 +157,11 @@ impl<'a> SdeManager<'a> {
                 let y = row.get::<usize, f32>(2)?;
 
                 //we get the coordinate point and multiply with the adjust factor
-                let coords = self.scale_coords([x, y], self.invert_coordinates);
+                let [x, y] = self.scale_coords([x, y], self.invert_coordinates);
                 point = MapPoint {
-                    id: id.try_into().unwrap(),
-                    name: row.get::<usize, String>(3)?,
-                    coords,
+                    id: Some(id.try_into().unwrap()),
+                    name: Some(row.get::<usize, String>(3)?),
+                    coords: [x as f64, y as f64, 0.0],
                     connections: Vec::new(),
                 };
             }
@@ -210,16 +210,16 @@ impl<'a> SdeManager<'a> {
             // FromSql impl does NOT coerce a SQLite REAL into an integer,
             // so this has to be read as f64 first and cast explicitly.
             //
-            // EveRegionArea.max/min stay `SdePoint` (3D) for API
+            // EveRegionArea.max/min stay `MapPoint` (3D) for API
             // stability, but the region bounding box is now 2D (there's
             // no third component to report anymore) -- the Z component is
             // just always 0.
-            region.max = SdePoint::from([
+            region.max = MapPoint::from([
                 row.get::<usize, f64>(2)? as i64,
                 row.get::<usize, f64>(3)? as i64,
                 0,
             ]);
-            region.min = SdePoint::from([
+            region.min = MapPoint::from([
                 row.get::<usize, f64>(4)? as i64,
                 row.get::<usize, f64>(5)? as i64,
                 0,
@@ -227,8 +227,8 @@ impl<'a> SdeManager<'a> {
             // we invert the coordinates and swap the min with the max
             if self.invert_coordinates {
                 std::mem::swap(&mut region.max, &mut region.min);
-                region.min *= -1;
-                region.max *= -1;
+                region.min *= -1i64;
+                region.max *= -1i64;
             }
             areas.push(region);
         }
@@ -260,11 +260,11 @@ impl<'a> SdeManager<'a> {
         Ok(results)
     }
 
-    pub fn get_system_coords(&self, id_node: usize) -> Result<Option<SdePoint>, Error> {
+    pub fn get_system_coords(&self, id_node: usize) -> Result<Option<MapPoint>, Error> {
         let connection = self.get_standart_connection()?;
 
         // projX/Y/Z no longer exist (see the note in get_systempoints());
-        // this function returns a genuinely 3D SdePoint (unlike
+        // this function returns a genuinely 3D MapPoint (unlike
         // get_systempoints()/get_connections(), which only need 2
         // components), so it's migrated to centerX/Y/Z -- the system's
         // real 3D coordinates, always `NOT NULL` in the schema, without
@@ -276,7 +276,7 @@ impl<'a> SdeManager<'a> {
         let system_like_name = id_node.to_string();
         let mut rows = statement.query(params![system_like_name])?;
         if let Some(row) = rows.next()? {
-            let mut coord = SdePoint::from([
+            let mut coord = MapPoint::from([
                 row.get::<usize, f32>(0)?,
                 row.get::<usize, f32>(1)?,
                 row.get::<usize, f32>(2)?,
@@ -287,7 +287,7 @@ impl<'a> SdeManager<'a> {
                 coord *= self.factor.abs();
             }
             if self.invert_coordinates {
-                coord *= -1;
+                coord *= -1i64;
             }
             return Ok(Some(coord));
         }
@@ -333,7 +333,7 @@ impl<'a> SdeManager<'a> {
     pub fn get_abstract_systems(
         &self,
         regions: Vec<u32>,
-    ) -> Result<KdTree<f32, MapPoint, [f32; 2]>, Error> {
+    ) -> Result<KdTree<f64, MapPoint, [f64; 3]>, Error> {
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT mas.solarSystemId, mas.x, mas.y, mas.regionId, ");
@@ -348,7 +348,7 @@ impl<'a> SdeManager<'a> {
 
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows;
-        let mut tree = KdTree::new(2);
+        let mut tree = KdTree::new(3);
 
         if regions.is_empty() {
             rows = statement.query([])?;
@@ -364,9 +364,9 @@ impl<'a> SdeManager<'a> {
 
         let mut current_index = isize::MIN;
         let mut point = MapPoint {
-            id: 0,
-            name: String::new(),
-            coords: [0.0, 0.0],
+            id: None,
+            name: None,
+            coords: [0.0, 0.0, 0.0],
             connections: Vec::new(),
         };
         while let Some(row) = rows.next()? {
@@ -380,14 +380,14 @@ impl<'a> SdeManager<'a> {
                 // get_abstract_systems doesn't invert coordinates -- that
                 // was also the case before this migration (unlike
                 // get_systempoints/get_connections, which do).
-                let coords = self.scale_coords(
+                let [x, y] = self.scale_coords(
                     [row.get::<usize, f32>(1)?, row.get::<usize, f32>(2)?],
                     false,
                 );
                 point = MapPoint {
-                    id: id.try_into().unwrap(),
-                    name: row.get::<usize, String>(6)?,
-                    coords,
+                    id: Some(id.try_into().unwrap()),
+                    name: Some(row.get::<usize, String>(6)?),
+                    coords: [x as f64, y as f64, 0.0],
                     connections: Vec::new(),
                 };
             }

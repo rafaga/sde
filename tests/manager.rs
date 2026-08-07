@@ -11,7 +11,7 @@
 
 use rusqlite::Connection;
 use sde::SdeManager;
-use sde::objects::{SdePoint, map_points_to_vec};
+use sde::objects::{MapPoint, map_points_to_vec};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -127,7 +127,7 @@ fn systempoints_returns_only_k_space_systems() {
     // W-Sys (31000001) is outside the K-Space id range and must be excluded
     assert_eq!(tree.size(), 3);
     let points = map_points_to_vec(&tree);
-    assert!(points.iter().find(|&y| y.id == 31000001usize).is_none());
+    assert!(points.iter().find(|&y| y.id == Some(31000001usize)).is_none());
 }
 
 #[test]
@@ -136,16 +136,16 @@ fn systempoints_applies_factor_and_coordinate_inversion() {
     let manager = fixture.manager();
     let tree = manager.get_systempoints().unwrap();
     let points = map_points_to_vec(&tree);
-    let result = points.iter().find(|point| point.id == 30000001usize);
+    let result = points.iter().find(|point| point.id == Some(30000001usize));
     assert!(result.is_some());
-    assert_eq!(result.unwrap().name, String::from("Sys One"));
+    assert_eq!(result.unwrap().name, Some(String::from("Sys One")));
     // (1000, 2000, 3000) / 100 = (10, 20, 30), inverted -> (-10, -20, -30)
-    // coords holds (position2DX, position2DY)
-    assert_eq!(result.unwrap().coords, [-10.0, -30.0]);
+    // coords holds (position2DX, position2DY, 0.0)
+    assert_eq!(result.unwrap().coords, [-10.0, -30.0, 0.0]);
 
-    let result = points.iter().find(|point| point.id == 30000002usize);
+    let result = points.iter().find(|point| point.id == Some(30000002usize));
     assert!(result.is_some());
-    assert_eq!(result.unwrap().coords, [10.0, 30.0]);
+    assert_eq!(result.unwrap().coords, [10.0, 30.0, 0.0]);
 }
 
 #[test]
@@ -155,9 +155,9 @@ fn systempoints_without_inversion_keeps_original_sign() {
     manager.invert_coordinates = false;
     let tree = manager.get_systempoints().unwrap();
     let points = map_points_to_vec(&tree);
-    let result = points.iter().find(|point| point.id == 30000001usize);
+    let result = points.iter().find(|point| point.id == Some(30000001usize));
     assert!(result.is_some());
-    assert_eq!(result.unwrap().coords, [10.0, 30.0]);
+    assert_eq!(result.unwrap().coords, [10.0, 30.0, 0.0]);
 }
 
 #[test]
@@ -168,9 +168,9 @@ fn systempoints_with_negative_factor_multiplies() {
     let tree = manager.get_systempoints().unwrap();
     let points = map_points_to_vec(&tree);
     // (1000 * 100) inverted -> -100000
-    let result = points.iter().find(|point| point.id == 30000001usize);
+    let result = points.iter().find(|point| point.id == Some(30000001usize));
     assert!(result.is_some());
-    assert_eq!(result.unwrap().coords, [-100000.0, -300000.0]);
+    assert_eq!(result.unwrap().coords, [-100000.0, -300000.0, 0.0]);
 }
 
 #[test]
@@ -180,13 +180,13 @@ fn system_connections_are_added_bidirectionally() {
     let tree = manager.get_systempoints().unwrap();
     assert_eq!(tree.size(), 3);
     let points = map_points_to_vec(&tree);
-    let result = points.iter().find(|point| point.id == 30000001usize);
+    let result = points.iter().find(|point| point.id == Some(30000001usize));
     assert!(result.is_some());
     assert_eq!(result.unwrap().connections.len(), 1);
-    let result = points.iter().find(|point| point.id == 30000002usize);
+    let result = points.iter().find(|point| point.id == Some(30000002usize));
     assert!(result.is_some());
     assert_eq!(result.unwrap().connections.len(), 2);
-    let result = points.iter().find(|point| point.id == 30000003usize);
+    let result = points.iter().find(|point| point.id == Some(30000003usize));
     assert!(result.is_some());
     let connection = result
         .unwrap()
@@ -345,7 +345,7 @@ fn system_coords_applies_factor_and_inversion() {
     let manager = fixture.manager();
 
     let coords = manager.get_system_coords(30000001).unwrap();
-    assert_eq!(coords, Some(SdePoint::new(-10, -20, -30)));
+    assert_eq!(coords, Some(MapPoint::new(-10.0, -20.0, -30.0)));
 }
 
 #[test]
@@ -426,15 +426,15 @@ fn abstract_systems_without_filter_returns_all() {
     assert_eq!(tree.size(), 3);
     let points = map_points_to_vec(&tree);
     // coordinates are divided by the factor (no inversion on the abstract map)
-    let result = points.iter().find(|point| point.id == 30000001usize);
+    let result = points.iter().find(|point| point.id == Some(30000001usize));
     assert!(result.is_some());
-    assert_eq!(result.unwrap().coords, [0.1, 0.2]);
-    let result = points.iter().find(|point| point.id == 30000002usize);
+    assert_eq!(result.unwrap().coords, [0.1, 0.2, 0.0]);
+    let result = points.iter().find(|point| point.id == Some(30000002usize));
     assert!(result.is_some());
-    assert_eq!(result.unwrap().coords, [0.3, 0.4]);
-    let result = points.iter().find(|point| point.id == 30000003usize);
+    assert_eq!(result.unwrap().coords, [0.3, 0.4, 0.0]);
+    let result = points.iter().find(|point| point.id == Some(30000003usize));
     assert!(result.is_some());
-    assert_eq!(result.unwrap().coords, [0.5, 0.6]);
+    assert_eq!(result.unwrap().coords, [0.5, 0.6, 0.0]);
 }
 
 #[test]
@@ -445,14 +445,14 @@ fn abstract_systems_filtered_by_region() {
     let tree = manager.get_abstract_systems(vec![10000001]).unwrap();
     assert_eq!(tree.size(), 2);
     let points = map_points_to_vec(&tree);
-    let result = points.iter().find(|point| point.id == 30000001usize);
+    let result = points.iter().find(|point| point.id == Some(30000001usize));
     assert!(result.is_some());
-    let result = points.iter().find(|point| point.id == 30000002usize);
+    let result = points.iter().find(|point| point.id == Some(30000002usize));
     assert!(result.is_some());
     let tree = manager.get_abstract_systems(vec![10000002]).unwrap();
     assert_eq!(tree.size(), 1);
     let points = map_points_to_vec(&tree);
-    let result = points.iter().find(|point| point.id == 30000003usize);
+    let result = points.iter().find(|point| point.id == Some(30000003usize));
     assert!(result.is_some());
 }
 
@@ -463,14 +463,14 @@ fn abstract_system_connections_fill_names_and_connections() {
     let tree = manager.get_abstract_systems(vec![]).unwrap();
     let points = map_points_to_vec(&tree);
 
-    let result = points.iter().find(|point| point.id == 30000001usize);
+    let result = points.iter().find(|point| point.id == Some(30000001usize));
     assert!(result.is_some());
-    assert_eq!(result.unwrap().name, String::from("Sys One"));
+    assert_eq!(result.unwrap().name, Some(String::from("Sys One")));
     assert_eq!(result.unwrap().connections.len(), 1);
-    let result = points.iter().find(|point| point.id == 30000002usize);
+    let result = points.iter().find(|point| point.id == Some(30000002usize));
     assert!(result.is_some());
     assert_eq!(result.unwrap().connections.len(), 2);
-    let result = points.iter().find(|point| point.id == 30000003usize);
+    let result = points.iter().find(|point| point.id == Some(30000003usize));
     assert!(result.is_some());
     assert_eq!(result.unwrap().connections.len(), 1);
 }
@@ -484,12 +484,12 @@ fn abstract_system_connections_respect_region_filter() {
     assert_eq!(tree.size(), 2);
     let points = map_points_to_vec(&tree);
     // Only abstract systems inside Region Alpha are updated
-    let result = points.iter().find(|point| point.id == 30000001usize);
+    let result = points.iter().find(|point| point.id == Some(30000001usize));
     assert!(result.is_some());
-    assert_eq!(result.unwrap().name, "Sys One");
-    let result = points.iter().find(|point| point.id == 30000002usize);
+    assert_eq!(result.unwrap().name, Some(String::from("Sys One")));
+    let result = points.iter().find(|point| point.id == Some(30000002usize));
     assert!(result.is_some());
-    assert_eq!(result.unwrap().name, "Sys Two");
+    assert_eq!(result.unwrap().name, Some(String::from("Sys Two")));
 }
 
 #[test]
@@ -554,14 +554,14 @@ fn region_coordinates_returns_bounding_box_per_region() {
     // (-1000,-3000); coordinate inversion (swap + negate) maps this
     // symmetric bounding box back onto itself. Z is always 0 -- the
     // bounding box has been 2D since the migration from projX/Y/Z to position2DX/Y.
-    assert_eq!(alpha.max, SdePoint::new(1000, 3000, 0));
-    assert_eq!(alpha.min, SdePoint::new(-1000, -3000, 0));
+    assert_eq!(alpha.max, MapPoint::new(1000.0, 3000.0, 0.0));
+    assert_eq!(alpha.min, MapPoint::new(-1000.0, -3000.0, 0.0));
 
     let beta = &areas[1];
     assert_eq!(beta.region_id, 10000002);
     assert_eq!(beta.name, "Region Beta");
     // Region Beta's fixture systems are position2D (5000,5000) and
     // (9000,9000); after inversion new_max = -old_min, new_min = -old_max.
-    assert_eq!(beta.max, SdePoint::new(-5000, -5000, 0));
-    assert_eq!(beta.min, SdePoint::new(-9000, -9000, 0));
+    assert_eq!(beta.max, MapPoint::new(-5000.0, -5000.0, 0.0));
+    assert_eq!(beta.min, MapPoint::new(-9000.0, -9000.0, 0.0));
 }

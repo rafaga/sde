@@ -245,22 +245,12 @@ impl Default for ParserConfig {
     }
 }
 
-/// Axis that gets "collapsed" (dropped) when computing a 2D isometric
-/// projection of a 3D point -- equivalent to Python's integer
-/// `projected_axis` parameter (`0` for X, `1` for Y, `2` for Z).
-///
-/// In Python's formula, the collapsed axis's component always ends up
-/// `0.0` in the 3-element output tuple; since that value never carries
-/// any information, [`isometric_projection_2d`] omits it directly and
-/// returns just the two remaining components.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ProjectedAxis {
-    X,
-    /// Default -- matches `SdeConfig.projected_axis = 1` in Python.
-    #[default]
-    Y,
-    Z,
-}
+/// Axis choice used by [`crate::objects::MapPoint::to_2d`] and
+/// [`isometric_projection_2d`] -- moved to `crate::objects` (core, not
+/// gated by the `builder` feature) since `MapPoint` needs it too, on
+/// the read side. Re-exported here so existing `parser::ProjectedAxis`
+/// references throughout this module keep working unchanged.
+pub use crate::objects::ProjectedAxis;
 
 /// 2D isometric projection of a 3D point, collapsing `axis`. Exact port
 /// of `calculate_isometric_projection()` in Python (same formulas, same
