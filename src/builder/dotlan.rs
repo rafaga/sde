@@ -664,7 +664,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        // "The_Forge.svg" -> region "The Forge" -> regionId 10000002 (del fixture).
+        // "The_Forge.svg" -> region "The Forge" -> regionId 10000002 (from the fixture).
         assert_eq!(region_id, 10000002);
         assert_eq!((x, y), (12.5, -7.25));
     }
@@ -677,7 +677,7 @@ mod tests {
         create_icebelts(&connection).unwrap();
 
         let path = write_temp_svg("icebelt_disabled", "The_Forge.svg", SAMPLE_SVG);
-        // with_icebelts=false (default): el rect se parsea pero NO se escribe.
+        // with_icebelts=false (default): the rect gets parsed but NOT written.
         let config = DotlanConfig::default();
         extract_map_data(&connection, &path, &config).unwrap();
         let ice_belt: i64 = connection
@@ -687,7 +687,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(ice_belt, 0, "with_icebelts=false no deberia escribir nada");
+        assert_eq!(ice_belt, 0, "with_icebelts=false shouldn't write anything");
 
         let config_enabled = DotlanConfig { with_icebelts: true, ..config };
         extract_map_data(&connection, &path, &config_enabled).unwrap();
@@ -698,7 +698,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(ice_belt, 1, "with_icebelts=true si deberia marcarlo");
+        assert_eq!(ice_belt, 1, "with_icebelts=true should mark it");
     }
 
     #[test]
@@ -709,8 +709,8 @@ mod tests {
 
         let svg = concat!(
             "<svg xmlns=\"http://www.w3.org/2000/svg\">",
-            "<use id=\"sys30000001\" x=\"1.0\"/>", // falta y
-            "<use x=\"1.0\" y=\"2.0\"/>",           // falta id
+            "<use id=\"sys30000001\" x=\"1.0\"/>", // missing y
+            "<use x=\"1.0\" y=\"2.0\"/>",           // missing id
             "</svg>",
         );
         let path = write_temp_svg("incomplete_use", "The_Forge.svg", svg);
@@ -726,11 +726,11 @@ mod tests {
 
     #[test]
     fn extract_map_data_handles_real_dotlan_excerpt() {
-        // Extracto textual EXACTO de un mapa real de dotlan (Derelik.svg,
-        // agosto 2026) -- no sintetizado a mano: el rect de leyenda sin
-        // `id`, dos rects de icebelt reales (prefijo `ice`), y dos `<use>`
-        // reales (prefijo `sys`), tal como aparecen en el archivo
-        // original.
+        // EXACT textual excerpt from a real dotlan map (Derelik.svg,
+        // August 2026) -- not hand-synthesized: the legend rect
+        // without an `id`, two real icebelt rects (`ice` prefix), and
+        // two real `<use>` elements (`sys` prefix), just as they
+        // appear in the original file.
         let svg = concat!(
             "<svg version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" ",
             "xmlns:xlink=\"http://www.w3.org/1999/xlink\">",
@@ -777,8 +777,8 @@ mod tests {
         let ok = extract_map_data(&connection, &path, &config).unwrap();
         assert!(ok);
 
-        // El rect de leyenda (sin id) no debe generar ningun UPDATE de mas
-        // -- solo los dos con id real quedan marcados.
+        // The legend rect (without an id) shouldn't generate any extra UPDATE
+        // -- only the two with a real id end up marked.
         let ice_count: i64 = connection
             .query_row("SELECT COUNT(*) FROM mapSolarSystems WHERE iceBelt = 1", [], |row| row.get(0))
             .unwrap();
@@ -884,7 +884,7 @@ mod tests {
             .unwrap();
         assert_eq!(total, 1);
 
-        // El manifiesto debe haberse guardado con el fingerprint nuevo.
+        // The manifest should have been saved with the new fingerprint.
         let manifest = manifest::load(&sde_dir.join("maps"));
         assert!(manifest.contains_key("Test Region"));
         assert_eq!(manifest["Test Region"].etag.as_deref(), Some("\"v1\""));
@@ -913,7 +913,7 @@ mod tests {
         std::fs::create_dir_all(&maps_dir).unwrap();
         std::fs::write(maps_dir.join("Test_Region.svg"), SAMPLE_SVG).unwrap();
 
-        // Manifiesto pre-poblado con el MISMO fingerprint que devuelve el HEAD.
+        // Manifest pre-populated with the SAME fingerprint the HEAD returns.
         let mut manifest: Manifest = Manifest::new();
         manifest.insert(
             "Test Region".to_string(),
@@ -931,12 +931,12 @@ mod tests {
             .await
             .unwrap();
 
-        // El archivo local (ya existente) igual se parseo -- sin descarga.
+        // The local (already existing) file still gets parsed -- no download.
         let total: i64 = connection
             .query_row("SELECT COUNT(*) FROM mapAbstractSystems", [], |row| row.get(0))
             .unwrap();
         assert_eq!(total, 1);
-        // wiremock verifica el .expect(0) del GET al hacer drop del server.
+        // wiremock verifies the GET's .expect(0) when the server drops.
     }
 
     #[tokio::test]
@@ -948,14 +948,14 @@ mod tests {
             .respond_with(wiremock::ResponseTemplate::new(200).insert_header("ETag", "\"v1\""))
             .mount(&server)
             .await;
-        // Primer GET: cuerpo invalido (<=100 bytes) -- fuerza reintento.
+        // First GET: invalid body (<=100 bytes) -- forces a retry.
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .and(wiremock::matchers::path("/Test_Region.svg"))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("x"))
             .up_to_n_times(1)
             .mount(&server)
             .await;
-        // Segundo GET en adelante: contenido valido.
+        // From the second GET onward: valid content.
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .and(wiremock::matchers::path("/Test_Region.svg"))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(SAMPLE_SVG))
@@ -974,7 +974,7 @@ mod tests {
         let total: i64 = connection
             .query_row("SELECT COUNT(*) FROM mapAbstractSystems", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(total, 1, "debe terminar exitoso tras reintentar la descarga");
+        assert_eq!(total, 1, "should succeed after retrying the download");
     }
 
     #[test]
@@ -982,7 +982,7 @@ mod tests {
         let names: Vec<&str> = JOVE_OBSERVATORY_SYSTEMS.lines().filter(|l| !l.trim().is_empty()).collect();
         assert_eq!(names.len(), 1029);
         let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
-        assert_eq!(unique.len(), 1029, "no deberian quedar duplicados tras la deduplicacion");
+        assert_eq!(unique.len(), 1029, "no duplicates should remain after deduplication");
     }
 
     #[test]
@@ -1052,7 +1052,7 @@ mod tests {
             .unwrap();
         assert_eq!(status_count, 5);
 
-        // 30003088 esta en EDENCOM_MINOR_VICTORY -> trigStatusID=1.
+        // 30003088 is in EDENCOM_MINOR_VICTORY -> trigStatusID=1.
         let marked: Option<i64> = connection
             .query_row(
                 "SELECT trigStatusID FROM mapSolarSystems WHERE solarSystemId = 30003088",
@@ -1062,7 +1062,7 @@ mod tests {
             .unwrap();
         assert_eq!(marked, Some(1));
 
-        // 30000001 no esta en ninguna lista -> NULL (no 0).
+        // 30000001 isn't in any list -> NULL (not 0).
         let unmarked: Option<i64> = connection
             .query_row(
                 "SELECT trigStatusID FROM mapSolarSystems WHERE solarSystemId = 30000001",
@@ -1094,7 +1094,7 @@ mod tests {
 
         setup_jove_observatories(&connection).unwrap();
 
-        // "0-4VQL" (30000001) esta en la lista real.
+        // "0-4VQL" (30000001) is in the real list.
         let marked: i64 = connection
             .query_row(
                 "SELECT joveObservatory FROM mapSolarSystems WHERE solarSystemId = 30000001",
@@ -1104,7 +1104,7 @@ mod tests {
             .unwrap();
         assert_eq!(marked, 1);
 
-        // "Sys Edencom" (30003088) no esta en la lista.
+        // "Sys Edencom" (30003088) is not in the list.
         let unmarked: i64 = connection
             .query_row(
                 "SELECT joveObservatory FROM mapSolarSystems WHERE solarSystemId = 30003088",
@@ -1198,7 +1198,7 @@ mod tests {
             .unwrap();
         assert_eq!(abstract_exists, 1);
 
-        // Ninguna de las 4 columnas opcionales debe existir.
+        // None of the 4 optional columns should exist.
         let columns: Vec<String> = connection
             .prepare("SELECT name FROM pragma_table_info('mapSolarSystems')")
             .unwrap()
@@ -1209,7 +1209,7 @@ mod tests {
         for optional in ["iceBelt", "trigStatusID", "joveObservatory", "specialOreAnom"] {
             assert!(
                 !columns.iter().any(|c| c == optional),
-                "{optional} no deberia existir con todos los flags en false"
+                "{optional} shouldn't exist with every flag set to false"
             );
         }
     }
@@ -1235,7 +1235,7 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         for expected in ["iceBelt", "trigStatusID", "joveObservatory", "specialOreAnom"] {
-            assert!(columns.iter().any(|c| c == expected), "falta la columna {expected}");
+            assert!(columns.iter().any(|c| c == expected), "missing column {expected}");
         }
     }
 }

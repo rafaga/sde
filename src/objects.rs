@@ -79,7 +79,7 @@ pub struct MapSegment {
 /// an empty list.
 pub fn map_points_to_vec(tree: &KdTree<f32, MapPoint, [f32; 2]>) -> Vec<&MapPoint> {
     tree.bounding_box(&[f32::MIN, f32::MIN], &[f32::MAX, f32::MAX])
-        .expect("bounding_box con limites f32::MIN/f32::MAX no deberia fallar nunca (2 dimensiones fijas, limites siempre finitos)")
+        .expect("bounding_box with f32::MIN/f32::MAX bounds should never fail (2 fixed dimensions, always-finite bounds)")
 }
 
 #[derive(Hash, PartialEq, Eq, Clone, Debug)]

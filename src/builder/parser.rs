@@ -1601,7 +1601,7 @@ mod tests {
         let types = parse_types(&connection, &dir.path, &config, &mut state).unwrap();
         assert_eq!(types, 2);
 
-        // El tipo del grupo "Sun" debe haber generado una fila en typeStar.
+        // The "Sun"-group type should have generated a row in typeStar.
         assert_eq!(state.star_type_ids.len(), 1);
         let star_type_id = state.star_type_ids[&3000];
         let (name, color): (String, String) = connection
@@ -1614,7 +1614,7 @@ mod tests {
         assert_eq!(name, "G5");
         assert_eq!(color, "ffcc00");
 
-        // "Rifter" (grupo Frigate, no Sun) no debe generar fila en typeStar.
+        // "Rifter" (Frigate group, not Sun) shouldn't generate a row in typeStar.
         let total_star_types: i64 = connection
             .query_row("SELECT COUNT(*) FROM typeStar", [], |row| row.get(0))
             .unwrap();
@@ -1768,8 +1768,8 @@ mod tests {
 
     #[test]
     fn parse_npc_corporations_missing_ticker_errors() {
-        // tickerName es TEXT NOT NULL y se accede como campo requerido
-        // (equivalente a corporation['tickerName'] en Python).
+        // tickerName is TEXT NOT NULL and is accessed as a required field
+        // (equivalent to corporation['tickerName'] in Python).
         let dir = TempSdeDir::new(
             "npc_corp_missing_ticker",
             &[(
@@ -1798,8 +1798,8 @@ mod tests {
         );
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
-        // Prerrequisitos de FK: races(1) para factionRace, npcCorporations(1000004)
-        // para factions.corporationId.
+        // FK prerequisites: races(1) for factionRace, npcCorporations(1000004)
+        // for factions.corporationId.
         connection
             .execute(
                 "INSERT INTO races (raceId, raceName) VALUES (1, 'Caldari')",
@@ -1902,8 +1902,8 @@ mod tests {
 
     #[test]
     fn parse_factions_missing_size_factor_errors() {
-        // sizeFactor es REAL NOT NULL y se accede como campo requerido
-        // (equivalente a faction['sizeFactor'] en Python).
+        // sizeFactor is REAL NOT NULL and is accessed as a required field
+        // (equivalent to faction['sizeFactor'] in Python).
         let dir = TempSdeDir::new(
             "factions_missing_size_factor",
             &[(
@@ -2048,7 +2048,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        // Sin `constellationID` en el registro, cae a `_key` (20000020).
+        // No `constellationID` on the record, falls back to `_key` (20000020).
         assert_eq!(id, 20000020);
         assert_eq!(name, "Kimotoro");
         assert_eq!(region_id, 10000002);
@@ -2083,7 +2083,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        // constellationID (20000020) gana sobre _key (999).
+        // constellationID (20000020) wins over _key (999).
         assert_eq!(id, 20000020);
     }
 
@@ -2216,8 +2216,8 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        // Forzado: debe ser el calculado (-300, -250), NO el (12.5, -7.25)
-        // que trae el registro.
+        // Forced: should be the computed value (-300, -250), NOT the
+        // (12.5, -7.25) the record carries.
         assert_eq!((p2dx, p2dy), (-300.0, -250.0));
     }
 
@@ -2618,8 +2618,8 @@ mod tests {
             "stars_unknown_type",
             &[(
                 "mapStars.jsonl",
-                // typeID 9999 nunca fue detectado como tipo de estrella
-                // por parse_types() en este fixture.
+                // typeID 9999 is never detected as a star type
+                // by parse_types() in this fixture.
                 "{\"_key\": 40000001, \"radius\": 1, \"solarSystemID\": 30000001, \"typeID\": 9999}\n",
             )],
         );
@@ -2688,10 +2688,10 @@ mod tests {
 
     #[test]
     fn parse_planets_inserts_row_using_real_sde_shape() {
-        // Registro real de mapPlanets.jsonl (agosto 2026, EVE Online):
-        // celestialIndex/position/typeID/solarSystemID siempre presentes;
-        // radius en el nivel superior; locked SIEMPRE anidado bajo
-        // statistics (nunca en el nivel superior); fragmented ausente.
+        // Real mapPlanets.jsonl record (August 2026, EVE Online):
+        // celestialIndex/position/typeID/solarSystemID always present;
+        // radius at the top level; locked ALWAYS nested under
+        // statistics (never at the top level); fragmented absent.
         let dir = TempSdeDir::new(
             "planets_real_shape",
             &[(
@@ -2896,8 +2896,8 @@ mod tests {
 
     #[test]
     fn parse_moons_without_orbit_id_leaves_planet_id_null() {
-        // orbitID (planetId) es opcional -- tanto en Python
-        // (`moon.get('orbitID')`) como en el schema (columna nullable).
+        // orbitID (planetId) is optional -- both in Python
+        // (`moon.get('orbitID')`) and in the schema (a nullable column).
         let dir = TempSdeDir::new(
             "moons_no_planet",
             &[(
