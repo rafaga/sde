@@ -7,7 +7,7 @@ repository = "https://github.com/rafaga/sde/"
 keywords = ["sde", "eve-online"]
 categories = ["games", "value-formatting"]
 exclude = ["tests/",".github/",".gitignore"]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "MIT"
 
@@ -16,12 +16,12 @@ name = "sde"
 path = "src/lib.rs"
 
 [[bin]]
-name = "sde"
+name = "sde-builder"
 path = "src/bin/cli.rs"
 required-features = ["builder"]
 
 [[bin]]
-name = "sde-gui"
+name = "sde-builder-gui"
 path = "src/bin/gui.rs"
 required-features = ["gui"]
 
@@ -67,7 +67,7 @@ gui = ["builder", "dep:eframe"]
 
 [dependencies]
 kdtree = "0.8"
-rstar = "0.12"
+rstar = "0.13"
 rusqlite = { version = "0.40.1", features = ["bundled", "backup", "blob", "array"] }
 
 # --- Dependencias opcionales, solo activas con la feature "builder" ---
@@ -82,7 +82,7 @@ clap = { version = "4", features = ["derive"], optional = true }
 anyhow = { version = "1", optional = true }
 
 # --- Solo activa con la feature "gui", alineada a la versión de egui/eframe que ya usa egui-map ---
-eframe = { version = "0.35", optional = true }
+eframe = { version = "0.36.1", optional = true }
 
 [dev-dependencies]
 wiremock = "0.6"

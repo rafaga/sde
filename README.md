@@ -33,9 +33,9 @@ already provided.
 - **default** — read-only. Just `SdeManager` and the data types in
   `objects`, for consuming an already-built `sde.db`.
 - **`builder`** — adds the pipeline that (re)builds `sde.db` from
-  scratch. Installs the `sde` CLI binary.
-- **`gui`** — adds a minimal map viewer binary (`sde-gui`). Implies
-  `builder`.
+  scratch. Installs the `sde-builder` CLI binary.
+- **`gui`** — adds a GUI for the pipeline that (re)builds `sde.db` from
+  scratch.(`sde-builder-gui`). Implies `builder`.
 
 ## Usage
 
