@@ -202,7 +202,8 @@ impl<'a> SdeManager<'a> {
         query += "MAX(reg.max_x) AS region_max_x, MAX(reg.max_y) AS region_max_y, ";
         query += "MIN(reg.min_x) AS region_min_x, MIN(reg.min_y) AS region_min_y ";
         query += "FROM (SELECT mr.regionId, mr.regionName, ";
-        query += "mc.constellationId, MAX(mss.position2DX) AS max_x, MAX(mss.position2DY) AS max_y, ";
+        query +=
+            "mc.constellationId, MAX(mss.position2DX) AS max_x, MAX(mss.position2DY) AS max_y, ";
         query += "MIN(mss.position2DX) AS min_x, MIN(mss.position2DY) AS min_y ";
         query += "FROM mapRegions AS mr ";
         query += "INNER JOIN mapConstellations mc ON (mc.regionId = mr.regionId) ";
@@ -238,16 +239,10 @@ impl<'a> SdeManager<'a> {
             // stability, but the region bounding box is now 2D (there's
             // no third component to report anymore) -- the Z component is
             // just always 0.
-            region.max = MapPoint::from([
-                row.get::<usize, f64>(2)?,
-                row.get::<usize, f64>(3)?,
-                0.0,
-            ]);
-            region.min = MapPoint::from([
-                row.get::<usize, f64>(4)?,
-                row.get::<usize, f64>(5)?,
-                0.0,
-            ]);
+            region.max =
+                MapPoint::from([row.get::<usize, f64>(2)?, row.get::<usize, f64>(3)?, 0.0]);
+            region.min =
+                MapPoint::from([row.get::<usize, f64>(4)?, row.get::<usize, f64>(5)?, 0.0]);
             // we invert the coordinates and swap the min with the max
             if self.invert_coordinates {
                 std::mem::swap(&mut region.max, &mut region.min);

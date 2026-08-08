@@ -127,7 +127,12 @@ fn systempoints_returns_only_k_space_systems() {
     // W-Sys (31000001) is outside the K-Space id range and must be excluded
     assert_eq!(tree.size(), 3);
     let points = map_points_to_vec(&tree);
-    assert!(points.iter().find(|&y| y.id == Some(31000001usize)).is_none());
+    assert!(
+        points
+            .iter()
+            .find(|&y| y.id == Some(31000001usize))
+            .is_none()
+    );
 }
 
 #[test]
@@ -520,13 +525,9 @@ fn abstract_connections_filtered_by_region_requires_both_ends_inside() {
     // conn-2-3 spans Region Alpha and Region Beta, so it is excluded
     assert_eq!(tree.size(), 1);
     let expected_id = (30000001, 30000002);
-    assert!(
-        tree
-            .iter()
-            .any(|line| line.id == expected_id
-                && line.point1 == [0.1, 0.2]
-                && line.point2 == [0.3, 0.4])
-    );
+    assert!(tree.iter().any(|line| line.id == expected_id
+        && line.point1 == [0.1, 0.2]
+        && line.point2 == [0.3, 0.4]));
 }
 
 // -------------------------------------------------------------------------
