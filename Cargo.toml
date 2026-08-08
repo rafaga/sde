@@ -67,6 +67,7 @@ gui = ["builder", "dep:eframe"]
 
 [dependencies]
 kdtree = "0.8"
+rstar = "0.12"
 rusqlite = { version = "0.40.1", features = ["bundled", "backup", "blob", "array"] }
 
 # --- Dependencias opcionales, solo activas con la feature "builder" ---

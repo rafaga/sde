@@ -39,7 +39,7 @@ already provided.
 
 ## Usage
 
-```toml
+```sh
 cargo add sde
 ```
 
@@ -52,6 +52,7 @@ use std::path::Path;
 let sde = SdeManager::new(Path::new("sde.db"), 1_000_000);
 let points = sde.get_systempoints()?; // KdTree<f64, MapPoint, [f64; 3]>
 let regions = sde.get_region_coordinates()?;
+let connections = sde.get_connections()?; // RTree<MapSegment>, for spatial queries
 ```
 
 ## Building `sde.db`
@@ -66,14 +67,19 @@ cargo run --bin sde --features builder
 
 ## Architecture
 
-The crate has two parts. The core is a small, dependency-light
-read-only API for querying a database that already exists — this is
-what most consumers of the crate will use. Layered on top of that,
-behind the `builder` feature, is a pipeline that produces that database
-in the first place: fetching the source data, decompressing it,
-parsing it into the schema, and folding in the extra community-provided
-layers described above. The two parts are independent — nothing that
-only reads the database needs any of the fetching/parsing machinery.
+The crate has two parts. The core is a small, read-only API for
+querying a database that already exists — this is what most consumers
+of the crate will use. It indexes both map points and connections
+spatially (a `KdTree` and an `RTree`, respectively), for queries like
+"what's near this location" or "which connections fall within this
+area" instead of a linear scan. Layered on top of that, behind the
+`builder` feature, is a pipeline that produces that database in the
+first place: fetching the source data, decompressing it, parsing it
+into the schema, and folding in the extra community-provided layers
+described above. The two parts are independent — nothing that only
+reads the database needs any of the fetching/parsing machinery.
+
+See [ERD.md](ERD.md) for the database's entity-relationship diagram.
 
 ## Related projects
 

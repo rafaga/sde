@@ -127,12 +127,7 @@ fn systempoints_returns_only_k_space_systems() {
     // W-Sys (31000001) is outside the K-Space id range and must be excluded
     assert_eq!(tree.size(), 3);
     let points = map_points_to_vec(&tree);
-    assert!(
-        points
-            .iter()
-            .find(|&y| y.id == Some(31000001usize))
-            .is_none()
-    );
+    assert!(points.iter().find(|&y| y.id == Some(31000001usize)).is_none());
 }
 
 #[test]
@@ -209,11 +204,11 @@ fn system_connections_are_added_bidirectionally() {
 fn connections_returns_lines_with_scaled_inverted_coords() {
     let fixture = Fixture::new("connections");
     let manager = fixture.manager();
-    let vec_segments = manager.get_connections().unwrap();
+    let tree = manager.get_connections().unwrap();
     let expected_id = (30000001, 30000002);
 
-    assert_eq!(vec_segments.len(), 2);
-    let line = vec_segments
+    assert_eq!(tree.size(), 2);
+    let line = tree
         .iter()
         .find(|item| item.id == expected_id)
         .expect("conn-1-2 not found");
@@ -501,15 +496,15 @@ fn abstract_system_connections_respect_region_filter() {
 fn abstract_connections_without_filter_returns_all_lines() {
     let fixture = Fixture::new("abstract_conn_all");
     let manager = fixture.manager();
-    let vec_lines = manager.get_abstract_connections(vec![]).unwrap();
-    assert_eq!(vec_lines.len(), 2);
-    let found = vec_lines
+    let tree = manager.get_abstract_connections(vec![]).unwrap();
+    assert_eq!(tree.size(), 2);
+    let found = tree
         .iter()
         .find(|item| item.id == (30000001, 30000002))
         .expect("conn-1-2 not found");
     assert_eq!(found.point1, [0.1, 0.2]);
     assert_eq!(found.point2, [0.3, 0.4]);
-    let found = vec_lines
+    let found = tree
         .iter()
         .find(|item| item.id == (30000002, 30000003))
         .expect("conn-2-3 not found");
@@ -521,13 +516,17 @@ fn abstract_connections_without_filter_returns_all_lines() {
 fn abstract_connections_filtered_by_region_requires_both_ends_inside() {
     let fixture = Fixture::new("abstract_conn_region");
     let manager = fixture.manager();
-    let lines = manager.get_abstract_connections(vec![10000001]).unwrap();
+    let tree = manager.get_abstract_connections(vec![10000001]).unwrap();
     // conn-2-3 spans Region Alpha and Region Beta, so it is excluded
-    assert_eq!(lines.len(), 1);
+    assert_eq!(tree.size(), 1);
     let expected_id = (30000001, 30000002);
-    assert!(lines.iter().any(|line| line.id == expected_id
-        && line.point1 == [0.1, 0.2]
-        && line.point2 == [0.3, 0.4]));
+    assert!(
+        tree
+            .iter()
+            .any(|line| line.id == expected_id
+                && line.point1 == [0.1, 0.2]
+                && line.point2 == [0.3, 0.4])
+    );
 }
 
 // -------------------------------------------------------------------------

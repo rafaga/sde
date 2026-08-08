@@ -1,4 +1,5 @@
 use kdtree::KdTree;
+use rstar::{AABB, PointDistance, RTreeObject};
 use std::collections::HashMap;
 use std::ops::{Add, Div, DivAssign, Mul, MulAssign, Sub};
 
@@ -17,26 +18,48 @@ pub enum ProjectedAxis {
     Z,
 }
 
-/// A point in EVE's universe: real 3D SDE coordinates (`centerX/Y/Z`,
-/// meter-scale, up to ~10^17 in magnitude) and 2D map-query results
-/// (`get_systempoints`/`get_abstract_systems`, KdTree-indexed) used to
-/// be two separate types (`SdePoint`, 3D `i64`, and `MapPoint`, 2D
-/// `f32`). They're merged here into one.
+/// A point in EVE's universe: real 3D SDE coordinates (`centerX/Y/Z`)
+/// and 2D map-query results (`get_systempoints`/`get_abstract_systems`,
+/// KdTree-indexed) used to be two separate types (`SdePoint`, 3D `i64`,
+/// and `MapPoint`, 2D `f32`). They're merged here into one.
 ///
 /// # Why `f64`, not `i64` or `f32`
 ///
 /// `kdtree`'s `KdTree<A, T, U>` requires `A: num_traits::Float` --
 /// verified against a real compiler that `i64` does not qualify (only
 /// `f32`/`f64` do), so the old `i64`-based `SdePoint` couldn't stay as
-/// the KdTree's coordinate type as-is. Between `f32` and `f64`: real
-/// EVE coordinates reach ~10^17 in magnitude; `f32`'s ~7 decimal digits
-/// of precision can't represent single-meter resolution at that scale
-/// (the gap between representable values is in the *billions* of
-/// meters), while `f64`'s ~16 digits keeps sub-meter precision even at
-/// the largest distances in the game. `f64` exactly represents any
-/// `i64` only up to ±2^53 (~9x10^15) -- above that, the `i64 -> f64`
-/// conversion in `From<[i64; 3]>` below is no longer bit-perfect, though
-/// still far more precise than `f32` would have been.
+/// the KdTree's coordinate type as-is. Between `f32` and `f64`: checked
+/// against real `mapRegions.jsonl`/`mapSolarSystems.jsonl` samples
+/// (August 2026), real coordinates reach ~1.0x10^19 in magnitude --
+/// `f32`'s ~7 decimal digits of precision can't represent single-meter
+/// resolution anywhere near that scale, while `f64`'s ~16 digits keeps
+/// the error in the tens-to-thousands-of-meters range even at the
+/// largest distances found -- negligible at interstellar scale, but
+/// worth being precise about (see the next section for why `f64` isn't
+/// perfectly exact here either).
+///
+/// # `i64 -> f64` isn't bit-perfect above 2^53 -- confirmed to matter for real data
+///
+/// `f64` exactly represents any `i64` only up to ±2^53 (~9.0x10^15).
+/// The same real samples checked above show this isn't a theoretical
+/// edge case: **~95% of individual `x`/`y`/`z` components exceed 2^53**
+/// (up to ~1115x the threshold, in `mapSolarSystems.jsonl`), so an
+/// `i64 -> f64` round-trip on real region/system coordinates routinely
+/// isn't bit-perfect.
+///
+/// This matters less than it sounds, in practice, for two reasons: the
+/// resulting error stays in the tens-to-thousands-of-meters range even
+/// at the largest magnitudes found (`f64`'s ~16 significant digits, not
+/// `f32`'s ~7) -- negligible against distances measured in light-years
+/// -- and, as of this merge, **no code path inside this crate actually
+/// performs that conversion for real coordinate data anymore**: the two
+/// call sites that used to (`SdeManager::get_system_coords`,
+/// `SdeManager::get_solarsystem`) were rewritten to read `f64` directly
+/// from SQLite and build a `MapPoint` without an `i64` intermediate.
+/// `From<[i64; 3]>`/`From<MapPoint> for [i64; 3]` are kept as public API
+/// for external consumers that still need them (confirmed in use, see
+/// below) -- anyone converting real, large-magnitude coordinates
+/// through them should keep this precision note in mind.
 ///
 /// # Breaking change from the old `i64`-based `SdePoint`
 ///
@@ -242,19 +265,57 @@ impl Sub<&MapPoint> for MapPoint {
 /// edge on the abstract map). A type owned by `sde`, replaces the
 /// `MapSegment` that used to come from `egui-map`.
 ///
+/// Implements `rstar`'s [`RTreeObject`]/[`PointDistance`], so
+/// [`crate::SdeManager::get_connections`]/`get_abstract_connections`
+/// return an `rstar::RTree<MapSegment>` instead of a plain `Vec` --
+/// the actual reason to keep these around is spatial queries ("which
+/// connections fall within this area of the map", "which connection is
+/// closest to where the user clicked"), which a linear scan doesn't
+/// answer efficiently but an R-tree does by design.
+///
 /// `id` is the pair of system ids it connects -- no longer an arbitrary
 /// `Rc<str>` like in the old `egui-map` integration. This `(usize,
 /// usize)` is exactly the shape `egui_map::MapSegment.id` would need
 /// after the targeted change already designed for that crate (`Rc<str>`
 /// -> tuple) -- the only piece of `egui-map` that needs touching to
-/// interoperate, without redesigning anything else there. `point1`/
-/// `point2` already match `RawPoint.components` 1:1, requiring no
-/// change at all.
+/// interoperate, without redesigning anything else there.
+///
+/// `point1`/`point2` are `[f64; 2]`, matching [`MapPoint`]'s coordinate
+/// type -- both represent the same kind of value (a system's 2D
+/// position), so there's no reason for one to be `f64` and the other
+/// `f32`. This is a change from the type's initial version, which kept
+/// `[f32; 2]` to match `egui_map::RawPoint.components` 1:1 without any
+/// conversion; that 1:1 match no longer holds -- an `egui-map` consumer
+/// building a `RawPoint` from this now needs an explicit narrowing
+/// (`point1[0] as f32`, etc.), same as it already would from
+/// `MapPoint`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MapSegment {
     pub id: (usize, usize),
-    pub point1: [f32; 2],
-    pub point2: [f32; 2],
+    pub point1: [f64; 2],
+    pub point2: [f64; 2],
+}
+
+impl RTreeObject for MapSegment {
+    type Envelope = AABB<[f64; 2]>;
+    fn envelope(&self) -> Self::Envelope {
+        AABB::from_corners(self.point1, self.point2)
+    }
+}
+
+impl PointDistance for MapSegment {
+    /// Squared distance from `point` to the closest point *on the
+    /// segment* (not just its bounding box) -- delegates to
+    /// `rstar::primitives::Line`'s own implementation (clamped
+    /// projection onto the segment) instead of re-deriving that
+    /// point-to-segment math by hand, since getting the clamping at
+    /// the endpoints subtly wrong is an easy mistake to make. Verified
+    /// against a real compiler: a point beyond either endpoint
+    /// correctly measures to that endpoint, not to the infinite line
+    /// through the segment.
+    fn distance_2(&self, point: &[f64; 2]) -> f64 {
+        rstar::primitives::Line::new(self.point1, self.point2).distance_2(point)
+    }
 }
 
 /// Converts a `KdTree<f64, MapPoint, [f64; 3]>` into a list of
@@ -282,6 +343,21 @@ pub struct MapSegment {
 pub fn map_points_to_vec(tree: &KdTree<f64, MapPoint, [f64; 3]>) -> Vec<&MapPoint> {
     tree.bounding_box(&[f64::MIN, f64::MIN, f64::MIN], &[f64::MAX, f64::MAX, f64::MAX])
         .expect("bounding_box with f64::MIN/f64::MAX bounds should never fail (3 fixed dimensions, always-finite bounds)")
+}
+
+/// Converts an `rstar::RTree<MapSegment>` into a list of references to
+/// its segments, **without cloning** -- for anyone who prefers to
+/// iterate/consume it as a plain list instead of using `rstar`'s native
+/// spatial queries (`locate_in_envelope_intersecting`,
+/// `nearest_neighbor`, etc., all available directly on the tree
+/// returned by [`crate::SdeManager::get_connections`]/
+/// `get_abstract_connections`).
+///
+/// Simpler than [`map_points_to_vec`]'s `KdTree` equivalent: `RTree`
+/// already exposes a plain `iter()` over every element, with no
+/// bounding-box workaround needed.
+pub fn map_segments_to_vec(tree: &rstar::RTree<MapSegment>) -> Vec<&MapSegment> {
+    tree.iter().collect()
 }
 
 /// Note: no longer derives `Hash`/`Eq` (only `PartialEq`) since `min`/`max`
@@ -623,11 +699,7 @@ mod tests {
         // pivot-based TryInto<[f32;2]> would return Err on all three
         // branches, and telescope's `.unwrap()` would panic. `to_2d`
         // can't fail -- it doesn't guess, the caller picks the axis.
-        let point = MapPoint::new(
-            1_003_094_336_444_825.0,
-            -2_005_029_375_317_114.0,
-            3_001_839_229_715_087.0,
-        );
+        let point = MapPoint::new(1_003_094_336_444_825.0, -2_005_029_375_317_114.0, 3_001_839_229_715_087.0);
         let _ = point.to_2d(ProjectedAxis::Y); // must not panic
     }
 

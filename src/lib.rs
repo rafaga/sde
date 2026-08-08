@@ -11,6 +11,7 @@ use crate::objects::{
 };
 use kdtree::KdTree;
 use objects::EveRegionArea;
+use rstar::RTree;
 use rusqlite::ToSql;
 use rusqlite::{Connection, Error, OpenFlags, params, vtab::array};
 use std::collections::HashMap;
@@ -60,40 +61,25 @@ impl<'a> SdeManager<'a> {
     /// this helper inverts: `get_systempoints`/`get_connections` do,
     /// `get_abstract_systems`/`get_abstract_connections` don't (that was
     /// also the case in the previous code, before this migration).
-    fn scale_coords(&self, mut coords: [f32; 2], invert: bool) -> [f32; 2] {
-        if self.factor > 1 {
-            let f = self.factor as f32;
-            coords[0] /= f;
-            coords[1] /= f;
-        } else if self.factor < -1 {
-            let f = self.factor.unsigned_abs() as f32;
-            coords[0] *= f;
-            coords[1] *= f;
-        }
-        if invert {
-            coords[0] *= -1.0;
-            coords[1] *= -1.0;
-        }
-        coords
-    }
-
-    /// Same logic as [`Self::scale_coords`], but operating on `[f64; 2]`
-    /// throughout -- used by [`Self::get_systempoints`]/
-    /// [`Self::get_abstract_systems`] (which build [`objects::MapPoint`],
-    /// `coords: [f64; 3]`) instead of the `f32` version, which stays in
-    /// use for [`Self::get_connections`]/[`Self::get_abstract_connections`]
-    /// (building [`objects::MapSegment`], `point1`/`point2: [f32; 2]` --
-    /// unaffected by the `SdePoint`/`MapPoint` merge).
+    /// Applies the adjustment factor (`self.factor`) and, if `invert` is
+    /// `true`, flips the sign of both components. Used by
+    /// [`Self::get_systempoints`]/[`Self::get_abstract_systems`] (which
+    /// build [`objects::MapPoint`], `coords: [f64; 3]`) and
+    /// [`Self::get_connections`]/[`Self::get_abstract_connections`]
+    /// (building [`objects::MapSegment`], `point1`/`point2: [f64; 2]`) --
+    /// both types are `f64` throughout, so there's a single version of
+    /// this helper, not one per type as there used to be.
     ///
-    /// Routing `MapPoint`'s coordinates through the `f32` version would
-    /// silently reintroduce the precision loss the merge to `f64` was
-    /// meant to avoid: `some_f32_value as f64` doesn't recover the
-    /// precision lost when the value was first narrowed to `f32` --
-    /// e.g. `0.1_f32 as f64` is `0.10000000149011612`, not `0.1`.
-    /// Reading `position2DX`/`position2DY`/`mapAbstractSystems.x`/`.y`
-    /// (all `REAL`, i.e. already `f64`-precision in SQLite) directly as
-    /// `f64` and scaling in `f64` avoids that round-trip entirely.
-    fn scale_coords_f64(&self, mut coords: [f64; 2], invert: bool) -> [f64; 2] {
+    /// Operating in `f32` anywhere along this path would silently
+    /// reintroduce precision loss that reading the columns as `f64` (and
+    /// scaling in `f64`) is meant to avoid: `some_f32_value as f64`
+    /// doesn't recover the precision lost when the value was first
+    /// narrowed to `f32` -- e.g. `0.1_f32 as f64` is
+    /// `0.10000000149011612`, not `0.1`. `position2DX`/`position2DY`/
+    /// `mapAbstractSystems.x`/`.y` are all `REAL` (i.e. already
+    /// `f64`-precision in SQLite), so reading them directly as `f64`
+    /// costs nothing and avoids that round-trip entirely.
+    fn scale_coords(&self, mut coords: [f64; 2], invert: bool) -> [f64; 2] {
         if self.factor > 1 {
             let f = self.factor as f64;
             coords[0] /= f;
@@ -190,7 +176,7 @@ impl<'a> SdeManager<'a> {
                 let y = row.get::<usize, f64>(2)?;
 
                 //we get the coordinate point and multiply with the adjust factor
-                let [x, y] = self.scale_coords_f64([x, y], self.invert_coordinates);
+                let [x, y] = self.scale_coords([x, y], self.invert_coordinates);
                 point = MapPoint {
                     id: Some(id.try_into().unwrap()),
                     name: Some(row.get::<usize, String>(3)?),
@@ -216,8 +202,7 @@ impl<'a> SdeManager<'a> {
         query += "MAX(reg.max_x) AS region_max_x, MAX(reg.max_y) AS region_max_y, ";
         query += "MIN(reg.min_x) AS region_min_x, MIN(reg.min_y) AS region_min_y ";
         query += "FROM (SELECT mr.regionId, mr.regionName, ";
-        query +=
-            "mc.constellationId, MAX(mss.position2DX) AS max_x, MAX(mss.position2DY) AS max_y, ";
+        query += "mc.constellationId, MAX(mss.position2DX) AS max_x, MAX(mss.position2DY) AS max_y, ";
         query += "MIN(mss.position2DX) AS min_x, MIN(mss.position2DY) AS min_y ";
         query += "FROM mapRegions AS mr ";
         query += "INNER JOIN mapConstellations mc ON (mc.regionId = mr.regionId) ";
@@ -242,21 +227,26 @@ impl<'a> SdeManager<'a> {
             // MAX()/MIN() over them (even doubly-aggregated through the
             // subquery) also yield REAL storage class -- rusqlite's `i64`
             // FromSql impl does NOT coerce a SQLite REAL into an integer,
-            // so this has to be read as f64 first and cast explicitly.
+            // so this has to be read as f64. Unlike before the
+            // SdePoint/MapPoint merge, there's no need to narrow it to
+            // `i64` afterward -- `MapPoint::from([f64; 3])` takes the
+            // f64 values directly, without an unnecessary
+            // f64 -> i64 -> f64 round-trip that would silently truncate
+            // any fractional part.
             //
             // EveRegionArea.max/min stay `MapPoint` (3D) for API
             // stability, but the region bounding box is now 2D (there's
             // no third component to report anymore) -- the Z component is
             // just always 0.
             region.max = MapPoint::from([
-                row.get::<usize, f64>(2)? as i64,
-                row.get::<usize, f64>(3)? as i64,
-                0,
+                row.get::<usize, f64>(2)?,
+                row.get::<usize, f64>(3)?,
+                0.0,
             ]);
             region.min = MapPoint::from([
-                row.get::<usize, f64>(4)? as i64,
-                row.get::<usize, f64>(5)? as i64,
-                0,
+                row.get::<usize, f64>(4)?,
+                row.get::<usize, f64>(5)?,
+                0.0,
             ]);
             // we invert the coordinates and swap the min with the max
             if self.invert_coordinates {
@@ -311,9 +301,9 @@ impl<'a> SdeManager<'a> {
         let mut rows = statement.query(params![system_like_name])?;
         if let Some(row) = rows.next()? {
             let mut coord = MapPoint::from([
-                row.get::<usize, f32>(0)?,
-                row.get::<usize, f32>(1)?,
-                row.get::<usize, f32>(2)?,
+                row.get::<usize, f64>(0)?,
+                row.get::<usize, f64>(1)?,
+                row.get::<usize, f64>(2)?,
             ]);
             if self.factor > 1 {
                 coord /= self.factor;
@@ -328,7 +318,13 @@ impl<'a> SdeManager<'a> {
         Ok(None)
     }
 
-    pub fn get_connections(&self) -> Result<Vec<MapSegment>, Error> {
+    /// Line segments connecting solar systems via stargates, indexed in
+    /// an [`rstar::RTree`] -- built for spatial queries like "which
+    /// connections intersect this area of the map"
+    /// (`locate_in_envelope_intersecting`) or "which connection is
+    /// closest to this point" (`nearest_neighbor`, hit-testing a mouse
+    /// click), rather than a plain linear scan.
+    pub fn get_connections(&self) -> Result<RTree<MapSegment>, Error> {
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT msc.systemA, msc.systemB, ");
@@ -348,11 +344,11 @@ impl<'a> SdeManager<'a> {
         let mut results = vec![];
         while let Some(row) = rows.next()? {
             let point1 = self.scale_coords(
-                [row.get::<usize, f32>(2)?, row.get::<usize, f32>(3)?],
+                [row.get::<usize, f64>(2)?, row.get::<usize, f64>(3)?],
                 self.invert_coordinates,
             );
             let point2 = self.scale_coords(
-                [row.get::<usize, f32>(4)?, row.get::<usize, f32>(5)?],
+                [row.get::<usize, f64>(4)?, row.get::<usize, f64>(5)?],
                 self.invert_coordinates,
             );
             let id = (
@@ -361,7 +357,7 @@ impl<'a> SdeManager<'a> {
             );
             results.push(MapSegment { id, point1, point2 });
         }
-        Ok(results)
+        Ok(RTree::bulk_load(results))
     }
 
     pub fn get_abstract_systems(
@@ -414,7 +410,7 @@ impl<'a> SdeManager<'a> {
                 // get_abstract_systems doesn't invert coordinates -- that
                 // was also the case before this migration (unlike
                 // get_systempoints/get_connections, which do).
-                let [x, y] = self.scale_coords_f64(
+                let [x, y] = self.scale_coords(
                     [row.get::<usize, f64>(1)?, row.get::<usize, f64>(2)?],
                     false,
                 );
@@ -436,7 +432,11 @@ impl<'a> SdeManager<'a> {
         Ok(tree)
     }
 
-    pub fn get_abstract_connections(&self, regions: Vec<u32>) -> Result<Vec<MapSegment>, Error> {
+    /// Same as [`Self::get_connections`], but for the abstract map
+    /// (`mapAbstractSystems`), optionally filtered by region. Also
+    /// indexed in an [`rstar::RTree`] for the same spatial-query
+    /// reasons.
+    pub fn get_abstract_connections(&self, regions: Vec<u32>) -> Result<RTree<MapSegment>, Error> {
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT msc.systemA, msc.systemB, ");
@@ -465,11 +465,11 @@ impl<'a> SdeManager<'a> {
         let mut results = vec![];
         while let Some(row) = rows.next()? {
             let point1 = self.scale_coords(
-                [row.get::<usize, f32>(2)?, row.get::<usize, f32>(3)?],
+                [row.get::<usize, f64>(2)?, row.get::<usize, f64>(3)?],
                 false,
             );
             let point2 = self.scale_coords(
-                [row.get::<usize, f32>(4)?, row.get::<usize, f32>(5)?],
+                [row.get::<usize, f64>(4)?, row.get::<usize, f64>(5)?],
                 false,
             );
             let id = (
@@ -478,7 +478,7 @@ impl<'a> SdeManager<'a> {
             );
             results.push(MapSegment { id, point1, point2 });
         }
-        Ok(results)
+        Ok(RTree::bulk_load(results))
     }
 
     fn get_standart_connection(&self) -> Result<Connection, Error> {
@@ -632,30 +632,30 @@ impl<'a> SdeManager<'a> {
             object.id = row.get(0)?;
             object.name = row.get(1)?;
             object.constellation = row.get(8)?;
-            let point = MapPoint::new(
-                row.get::<_, f64>(3)?,
-                row.get::<_, f64>(4)?,
-                row.get::<_, f64>(5)?,
-            );
-            object.real_coords = point;
+
+            let mut real_x = row.get::<_, f64>(3)?;
+            let mut real_y = row.get::<_, f64>(4)?;
+            let mut real_z = row.get::<_, f64>(5)?;
             // Unlike get_systempoints()/get_connections() (which filter
             // out systems without a 2D projection), the row is kept
             // as-is here: this method feeds general system data (name,
             // region, constellation, real coordinates), not just the
             // map, so a missing position2D falls back to (0.0, 0.0)
             // instead of excluding the system entirely.
-            let projected_point = MapPoint::new(
-                row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
-                row.get::<_, Option<f64>>(7)?.unwrap_or(0.0),
-                0.0,
-            );
-            object.projected_coords = projected_point;
+            let mut proj_x = row.get::<_, Option<f64>>(6)?.unwrap_or(0.0);
+            let mut proj_y = row.get::<_, Option<f64>>(7)?.unwrap_or(0.0);
 
             // Invert coordinates if needed
             if self.invert_coordinates {
-                object.real_coords *= -1;
-                object.projected_coords *= -1;
+                real_x *= -1.0;
+                real_y *= -1.0;
+                real_z *= -1.0;
+                proj_x *= -1.0;
+                proj_y *= -1.0;
             }
+            object.real_coords = MapPoint::new(real_x, real_y, real_z);
+            object.projected_coords = MapPoint::new(proj_x, proj_y, 0.0);
+
             object.region = row.get(2)?;
             result.insert(row.get(0)?, object);
         }
