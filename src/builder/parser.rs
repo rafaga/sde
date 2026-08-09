@@ -797,15 +797,17 @@ pub fn parse_npc_corporations(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, \
                   ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
     )?;
-    let mut insert_allowed_race =
-        connection.prepare("INSERT INTO npcCorporationAllowedRaces (corporationId, raceId) VALUES (?1, ?2)")?;
+    let mut insert_allowed_race = connection.prepare(
+        "INSERT INTO npcCorporationAllowedRaces (corporationId, raceId) VALUES (?1, ?2)",
+    )?;
     let mut insert_division = connection.prepare(
         "INSERT INTO npcCorporationDivisionAssignments \
          (corporationId, divisionId, divisionNumber, leaderId, size) \
          VALUES (?1, ?2, ?3, ?4, ?5)",
     )?;
-    let mut insert_trade = connection
-        .prepare("INSERT INTO npcCorporationTrades (corporationId, typeId, affinity) VALUES (?1, ?2, ?3)")?;
+    let mut insert_trade = connection.prepare(
+        "INSERT INTO npcCorporationTrades (corporationId, typeId, affinity) VALUES (?1, ?2, ?3)",
+    )?;
     let mut insert_investor = connection.prepare(
         "INSERT INTO npcCorporationInvestors (corporationId, investorId, shares) VALUES (?1, ?2, ?3)",
     )?;
@@ -1616,10 +1618,11 @@ pub fn parse_station_operations(
           ratio, manufacturingFactor, researchFactor) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?;
-    let mut insert_service =
-        connection.prepare("INSERT INTO stationOperationServices (operationId, serviceId) VALUES (?1, ?2)")?;
-    let mut insert_type = connection
-        .prepare("INSERT INTO stationOperationTypes (operationId, sizeKey, typeId) VALUES (?1, ?2, ?3)")?;
+    let mut insert_service = connection
+        .prepare("INSERT INTO stationOperationServices (operationId, serviceId) VALUES (?1, ?2)")?;
+    let mut insert_type = connection.prepare(
+        "INSERT INTO stationOperationTypes (operationId, sizeKey, typeId) VALUES (?1, ?2, ?3)",
+    )?;
 
     let mut count = 0usize;
     for record in iter_jsonl_records(sde_directory, "stationOperations")? {
@@ -1895,12 +1898,14 @@ pub fn parse_data(
 
     let station_services = parse_station_services(&tx, sde_directory, config)?;
     let station_operations = parse_station_operations(&tx, sde_directory, config)?;
-    let station_operation_services: usize = tx
-        .query_row("SELECT COUNT(*) FROM stationOperationServices", [], |row| row.get::<usize, i64>(0))?
-        as usize;
-    let station_operation_types: usize = tx
-        .query_row("SELECT COUNT(*) FROM stationOperationTypes", [], |row| row.get::<usize, i64>(0))?
-        as usize;
+    let station_operation_services: usize =
+        tx.query_row("SELECT COUNT(*) FROM stationOperationServices", [], |row| {
+            row.get::<usize, i64>(0)
+        })? as usize;
+    let station_operation_types: usize =
+        tx.query_row("SELECT COUNT(*) FROM stationOperationTypes", [], |row| {
+            row.get::<usize, i64>(0)
+        })? as usize;
     let npc_stations = parse_npc_stations(&tx, sde_directory)?;
 
     tx.commit()?;
@@ -2261,7 +2266,10 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         connection
-            .execute("INSERT INTO races (raceId, raceName) VALUES (1, 'Caldari')", [])
+            .execute(
+                "INSERT INTO races (raceId, raceName) VALUES (1, 'Caldari')",
+                [],
+            )
             .unwrap();
         connection
             .execute(
@@ -4046,7 +4054,10 @@ mod tests {
     fn setup_for_npc_stations(connection: &Connection) {
         setup_for_station_operations(connection);
         connection
-            .execute("INSERT INTO races (raceId, raceName) VALUES (1, 'Caldari')", [])
+            .execute(
+                "INSERT INTO races (raceId, raceName) VALUES (1, 'Caldari')",
+                [],
+            )
             .unwrap();
         connection
             .execute(
