@@ -44,26 +44,180 @@ CREATE TABLE races (
 ) STRICT;
 
 CREATE TABLE npcCorporations (
-  corporationId    INTEGER NOT NULL PRIMARY KEY,
-  corporationName  TEXT NOT NULL,
-  tickerName       TEXT NOT NULL,
-  deleted          INTEGER NOT NULL CHECK (deleted IN (0,1)),
-  iconId           INTEGER,
-  raceId           INTEGER REFERENCES races(raceId)
-                     ON UPDATE CASCADE ON DELETE SET NULL
+  corporationId               INTEGER NOT NULL PRIMARY KEY,
+  corporationName             TEXT NOT NULL,
+  tickerName                  TEXT NOT NULL,
+  deleted                     INTEGER NOT NULL CHECK (deleted IN (0,1)),
+  -- Verified against a real npcCorporations.jsonl sample (283
+  -- records, August 2026): description present in 98.9%, extent/
+  -- hasPlayerPersonnelManager/initialPrice/memberLimit/minSecurity/
+  -- minimumJoinStanding/sendCharTerminationMessage/shares/size/
+  -- taxRate/uniqueName in 100%.
+  description                 TEXT,
+  extent                      TEXT NOT NULL,
+  hasPlayerPersonnelManager   INTEGER NOT NULL CHECK (hasPlayerPersonnelManager IN (0,1)),
+  initialPrice                INTEGER NOT NULL,
+  memberLimit                 INTEGER NOT NULL,
+  minSecurity                 REAL NOT NULL,
+  minimumJoinStanding         REAL NOT NULL,
+  sendCharTerminationMessage  INTEGER NOT NULL CHECK (sendCharTerminationMessage IN (0,1)),
+  shares                      INTEGER NOT NULL,
+  size                        TEXT NOT NULL,
+  -- Nullable: present in 66.8% of real records.
+  sizeFactor                  REAL,
+  taxRate                     REAL NOT NULL,
+  uniqueName                  INTEGER NOT NULL CHECK (uniqueName IN (0,1)),
+  -- ceoID/mainActivityID/secondaryActivityID reference entities this
+  -- schema doesn't otherwise model (characters, activity types) -- kept
+  -- as plain unconstrained integers rather than guessing at a FK
+  -- target. Nullable per their real presence rate (ceoID 91.9%,
+  -- mainActivityID 94.0%, secondaryActivityID only 12.0%).
+  ceoId                        INTEGER,
+  mainActivityId               INTEGER,
+  secondaryActivityId          INTEGER,
+  iconId                       INTEGER,
+  raceId                       INTEGER REFERENCES races(raceId)
+                                  ON UPDATE CASCADE ON DELETE SET NULL,
+  -- enemyId/friendId are corporations disliking/allied with this one --
+  -- self-referencing, and (like factionId/solarSystemId/stationId
+  -- below) DEFERRABLE: the referenced corporation may not have been
+  -- inserted yet when this row is (this table is parsed in file order,
+  -- with no guarantee the referenced id comes first), or may belong to
+  -- a phase that hasn't run yet. Deferring the check to COMMIT (inside
+  -- parse_data()'s single transaction) resolves this the same way
+  -- mapSystemGates.destinationGateId already does for its own mutual
+  -- self-reference.
+  enemyId                      INTEGER REFERENCES npcCorporations(corporationId)
+                                  ON UPDATE CASCADE ON DELETE SET NULL
+                                  DEFERRABLE INITIALLY DEFERRED,
+  friendId                     INTEGER REFERENCES npcCorporations(corporationId)
+                                  ON UPDATE CASCADE ON DELETE SET NULL
+                                  DEFERRABLE INITIALLY DEFERRED,
+  -- factionId: DEFERRABLE because `factions` is parsed *after*
+  -- `npcCorporations` (factions.corporationId already depends on
+  -- npcCorporations existing first) -- without deferring, a
+  -- forward-reference to a not-yet-inserted faction would fail
+  -- immediately in autocommit-equivalent terms.
+  factionId                    INTEGER REFERENCES factions(factionId)
+                                  ON UPDATE CASCADE ON DELETE SET NULL
+                                  DEFERRABLE INITIALLY DEFERRED,
+  -- solarSystemId/stationId: DEFERRABLE for the same reason --
+  -- mapSolarSystems (phase 4) and npcStations (phase 10) are both
+  -- parsed after npcCorporations (phase 2).
+  solarSystemId                INTEGER REFERENCES mapSolarSystems(solarSystemId)
+                                  ON UPDATE CASCADE ON DELETE SET NULL
+                                  DEFERRABLE INITIALLY DEFERRED,
+  stationId                    INTEGER REFERENCES npcStations(stationId)
+                                  ON UPDATE CASCADE ON DELETE SET NULL
+                                  DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 CREATE INDEX idx_npcCorporations_raceId ON npcCorporations(raceId);
+CREATE INDEX idx_npcCorporations_factionId ON npcCorporations(factionId);
+CREATE INDEX idx_npcCorporations_solarSystemId ON npcCorporations(solarSystemId);
+CREATE INDEX idx_npcCorporations_stationId ON npcCorporations(stationId);
+
+-- Lookup of division *types* (R&D, Distribution, Mining, ...), from
+-- npcCorporationDivisions.jsonl (10 records, confirmed complete for
+-- _key/internalName/leaderTypeName/name; displayName in 9/10,
+-- description in 5/10 -- neither modeled here, trimmed to what's
+-- actually used elsewhere: which division a corporation has, not the
+-- flavor text describing it).
+CREATE TABLE npcCorporationDivisions (
+  divisionId      INTEGER NOT NULL PRIMARY KEY,
+  internalName    TEXT NOT NULL,
+  leaderTypeName  TEXT NOT NULL
+) STRICT;
+
+-- Junction: which divisions a corporation actually has (its `divisions`
+-- array, confirmed shape `{"_key": divisionId, "divisionNumber": int,
+-- "leaderID": characterId, "size": int}`). `leaderId` is unconstrained
+-- (no character table to reference, same as npcCorporations.ceoId
+-- above) but NOT NULL: confirmed present in all 247 real entries across
+-- every corporation's `divisions` array, unlike ceoId at the top level
+-- (91.9%).
+CREATE TABLE npcCorporationDivisionAssignments (
+  corporationId   INTEGER NOT NULL REFERENCES npcCorporations(corporationId)
+                     ON UPDATE CASCADE ON DELETE CASCADE,
+  divisionId      INTEGER NOT NULL REFERENCES npcCorporationDivisions(divisionId)
+                     ON UPDATE CASCADE ON DELETE CASCADE,
+  divisionNumber  INTEGER NOT NULL,
+  leaderId        INTEGER NOT NULL,
+  size            INTEGER NOT NULL,
+  CONSTRAINT pkey PRIMARY KEY (corporationId, divisionId) ON CONFLICT FAIL
+) STRICT, WITHOUT ROWID;
+
+-- Junction: which races may join this corporation (its
+-- `allowedMemberRaces` array) -- same shape/purpose as `factionRace`,
+-- just for corporations instead of factions.
+CREATE TABLE npcCorporationAllowedRaces (
+  corporationId  INTEGER NOT NULL REFERENCES npcCorporations(corporationId)
+                    ON UPDATE CASCADE ON DELETE CASCADE,
+  raceId         INTEGER NOT NULL REFERENCES races(raceId)
+                    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT pkey PRIMARY KEY (corporationId, raceId) ON CONFLICT FAIL
+) STRICT, WITHOUT ROWID;
+
+-- Junction: which other corporations invest in this one, and by how
+-- much (its `investors` array, `{"_key": corporationId, "_value":
+-- shares}`) -- self-referencing and DEFERRABLE, same reasoning as
+-- npcCorporations.enemyId/friendId above (the investing corporation may
+-- not be inserted yet when this row is, since this table is parsed in
+-- file order).
+CREATE TABLE npcCorporationInvestors (
+  corporationId  INTEGER NOT NULL REFERENCES npcCorporations(corporationId)
+                    ON UPDATE CASCADE ON DELETE CASCADE,
+  investorId     INTEGER NOT NULL REFERENCES npcCorporations(corporationId)
+                    ON UPDATE CASCADE ON DELETE CASCADE
+                    DEFERRABLE INITIALLY DEFERRED,
+  shares         REAL NOT NULL,
+  CONSTRAINT pkey PRIMARY KEY (corporationId, investorId) ON CONFLICT FAIL
+) STRICT, WITHOUT ROWID;
+
+-- Junction: per-item-type trade affinity (its `corporationTrades`
+-- array, `{"_key": typeId, "_value": affinity}`). `_key` confirmed to
+-- be a real `typeId` by cross-referencing every one of the 2705
+-- distinct keys used across all 283 real corporations against a real
+-- types.jsonl sample -- 100% matched, not a guess.
+CREATE TABLE npcCorporationTrades (
+  corporationId  INTEGER NOT NULL REFERENCES npcCorporations(corporationId)
+                    ON UPDATE CASCADE ON DELETE CASCADE,
+  typeId         INTEGER NOT NULL REFERENCES invTypes(typeId)
+                    ON UPDATE CASCADE ON DELETE CASCADE,
+  affinity       REAL NOT NULL,
+  CONSTRAINT pkey PRIMARY KEY (corporationId, typeId) ON CONFLICT FAIL
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE factions (
-  factionId      INTEGER NOT NULL PRIMARY KEY,
-  factionName    TEXT NOT NULL,
-  iconId         INTEGER NOT NULL,
-  sizeFactor     REAL NOT NULL,
-  uniqueName     INTEGER NOT NULL CHECK (uniqueName IN (0,1)),
-  corporationId  INTEGER REFERENCES npcCorporations(corporationId)
-                   ON UPDATE CASCADE ON DELETE SET NULL
+  factionId             INTEGER NOT NULL PRIMARY KEY,
+  factionName           TEXT NOT NULL,
+  iconId                INTEGER NOT NULL,
+  sizeFactor            REAL NOT NULL,
+  uniqueName            INTEGER NOT NULL CHECK (uniqueName IN (0,1)),
+  -- Verified against a real factions.jsonl sample (27 records, August
+  -- 2026): description present in 100%, previously not captured at
+  -- all. shortDescription/flatLogo/flatLogoWithName are much rarer
+  -- (14.8%/66.7%/22.2%) but genuinely present in real data.
+  description           TEXT NOT NULL,
+  shortDescription      TEXT,
+  flatLogo              TEXT,
+  flatLogoWithName       TEXT,
+  corporationId         INTEGER REFERENCES npcCorporations(corporationId)
+                           ON UPDATE CASCADE ON DELETE SET NULL,
+  -- The faction's militia corporation -- a second, distinct
+  -- corporation from corporationId above. Present in 22.2% of real
+  -- records.
+  militiaCorporationId  INTEGER REFERENCES npcCorporations(corporationId)
+                           ON UPDATE CASCADE ON DELETE SET NULL,
+  -- DEFERRABLE: mapSolarSystems isn't parsed until phase 4, after
+  -- factions (phase 2) -- same reasoning as npcCorporations.solarSystemId.
+  -- Present in 100% of real records (the faction's home system).
+  solarSystemId          INTEGER REFERENCES mapSolarSystems(solarSystemId)
+                           ON UPDATE CASCADE ON DELETE SET NULL
+                           DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 CREATE INDEX idx_factions_corporationId ON factions(corporationId);
+CREATE INDEX idx_factions_militiaCorporationId ON factions(militiaCorporationId);
+CREATE INDEX idx_factions_solarSystemId ON factions(solarSystemId);
 
 CREATE TABLE factionRace (
   factionId  INTEGER NOT NULL REFERENCES factions(factionId)

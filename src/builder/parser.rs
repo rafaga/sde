@@ -725,22 +725,89 @@ pub fn parse_races(
 }
 
 // ---------------------------------------------------------------------
+// npcCorporationDivisions
+// ---------------------------------------------------------------------
+
+/// Populates `npcCorporationDivisions` from
+/// `<sde_directory>/npcCorporationDivisions.jsonl` (10 records,
+/// confirmed complete for `_key`/`internalName`/`leaderTypeName`).
+/// No equivalent in the Python prototype -- added directly against the
+/// real SDE export, same as `npcStations`'s subsystem (see that
+/// function's docstring).
+pub fn parse_npc_corporation_divisions(
+    connection: &Connection,
+    sde_directory: &Path,
+    config: &ParserConfig,
+) -> Result<usize, BuilderError> {
+    let mut insert = connection.prepare(
+        "INSERT INTO npcCorporationDivisions (divisionId, internalName, leaderTypeName) \
+         VALUES (?1, ?2, ?3)",
+    )?;
+
+    let mut count = 0usize;
+    for record in iter_jsonl_records(sde_directory, "npcCorporationDivisions")? {
+        let record = record?;
+        let id = required_i64(&record, "_key")?;
+        let internal_name = required_str(&record, "internalName")?;
+        let leader_type_name = required_localized(&record, "leaderTypeName", config)?;
+        insert.execute(rusqlite::params![id, internal_name, leader_type_name])?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+// ---------------------------------------------------------------------
 // npcCorporations
 // ---------------------------------------------------------------------
 
-/// Populates `npcCorporations` from
-/// `<sde_directory>/npcCorporations.jsonl`. Requires `races` to already
-/// be populated if any record carries `raceID` (FK
-/// `npcCorporations.raceId -> races.raceId`). Returns the number of
-/// rows inserted. Equivalent to `_parse_npc_corporations()` in Python.
+/// Populates `npcCorporations`, `npcCorporationAllowedRaces`,
+/// `npcCorporationDivisionAssignments`, `npcCorporationTrades`, and
+/// `npcCorporationInvestors` from
+/// `<sde_directory>/npcCorporations.jsonl`. Requires `races` and
+/// [`parse_npc_corporation_divisions`] to already be populated.
+/// `enemyId`/`friendId`/`investors` are self-referencing, and
+/// `factionId`/`solarSystemId`/`stationId` reference tables parsed in
+/// later phases -- all `DEFERRABLE`, resolved at `parse_data()`'s final
+/// `COMMIT` (see the relevant columns' comments in `schema.sql`).
+/// Returns the number of `npcCorporations` rows inserted (doesn't count
+/// the four junction tables' rows).
+///
+/// Rewritten against a real 283-record sample (August 2026) -- the
+/// previous version (`corporationId`/`corporationName`/`tickerName`/
+/// `deleted`/`iconId`/`raceId` only) captured 6 of the real 30 fields.
+/// `lpOfferTables` and `exchangeRates` are the two real fields still not
+/// captured: the former references a "loyalty point offer table"
+/// dataset this project doesn't otherwise have; the latter is present
+/// in only 1 of 283 real records (0.4%), too rare to justify modeling
+/// without a second real example to confirm the shape against.
+/// `ceoID`/`divisions[].leaderID` are kept as plain unconstrained
+/// integers (no character table exists to reference).
 pub fn parse_npc_corporations(
     connection: &Connection,
     sde_directory: &Path,
     config: &ParserConfig,
 ) -> Result<usize, BuilderError> {
     let mut insert_corp = connection.prepare(
-        "INSERT INTO npcCorporations (corporationId, corporationName, tickerName, deleted, iconId, raceId) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO npcCorporations \
+         (corporationId, corporationName, tickerName, deleted, description, extent, \
+          hasPlayerPersonnelManager, initialPrice, memberLimit, minSecurity, minimumJoinStanding, \
+          sendCharTerminationMessage, shares, size, sizeFactor, taxRate, uniqueName, ceoId, \
+          mainActivityId, secondaryActivityId, iconId, raceId, enemyId, friendId, factionId, \
+          solarSystemId, stationId) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, \
+                  ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+    )?;
+    let mut insert_allowed_race =
+        connection.prepare("INSERT INTO npcCorporationAllowedRaces (corporationId, raceId) VALUES (?1, ?2)")?;
+    let mut insert_division = connection.prepare(
+        "INSERT INTO npcCorporationDivisionAssignments \
+         (corporationId, divisionId, divisionNumber, leaderId, size) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+    let mut insert_trade = connection
+        .prepare("INSERT INTO npcCorporationTrades (corporationId, typeId, affinity) VALUES (?1, ?2, ?3)")?;
+    let mut insert_investor = connection.prepare(
+        "INSERT INTO npcCorporationInvestors (corporationId, investorId, shares) VALUES (?1, ?2, ?3)",
     )?;
 
     let mut count = 0usize;
@@ -750,12 +817,96 @@ pub fn parse_npc_corporations(
         let name = required_localized(&record, "name", config)?;
         let ticker = required_str(&record, "tickerName")?;
         let deleted = required_bool(&record, "deleted")?;
+        let description = localized(&record, "description", config);
+        let extent = required_str(&record, "extent")?;
+        let has_player_personnel_manager = required_bool(&record, "hasPlayerPersonnelManager")?;
+        let initial_price = required_i64(&record, "initialPrice")?;
+        let member_limit = required_i64(&record, "memberLimit")?;
+        let min_security = required_f64(&record, "minSecurity")?;
+        let minimum_join_standing = required_f64(&record, "minimumJoinStanding")?;
+        let send_char_termination_message = required_bool(&record, "sendCharTerminationMessage")?;
+        let shares = required_i64(&record, "shares")?;
+        let size = required_str(&record, "size")?;
+        let size_factor = optional_f64(&record, "sizeFactor");
+        let tax_rate = required_f64(&record, "taxRate")?;
+        let unique_name = required_bool(&record, "uniqueName")?;
+        let ceo_id = optional_i64(&record, "ceoID");
+        let main_activity_id = optional_i64(&record, "mainActivityID");
+        let secondary_activity_id = optional_i64(&record, "secondaryActivityID");
         let icon_id = optional_i64(&record, "iconID");
         let race_id = optional_i64(&record, "raceID");
+        let enemy_id = optional_i64(&record, "enemyID");
+        let friend_id = optional_i64(&record, "friendID");
+        let faction_id = optional_i64(&record, "factionID");
+        let solar_system_id = optional_i64(&record, "solarSystemID");
+        let station_id = optional_i64(&record, "stationID");
 
         insert_corp.execute(rusqlite::params![
-            id, name, ticker, deleted, icon_id, race_id
+            id,
+            name,
+            ticker,
+            deleted,
+            description,
+            extent,
+            has_player_personnel_manager,
+            initial_price,
+            member_limit,
+            min_security,
+            minimum_join_standing,
+            send_char_termination_message,
+            shares,
+            size,
+            size_factor,
+            tax_rate,
+            unique_name,
+            ceo_id,
+            main_activity_id,
+            secondary_activity_id,
+            icon_id,
+            race_id,
+            enemy_id,
+            friend_id,
+            faction_id,
+            solar_system_id,
+            station_id
         ])?;
+
+        for allowed_race_id in optional_i64_array(&record, "allowedMemberRaces")? {
+            insert_allowed_race.execute(rusqlite::params![id, allowed_race_id])?;
+        }
+
+        if let Some(Value::Array(divisions)) = record.get("divisions") {
+            for entry in divisions {
+                let division_id = required_i64(entry, "_key")?;
+                let division_number = required_i64(entry, "divisionNumber")?;
+                let leader_id = required_i64(entry, "leaderID")?;
+                let division_size = required_i64(entry, "size")?;
+                insert_division.execute(rusqlite::params![
+                    id,
+                    division_id,
+                    division_number,
+                    leader_id,
+                    division_size
+                ])?;
+            }
+        }
+
+        if let Some(Value::Array(trades)) = record.get("corporationTrades") {
+            for entry in trades {
+                let type_id = required_i64(entry, "_key")?;
+                let affinity = required_f64(entry, "_value")?;
+                insert_trade.execute(rusqlite::params![id, type_id, affinity])?;
+            }
+        }
+
+        if let Some(Value::Array(investors)) = record.get("investors") {
+            for entry in investors {
+                let investor_id = required_i64(entry, "_key")?;
+                let investor_shares = required_f64(entry, "_value")?;
+                insert_investor.execute(rusqlite::params![id, investor_id, investor_shares])?;
+            }
+        }
+
         count += 1;
     }
     Ok(count)
@@ -767,20 +918,28 @@ pub fn parse_npc_corporations(
 
 /// Populates `factions` and `factionRace` from
 /// `<sde_directory>/factions.jsonl`. Requires `npcCorporations` to
-/// already be populated if any record carries `corporationID` (FK
-/// `factions.corporationId -> npcCorporations.corporationId`), and
-/// `races` to already be populated for any id in `memberRaces` (FK
-/// `factionRace.raceId -> races.raceId`). Returns the number of
-/// factions inserted (doesn't count `factionRace` rows). Equivalent to
-/// `_parse_factions()` in Python.
+/// already be populated if any record carries `corporationID`/
+/// `militiaCorporationID`, and `races` for any id in `memberRaces`.
+/// `solarSystemId` is `DEFERRABLE` (`mapSolarSystems` isn't parsed
+/// until phase 4, after this phase 2). Returns the number of factions
+/// inserted (doesn't count `factionRace` rows).
+///
+/// Rewritten against a real 27-record sample (August 2026) --
+/// `description`/`solarSystemID` are new fields, both present in 100%
+/// of real records but not previously captured at all.
+/// `shortDescription`/`flatLogo`/`flatLogoWithName`/
+/// `militiaCorporationID` are rarer (14.8%/66.7%/22.2%/22.2%) but
+/// genuinely present.
 pub fn parse_factions(
     connection: &Connection,
     sde_directory: &Path,
     config: &ParserConfig,
 ) -> Result<usize, BuilderError> {
     let mut insert_faction = connection.prepare(
-        "INSERT INTO factions (factionId, factionName, iconId, sizeFactor, uniqueName, corporationId) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO factions \
+         (factionId, factionName, iconId, sizeFactor, uniqueName, description, shortDescription, \
+          flatLogo, flatLogoWithName, corporationId, militiaCorporationId, solarSystemId) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
     )?;
     let mut insert_faction_race =
         connection.prepare("INSERT INTO factionRace (factionId, raceId) VALUES (?1, ?2)")?;
@@ -793,7 +952,13 @@ pub fn parse_factions(
         let icon_id = required_i64(&record, "iconID")?;
         let size_factor = required_f64(&record, "sizeFactor")?;
         let unique_name = required_bool(&record, "uniqueName")?;
+        let description = required_localized(&record, "description", config)?;
+        let short_description = localized(&record, "shortDescription", config);
+        let flat_logo = optional_str(&record, "flatLogo");
+        let flat_logo_with_name = optional_str(&record, "flatLogoWithName");
         let corporation_id = optional_i64(&record, "corporationID");
+        let militia_corporation_id = optional_i64(&record, "militiaCorporationID");
+        let solar_system_id = optional_i64(&record, "solarSystemID");
         let member_races = optional_i64_array(&record, "memberRaces")?;
 
         insert_faction.execute(rusqlite::params![
@@ -802,7 +967,13 @@ pub fn parse_factions(
             icon_id,
             size_factor,
             unique_name,
-            corporation_id
+            description,
+            short_description,
+            flat_logo,
+            flat_logo_with_name,
+            corporation_id,
+            militia_corporation_id,
+            solar_system_id
         ])?;
 
         for race_id in member_races {
@@ -1629,6 +1800,7 @@ pub struct ParseSummary {
     pub groups: usize,
     pub types: usize,
     pub races: usize,
+    pub npc_corporation_divisions: usize,
     pub npc_corporations: usize,
     pub factions: usize,
     pub star_types: usize,
@@ -1700,6 +1872,7 @@ pub fn parse_data(
     let groups = parse_groups(&tx, sde_directory, config, &mut state)?;
     let types = parse_types(&tx, sde_directory, config, &mut state)?;
     let races = parse_races(&tx, sde_directory, config)?;
+    let npc_corporation_divisions = parse_npc_corporation_divisions(&tx, sde_directory, config)?;
     let npc_corporations = parse_npc_corporations(&tx, sde_directory, config)?;
     let factions = parse_factions(&tx, sde_directory, config)?;
     let regions = parse_regions(&tx, sde_directory, config)?;
@@ -1737,6 +1910,7 @@ pub fn parse_data(
         groups,
         types,
         races,
+        npc_corporation_divisions,
         npc_corporations,
         factions,
         star_types: state.star_type_ids.len(),
@@ -2007,7 +2181,12 @@ mod tests {
             &[(
                 "npcCorporations.jsonl",
                 "{\"_key\": 1000004, \"name\": {\"en\": \"CBD Corporation\"}, \
-                 \"tickerName\": \"CBD\", \"deleted\": false, \"iconID\": 500, \"raceID\": 1}\n",
+                 \"tickerName\": \"CBD\", \"deleted\": false, \"description\": {\"en\": \"A corp\"}, \
+                 \"extent\": \"L\", \"hasPlayerPersonnelManager\": false, \"initialPrice\": 0, \
+                 \"memberLimit\": -1, \"minSecurity\": 0.0, \"minimumJoinStanding\": 1, \
+                 \"sendCharTerminationMessage\": true, \"shares\": 1000, \"size\": \"L\", \
+                 \"sizeFactor\": 5.0, \"taxRate\": 0.1, \"uniqueName\": true, \"ceoID\": 3000001, \
+                 \"iconID\": 500, \"raceID\": 1}\n",
             )],
         );
         let connection = Connection::open_in_memory().unwrap();
@@ -2024,9 +2203,18 @@ mod tests {
         let count = parse_npc_corporations(&connection, &dir.path, &config).unwrap();
         assert_eq!(count, 1);
 
-        let (name, ticker, deleted, icon_id, race_id): (String, String, i64, i64, i64) = connection
+        let (name, ticker, deleted, extent, shares, ceo_id, icon_id, race_id): (
+            String,
+            String,
+            i64,
+            String,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = connection
             .query_row(
-                "SELECT corporationName, tickerName, deleted, iconId, raceId \
+                "SELECT corporationName, tickerName, deleted, extent, shares, ceoId, iconId, raceId \
                      FROM npcCorporations WHERE corporationId = 1000004",
                 [],
                 |row| {
@@ -2036,6 +2224,9 @@ mod tests {
                         row.get(2)?,
                         row.get(3)?,
                         row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
                     ))
                 },
             )
@@ -2043,8 +2234,94 @@ mod tests {
         assert_eq!(name, "CBD Corporation");
         assert_eq!(ticker, "CBD");
         assert_eq!(deleted, 0);
+        assert_eq!(extent, "L");
+        assert_eq!(shares, 1000);
+        assert_eq!(ceo_id, 3000001);
         assert_eq!(icon_id, 500);
         assert_eq!(race_id, 1);
+    }
+
+    #[test]
+    fn parse_npc_corporations_populates_all_four_junction_tables() {
+        let dir = TempSdeDir::new(
+            "npc_corp_junctions",
+            &[(
+                "npcCorporations.jsonl",
+                "{\"_key\": 1000002, \"name\": {\"en\": \"Corp\"}, \"tickerName\": \"C\", \
+                 \"deleted\": false, \"extent\": \"L\", \"hasPlayerPersonnelManager\": false, \
+                 \"initialPrice\": 0, \"memberLimit\": -1, \"minSecurity\": 0.0, \
+                 \"minimumJoinStanding\": 1, \"sendCharTerminationMessage\": true, \
+                 \"shares\": 1000, \"size\": \"L\", \"taxRate\": 0.1, \"uniqueName\": true, \
+                 \"allowedMemberRaces\": [1], \
+                 \"divisions\": [{\"_key\": 22, \"divisionNumber\": 1, \"leaderID\": 3008500, \"size\": 37}], \
+                 \"corporationTrades\": [{\"_key\": 41, \"_value\": 0.42}], \
+                 \"investors\": [{\"_key\": 1000002, \"_value\": 42}]}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        connection
+            .execute("INSERT INTO races (raceId, raceName) VALUES (1, 'Caldari')", [])
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO npcCorporationDivisions (divisionId, internalName, leaderTypeName) \
+                 VALUES (22, 'Distribution', 'Distribution Manager')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO invTypes (typeId, groupId, typeName, published) VALUES (41, NULL, 'x', 0)",
+                [],
+            )
+            .unwrap();
+        let config = ParserConfig::default();
+
+        let count = parse_npc_corporations(&connection, &dir.path, &config).unwrap();
+        assert_eq!(count, 1);
+
+        let allowed_race: i64 = connection
+            .query_row(
+                "SELECT raceId FROM npcCorporationAllowedRaces WHERE corporationId = 1000002",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(allowed_race, 1);
+
+        let (division_number, leader_id, division_size): (i64, i64, i64) = connection
+            .query_row(
+                "SELECT divisionNumber, leaderId, size FROM npcCorporationDivisionAssignments \
+                     WHERE corporationId = 1000002 AND divisionId = 22",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(division_number, 1);
+        assert_eq!(leader_id, 3008500);
+        assert_eq!(division_size, 37);
+
+        let affinity: f64 = connection
+            .query_row(
+                "SELECT affinity FROM npcCorporationTrades WHERE corporationId = 1000002 AND typeId = 41",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(affinity, 0.42);
+
+        // Auto-inversion: la propia corp aparece como su investor -- caso
+        // real confirmado (corp 1000002 en los datos reales).
+        let investor_shares: f64 = connection
+            .query_row(
+                "SELECT shares FROM npcCorporationInvestors \
+                     WHERE corporationId = 1000002 AND investorId = 1000002",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(investor_shares, 42.0);
     }
 
     #[test]
@@ -2073,14 +2350,15 @@ mod tests {
             &[(
                 "factions.jsonl",
                 "{\"_key\": 500001, \"name\": {\"en\": \"Caldari State\"}, \"iconID\": 600, \
-                 \"sizeFactor\": 3.0, \"uniqueName\": true, \"corporationID\": 1000004, \
-                 \"memberRaces\": [1]}\n",
+                 \"sizeFactor\": 3.0, \"uniqueName\": true, \"description\": {\"en\": \"A state\"}, \
+                 \"corporationID\": 1000004, \"solarSystemID\": 30002780, \"memberRaces\": [1]}\n",
             )],
         );
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         // FK prerequisites: races(1) for factionRace, npcCorporations(1000004)
-        // for factions.corporationId.
+        // for factions.corporationId. solarSystemId is DEFERRABLE, so no
+        // mapSolarSystems row is needed for this test (never committed).
         connection
             .execute(
                 "INSERT INTO races (raceId, raceName) VALUES (1, 'Caldari')",
@@ -2090,8 +2368,12 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO npcCorporations \
-                 (corporationId, corporationName, tickerName, deleted, iconId, raceId) \
-                 VALUES (1000004, 'CBD Corporation', 'CBD', 0, 500, 1)",
+                 (corporationId, corporationName, tickerName, deleted, extent, \
+                  hasPlayerPersonnelManager, initialPrice, memberLimit, minSecurity, \
+                  minimumJoinStanding, sendCharTerminationMessage, shares, size, taxRate, \
+                  uniqueName, iconId, raceId) \
+                 VALUES (1000004, 'CBD Corporation', 'CBD', 0, 'L', 0, 0, -1, 0.0, 1, 1, 1000, \
+                          'L', 0.1, 1, 500, 1)",
                 [],
             )
             .unwrap();
@@ -2100,15 +2382,16 @@ mod tests {
         let count = parse_factions(&connection, &dir.path, &config).unwrap();
         assert_eq!(count, 1);
 
-        let (name, icon_id, size_factor, unique_name, corporation_id): (
+        let (name, icon_id, size_factor, unique_name, corporation_id, solar_system_id): (
             String,
             i64,
             f64,
             i64,
             i64,
+            i64,
         ) = connection
             .query_row(
-                "SELECT factionName, iconId, sizeFactor, uniqueName, corporationId \
+                "SELECT factionName, iconId, sizeFactor, uniqueName, corporationId, solarSystemId \
                  FROM factions WHERE factionId = 500001",
                 [],
                 |row| {
@@ -2118,6 +2401,7 @@ mod tests {
                         row.get(2)?,
                         row.get(3)?,
                         row.get(4)?,
+                        row.get(5)?,
                     ))
                 },
             )
@@ -2127,6 +2411,7 @@ mod tests {
         assert_eq!(size_factor, 3.0);
         assert_eq!(unique_name, 1);
         assert_eq!(corporation_id, 1000004);
+        assert_eq!(solar_system_id, 30002780);
 
         let member_race: i64 = connection
             .query_row(
@@ -2147,7 +2432,7 @@ mod tests {
             &[(
                 "factions.jsonl",
                 "{\"_key\": 500002, \"name\": {\"en\": \"Minmatar Republic\"}, \"iconID\": 601, \
-                 \"sizeFactor\": 2.5, \"uniqueName\": true}\n",
+                 \"sizeFactor\": 2.5, \"uniqueName\": true, \"description\": {\"en\": \"x\"}}\n",
             )],
         );
         let connection = Connection::open_in_memory().unwrap();
@@ -2170,7 +2455,8 @@ mod tests {
             &[(
                 "factions.jsonl",
                 "{\"_key\": 500003, \"name\": {\"en\": \"Bad Faction\"}, \"iconID\": 602, \
-                 \"sizeFactor\": 1.0, \"uniqueName\": false, \"memberRaces\": [1, \"oops\"]}\n",
+                 \"sizeFactor\": 1.0, \"uniqueName\": false, \"description\": {\"en\": \"x\"}, \
+                 \"memberRaces\": [1, \"oops\"]}\n",
             )],
         );
         let connection = Connection::open_in_memory().unwrap();
@@ -3396,14 +3682,22 @@ mod tests {
                 (
                     "npcCorporations.jsonl",
                     "{\"_key\": 1000004, \"name\": {\"en\": \"CBD Corporation\"}, \
-                     \"tickerName\": \"CBD\", \"deleted\": false, \"iconID\": 500, \"raceID\": 1}\n",
+                     \"tickerName\": \"CBD\", \"deleted\": false, \"extent\": \"L\", \
+                     \"hasPlayerPersonnelManager\": false, \"initialPrice\": 0, \"memberLimit\": -1, \
+                     \"minSecurity\": 0.0, \"minimumJoinStanding\": 1, \
+                     \"sendCharTerminationMessage\": true, \"shares\": 1000, \"size\": \"L\", \
+                     \"taxRate\": 0.0, \"uniqueName\": true, \"iconID\": 500, \"raceID\": 1}\n",
                 ),
                 (
                     "factions.jsonl",
                     "{\"_key\": 500001, \"name\": {\"en\": \"Caldari State\"}, \"iconID\": 600, \
-                     \"sizeFactor\": 3.0, \"uniqueName\": true, \"corporationID\": 1000004, \
-                     \"memberRaces\": [1]}\n",
+                     \"sizeFactor\": 3.0, \"uniqueName\": true, \"description\": {\"en\": \"x\"}, \
+                     \"corporationID\": 1000004, \"memberRaces\": [1]}\n",
                 ),
+                ("npcCorporationDivisions.jsonl", ""),
+                ("stationServices.jsonl", ""),
+                ("stationOperations.jsonl", ""),
+                ("npcStations.jsonl", ""),
                 (
                     "mapRegions.jsonl",
                     "{\"_key\": 10000002, \"name\": {\"en\": \"The Forge\"}, \"nebulaID\": 5, \
@@ -3475,6 +3769,7 @@ mod tests {
                 groups: 2,
                 types: 4,
                 races: 1,
+                npc_corporation_divisions: 0,
                 npc_corporations: 1,
                 factions: 1,
                 star_types: 1,
@@ -3486,6 +3781,11 @@ mod tests {
                 planets: 1,
                 moons: 1,
                 connections: 1,
+                station_services: 0,
+                station_operations: 0,
+                station_operation_services: 0,
+                station_operation_types: 0,
+                npc_stations: 0,
             }
         );
 
@@ -3537,10 +3837,15 @@ mod tests {
                     "races.jsonl",
                     "{\"_key\": 1, \"name\": {\"en\": \"Caldari\"}}\n",
                 ),
+                ("npcCorporationDivisions.jsonl", ""),
                 (
                     "npcCorporations.jsonl",
                     "{\"_key\": 1000004, \"name\": {\"en\": \"CBD Corporation\"}, \
-                     \"tickerName\": \"CBD\", \"deleted\": false, \"iconID\": 500, \"raceID\": 1}\n",
+                     \"tickerName\": \"CBD\", \"deleted\": false, \"extent\": \"L\", \
+                     \"hasPlayerPersonnelManager\": false, \"initialPrice\": 0, \"memberLimit\": -1, \
+                     \"minSecurity\": 0.0, \"minimumJoinStanding\": 1, \
+                     \"sendCharTerminationMessage\": true, \"shares\": 1000, \"size\": \"L\", \
+                     \"taxRate\": 0.0, \"uniqueName\": true, \"iconID\": 500, \"raceID\": 1}\n",
                 ),
                 (
                     // sizeFactor is deliberately missing:

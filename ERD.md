@@ -1,12 +1,19 @@
 # Entity-Relationship Diagram
 
-Generated from `src/builder/schema.sql` (19 tables, the static schema
+Generated from `src/builder/schema.sql` (22 tables, the static schema
 that's always present), plus the tables/columns `builder::dotlan` adds
 at runtime rather than declaring statically (see the note below the
 diagram). Attribute lists are trimmed to primary/foreign keys plus one
 identifying name field per table, for readability — see `schema.sql`
 and `builder/dotlan.rs` for the full column list, types, and
 constraints.
+
+`npcStations`/`stationOperations`/`stationServices` (plus their two
+junction tables) replace the old `staStation`/`staCorporations`, which
+were declared in the schema but never populated by any version of this
+project, Rust or Python — verified against real SDE exports
+(`npcStations.jsonl`, `stationOperations.jsonl`,
+`stationServices.jsonl`), not a rename of the old design.
 
 ```mermaid
 erDiagram
@@ -97,14 +104,31 @@ erDiagram
         int planetId FK
         int typeId FK
     }
-    staStation {
+    npcStations {
         int stationId PK
-        string stationName
+        int operationId FK
+        int orbitMoonId FK
+        int orbitPlanetId FK
+        int ownerId FK
         int solarSystemId FK
+        int typeId FK
     }
-    staCorporations {
-        int solarSystemId PK, FK
-        int corporationId PK, FK
+    stationOperations {
+        int operationId PK
+        string operationName
+    }
+    stationServices {
+        int serviceId PK
+        string serviceName
+    }
+    stationOperationServices {
+        int operationId PK, FK
+        int serviceId PK, FK
+    }
+    stationOperationTypes {
+        int operationId PK, FK
+        int sizeKey PK
+        int typeId FK
     }
 
     %% -- Everything below this line is dynamic DDL, added at runtime by
@@ -143,9 +167,16 @@ erDiagram
     mapSolarSystems ||--o{ mapMoons : ""
     mapPlanets ||--o{ mapMoons : ""
     invTypes ||--o{ mapMoons : ""
-    mapSolarSystems ||--o{ staStation : ""
-    mapSolarSystems ||--|{ staCorporations : ""
-    npcCorporations ||--|{ staCorporations : ""
+    mapSolarSystems ||--|{ npcStations : ""
+    stationOperations ||--|{ npcStations : ""
+    mapMoons ||--o{ npcStations : "orbitMoonId"
+    mapPlanets ||--o{ npcStations : "orbitPlanetId"
+    npcCorporations ||--|{ npcStations : ""
+    invTypes ||--|{ npcStations : ""
+    stationOperations ||--|{ stationOperationServices : ""
+    stationServices ||--|{ stationOperationServices : ""
+    stationOperations ||--|{ stationOperationTypes : ""
+    invTypes ||--|{ stationOperationTypes : ""
     mapSolarSystems ||--|{ mapAbstractSystems : ""
     mapRegions ||--|{ mapAbstractSystems : ""
     mapTriglavianStatus ||--o{ mapSolarSystems : ""
@@ -155,8 +186,10 @@ erDiagram
 
 - `||--|{` — the referenced row is required (`NOT NULL` foreign key).
 - `||--o{` — the reference is optional (nullable foreign key).
-- `factionRace`, `factionSolarSystem`, and `staCorporations` are pure
-  join tables (composite primary key, no columns of their own).
+- `factionRace`, `factionSolarSystem`, and `stationOperationServices`
+  are pure join tables (composite primary key, no columns of their
+  own). `stationOperationTypes` is almost the same, plus a plain
+  `sizeKey` integer that isn't itself a foreign key.
 - `mapSystemGates` has two separate foreign keys into
   `mapSolarSystems` (`solarSystemId`, `destinationSystemId`) plus a
   self-reference (`destinationGateId`, the paired gate on the other
