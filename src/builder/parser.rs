@@ -2365,11 +2365,36 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         // FK prerequisites: races(1) for factionRace, npcCorporations(1000004)
-        // for factions.corporationId. solarSystemId is DEFERRABLE, so no
-        // mapSolarSystems row is needed for this test (never committed).
+        // for factions.corporationId, mapSolarSystems(30002780) for
+        // factions.solarSystemId. Despite being DEFERRABLE, this test calls
+        // parse_factions() directly (autocommit, no explicit transaction) --
+        // each INSERT is its own implicit transaction, so the deferred check
+        // still runs immediately, same trap as parse_stargates()'s mutual
+        // self-reference without an explicit BEGIN/COMMIT.
         connection
             .execute(
                 "INSERT INTO races (raceId, raceName) VALUES (1, 'Caldari')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapRegions (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
+                 VALUES (10000064, 'R', NULL, 0, 0, 0, 5, NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapConstellations (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
+                 VALUES (20000064, 'C', 10000064, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapSolarSystems (solarSystemId, solarSystemName, constellationId, radius, centerX, centerY, centerZ, security) \
+                 VALUES (30002780, 'S', 20000064, 1.0, 0, 0, 0, 0.5)",
                 [],
             )
             .unwrap();
@@ -4061,8 +4086,13 @@ mod tests {
             .unwrap();
         connection
             .execute(
-                "INSERT INTO npcCorporations (corporationId, corporationName, tickerName, deleted, raceId) \
-                 VALUES (1000002, 'Test Corp', 'TEST', 0, 1)",
+                "INSERT INTO npcCorporations \
+                 (corporationId, corporationName, tickerName, deleted, extent, \
+                  hasPlayerPersonnelManager, initialPrice, memberLimit, minSecurity, \
+                  minimumJoinStanding, sendCharTerminationMessage, shares, size, taxRate, \
+                  uniqueName, raceId) \
+                 VALUES (1000002, 'Test Corp', 'TEST', 0, 'L', 0, 0, -1, 0.0, 1, 1, 1000, \
+                          'L', 0.0, 1, 1)",
                 [],
             )
             .unwrap();
