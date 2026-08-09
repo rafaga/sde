@@ -215,19 +215,107 @@ CREATE INDEX idx_mapMoons_planetId ON mapMoons(planetId);
 -- Estaciones / corporaciones NPC por sistema
 -- ------------------------------------------------------------
 
-CREATE TABLE staStation (
-  stationId INTEGER NOT NULL PRIMARY KEY,
-  stationName TEXT NOT NULL,
-  solarSystemId INTEGER REFERENCES mapSolarSystems(solarSystemId)
-                  ON UPDATE CASCADE ON DELETE SET NULL,
-  stationType INTEGER NOT NULL
-) STRICT;
-CREATE INDEX idx_staStation_solarSystemId ON staStation(solarSystemId);
+-- Community-maintained bits stop here; the tables below cover NPC
+-- station data, verified against real npcStations.jsonl (5210
+-- records), stationOperations.jsonl (68 records), and
+-- stationServices.jsonl (27 records), August 2026.
+--
+-- Replaces the old staStation/staCorporations declarations: neither was
+-- ever populated, by this port or by the original Python prototype
+-- (_parse_station() never existed in sde_parser.py) -- confirmed a
+-- schema/parser mismatch inherited from the reference implementation,
+-- not a gap introduced here. The real SDE export uses different table
+-- names (npcStations, not staStation) and a materially different, richer
+-- shape, so this isn't a rename -- it's a fresh design against the
+-- actual data.
 
-CREATE TABLE staCorporations (
-  solarSystemId INTEGER NOT NULL REFERENCES mapSolarSystems(solarSystemId)
-                  ON UPDATE CASCADE ON DELETE CASCADE,
-  corporationId INTEGER NOT NULL REFERENCES npcCorporations(corporationId)
-                  ON UPDATE CASCADE ON DELETE CASCADE,
-  CONSTRAINT pkey PRIMARY KEY (solarSystemId, corporationId) ON CONFLICT FAIL
+CREATE TABLE stationServices (
+  serviceId    INTEGER NOT NULL PRIMARY KEY,
+  serviceName  TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE stationOperations (
+  operationId          INTEGER NOT NULL PRIMARY KEY,
+  activityId           INTEGER NOT NULL,
+  operationName        TEXT NOT NULL,
+  -- Nullable: present in 55/68 real records (80.9%).
+  description          TEXT,
+  -- Likelihood of this operation appearing in each map-zone type
+  -- (border/corridor/fringe/hub of the *region*, unrelated to the
+  -- identically-named mapSolarSystems columns, which describe a
+  -- specific solar system's own zone membership, not an operation's
+  -- affinity for a zone type).
+  border               REAL NOT NULL,
+  corridor             REAL NOT NULL,
+  fringe               REAL NOT NULL,
+  hub                  REAL NOT NULL,
+  ratio                REAL NOT NULL,
+  manufacturingFactor  REAL NOT NULL,
+  researchFactor       REAL NOT NULL
+) STRICT;
+
+-- Junction: which services (real, 2 to 24 per operation) a station with
+-- this operation type offers.
+CREATE TABLE stationOperationServices (
+  operationId  INTEGER NOT NULL REFERENCES stationOperations(operationId)
+                 ON UPDATE CASCADE ON DELETE CASCADE,
+  serviceId    INTEGER NOT NULL REFERENCES stationServices(serviceId)
+                 ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT pkey PRIMARY KEY (operationId, serviceId) ON CONFLICT FAIL
 ) STRICT, WITHOUT ROWID;
+
+-- Junction: which station item type corresponds to this operation for
+-- each station-size category. sizeKey is a bit-flag (1/2/4/8/16 in the
+-- real data, confirmed against all 68 records) -- kept as a plain
+-- INTEGER rather than decoded into named constants, since the SDE
+-- itself doesn't document what each flag represents beyond the value.
+-- Nullable at the parent level: present in 47/68 real records (69.1%).
+CREATE TABLE stationOperationTypes (
+  operationId  INTEGER NOT NULL REFERENCES stationOperations(operationId)
+                 ON UPDATE CASCADE ON DELETE CASCADE,
+  sizeKey      INTEGER NOT NULL,
+  typeId       INTEGER NOT NULL REFERENCES invTypes(typeId)
+                 ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT pkey PRIMARY KEY (operationId, sizeKey) ON CONFLICT FAIL
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE npcStations (
+  stationId                 INTEGER NOT NULL PRIMARY KEY,
+  -- Nullable: missing in exactly 1 of 5210 real records (a special,
+  -- singular station -- e.g. Thera-like -- whose orbitID also matches
+  -- neither a real moon nor a real planet; see orbitMoonId/orbitPlanetId
+  -- below).
+  celestialIndex            INTEGER,
+  operationId               INTEGER NOT NULL REFERENCES stationOperations(operationId)
+                               ON UPDATE CASCADE ON DELETE RESTRICT,
+  -- The real SDE's `orbitID` can be either a moon or a planet
+  -- (confirmed against real data: 76.5% moons, 23.5% planets, ~0.02%
+  -- neither) -- split into two mutually-exclusive nullable columns
+  -- instead of one plain INTEGER, since SQL has no way to declare a
+  -- single foreign key conditional on two different target tables.
+  -- Exactly one of the two is non-NULL for the vast majority of
+  -- stations; both are NULL for the rare exception.
+  orbitMoonId               INTEGER REFERENCES mapMoons(moonId)
+                               ON UPDATE CASCADE ON DELETE SET NULL,
+  orbitPlanetId             INTEGER REFERENCES mapPlanets(planetId)
+                               ON UPDATE CASCADE ON DELETE SET NULL,
+  -- Nullable: present in 3986/5210 real records (76.5%) -- exactly the
+  -- stations that orbit a moon (a station orbiting a planet directly
+  -- has no "index" to report, same absence rate as orbitMoonId being
+  -- NULL).
+  orbitIndex                INTEGER,
+  ownerId                   INTEGER NOT NULL REFERENCES npcCorporations(corporationId)
+                               ON UPDATE CASCADE ON DELETE RESTRICT,
+  positionX REAL NOT NULL, positionY REAL NOT NULL, positionZ REAL NOT NULL,
+  reprocessingEfficiency    REAL NOT NULL,
+  reprocessingHangarFlag    INTEGER NOT NULL,
+  reprocessingStationsTake  REAL NOT NULL,
+  solarSystemId             INTEGER NOT NULL REFERENCES mapSolarSystems(solarSystemId)
+                               ON UPDATE CASCADE ON DELETE RESTRICT,
+  typeId                    INTEGER NOT NULL REFERENCES invTypes(typeId)
+                               ON UPDATE CASCADE ON DELETE RESTRICT,
+  useOperationName          INTEGER NOT NULL CHECK (useOperationName IN (0,1))
+) STRICT;
+CREATE INDEX idx_npcStations_solarSystemId ON npcStations(solarSystemId);
+CREATE INDEX idx_npcStations_operationId ON npcStations(operationId);
+CREATE INDEX idx_npcStations_ownerId ON npcStations(ownerId);

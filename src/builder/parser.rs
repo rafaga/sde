@@ -1381,6 +1381,238 @@ pub fn parse_connections(connection: &Connection) -> Result<usize, BuilderError>
 }
 
 // ---------------------------------------------------------------------
+// stationServices / stationOperations / npcStations (phase 10)
+// ---------------------------------------------------------------------
+
+/// Populates `stationServices` from `<sde_directory>/stationServices.jsonl`
+/// (27 records, confirmed complete: `_key`/`serviceName` present in
+/// 100% of records). No equivalent in the Python prototype -- this
+/// entity, along with `stationOperations`/`npcStations` below, was
+/// added directly against the real SDE export, not ported from
+/// `sde_parser.py` (see [`parse_npc_stations`]'s docstring for why
+/// `staStation`/`staCorporations`, which *were* in both the schema and
+/// the Python prototype, are gone).
+pub fn parse_station_services(
+    connection: &Connection,
+    sde_directory: &Path,
+    config: &ParserConfig,
+) -> Result<usize, BuilderError> {
+    let mut insert = connection
+        .prepare("INSERT INTO stationServices (serviceId, serviceName) VALUES (?1, ?2)")?;
+
+    let mut count = 0usize;
+    for record in iter_jsonl_records(sde_directory, "stationServices")? {
+        let record = record?;
+        let id = required_i64(&record, "_key")?;
+        let name = required_localized(&record, "serviceName", config)?;
+        insert.execute(rusqlite::params![id, name])?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Populates `stationOperations`, `stationOperationServices`, and
+/// `stationOperationTypes` from
+/// `<sde_directory>/stationOperations.jsonl` (68 records). Requires
+/// [`parse_station_services`]/[`crate::builder::parser::parse_types`]
+/// (phase 1, for `invTypes`) to have already run -- the two junction
+/// tables reference `stationServices`/`invTypes`.
+///
+/// Confirmed against the real 68 records: `_key`, `activityID`,
+/// `border`, `corridor`, `fringe`, `hub`, `manufacturingFactor`,
+/// `operationName`, `ratio`, `researchFactor`, `services` are present
+/// in 100% of records -- treated as required
+/// ([`required_i64`]/[`required_f64`]/[`required_localized`]).
+/// `description` is present in 55/68 (80.9%) -- optional
+/// ([`localized`], not [`required_localized`]). `stationTypes` is
+/// present in 47/68 (69.1%) -- also optional, only inserted into
+/// `stationOperationTypes` when the record actually carries it.
+///
+/// Each `stationTypes` entry is `{"_key": <sizeKey>, "_value": <typeId>}`
+/// -- `_key` takes one of exactly 5 values across all 68 records (1, 2,
+/// 4, 8, 16, confirmed by exhaustive check), consistent with a
+/// station-size bit-flag, though the SDE itself doesn't document what
+/// each flag means beyond the raw value; `stationOperationTypes.sizeKey`
+/// is kept as a plain integer rather than guessing at named constants.
+pub fn parse_station_operations(
+    connection: &Connection,
+    sde_directory: &Path,
+    config: &ParserConfig,
+) -> Result<usize, BuilderError> {
+    let mut insert_operation = connection.prepare(
+        "INSERT INTO stationOperations \
+         (operationId, activityId, operationName, description, border, corridor, fringe, hub, \
+          ratio, manufacturingFactor, researchFactor) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+    )?;
+    let mut insert_service =
+        connection.prepare("INSERT INTO stationOperationServices (operationId, serviceId) VALUES (?1, ?2)")?;
+    let mut insert_type = connection
+        .prepare("INSERT INTO stationOperationTypes (operationId, sizeKey, typeId) VALUES (?1, ?2, ?3)")?;
+
+    let mut count = 0usize;
+    for record in iter_jsonl_records(sde_directory, "stationOperations")? {
+        let record = record?;
+        let id = required_i64(&record, "_key")?;
+        let activity_id = required_i64(&record, "activityID")?;
+        let name = required_localized(&record, "operationName", config)?;
+        let description = localized(&record, "description", config);
+        let border = required_f64(&record, "border")?;
+        let corridor = required_f64(&record, "corridor")?;
+        let fringe = required_f64(&record, "fringe")?;
+        let hub = required_f64(&record, "hub")?;
+        let ratio = required_f64(&record, "ratio")?;
+        let manufacturing_factor = required_f64(&record, "manufacturingFactor")?;
+        let research_factor = required_f64(&record, "researchFactor")?;
+
+        insert_operation.execute(rusqlite::params![
+            id,
+            activity_id,
+            name,
+            description,
+            border,
+            corridor,
+            fringe,
+            hub,
+            ratio,
+            manufacturing_factor,
+            research_factor
+        ])?;
+
+        for service_id in optional_i64_array(&record, "services")? {
+            insert_service.execute(rusqlite::params![id, service_id])?;
+        }
+
+        if let Some(Value::Array(station_types)) = record.get("stationTypes") {
+            for entry in station_types {
+                let size_key = required_i64(entry, "_key")?;
+                let type_id = required_i64(entry, "_value")?;
+                insert_type.execute(rusqlite::params![id, size_key, type_id])?;
+            }
+        }
+
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Populates `npcStations` from `<sde_directory>/npcStations.jsonl`
+/// (5210 records). Requires `mapMoons`/`mapPlanets` (phases 7/8),
+/// `mapSolarSystems` (phase 4), `npcCorporations` (phase 2), `invTypes`
+/// (phase 1), and [`parse_station_operations`] to have already run --
+/// every foreign key on this table points somewhere.
+///
+/// # Why this exists instead of `staStation`/`staCorporations`
+///
+/// Neither `staStation` nor `staCorporations` was ever populated, by
+/// this port or by the original Python prototype (`_parse_station()`
+/// never existed in `sde_parser.py`) -- a schema/parser mismatch
+/// inherited from the reference implementation, confirmed by grepping
+/// its source directly, not a gap introduced during this migration.
+/// The real SDE export uses a different table name (`npcStations`, not
+/// `staStation`) and a materially richer shape (reprocessing data,
+/// station operation/services, precise real-world position), so this
+/// isn't a rename of the old design -- it's built fresh against the
+/// real data, and `staStation`/`staCorporations` are removed from the
+/// schema entirely rather than left declared-but-dead.
+///
+/// # `orbitID` split into `orbitMoonId`/`orbitPlanetId`
+///
+/// The real SDE's `orbitID` can be either a moon or a planet --
+/// confirmed by cross-referencing all 5210 real `orbitID` values
+/// against real `mapMoons`/`mapPlanets` samples: 76.5% are moons,
+/// 23.5% are planets, and exactly 1 (a singular, special station whose
+/// `orbitID` matches neither) is neither. SQL can't express a single
+/// foreign key conditional on two different target tables, so the
+/// schema splits this into two mutually-exclusive nullable columns
+/// instead -- resolved here at parse time by checking membership
+/// against in-memory sets of every already-inserted `moonId`/`planetId`
+/// (both empty only in that one singular case, in which case both
+/// columns stay `NULL`).
+///
+/// `celestialIndex` (present in 5209/5210, 99.98%) and `orbitIndex`
+/// (present in 3986/5210, 76.5% -- exactly the stations that orbit a
+/// moon) are both treated as optional ([`optional_i64`]), matching
+/// their real, confirmed absence rate -- not just a defensive
+/// assumption.
+pub fn parse_npc_stations(
+    connection: &Connection,
+    sde_directory: &Path,
+) -> Result<usize, BuilderError> {
+    let mut moon_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    {
+        let mut statement = connection.prepare("SELECT moonId FROM mapMoons")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            moon_ids.insert(row.get(0)?);
+        }
+    }
+    let mut planet_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    {
+        let mut statement = connection.prepare("SELECT planetId FROM mapPlanets")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            planet_ids.insert(row.get(0)?);
+        }
+    }
+
+    let mut insert = connection.prepare(
+        "INSERT INTO npcStations \
+         (stationId, celestialIndex, operationId, orbitMoonId, orbitPlanetId, orbitIndex, \
+          ownerId, positionX, positionY, positionZ, reprocessingEfficiency, \
+          reprocessingHangarFlag, reprocessingStationsTake, solarSystemId, typeId, \
+          useOperationName) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+    )?;
+
+    let mut count = 0usize;
+    for record in iter_jsonl_records(sde_directory, "npcStations")? {
+        let record = record?;
+        let id = required_i64(&record, "_key")?;
+        let celestial_index = optional_i64(&record, "celestialIndex");
+        let operation_id = required_i64(&record, "operationID")?;
+        let orbit_id = required_i64(&record, "orbitID")?;
+        let (orbit_moon_id, orbit_planet_id) = if moon_ids.contains(&orbit_id) {
+            (Some(orbit_id), None)
+        } else if planet_ids.contains(&orbit_id) {
+            (None, Some(orbit_id))
+        } else {
+            (None, None)
+        };
+        let orbit_index = optional_i64(&record, "orbitIndex");
+        let owner_id = required_i64(&record, "ownerID")?;
+        let (x, y, z) = required_position(&record)?;
+        let reprocessing_efficiency = required_f64(&record, "reprocessingEfficiency")?;
+        let reprocessing_hangar_flag = required_i64(&record, "reprocessingHangarFlag")?;
+        let reprocessing_stations_take = required_f64(&record, "reprocessingStationsTake")?;
+        let solar_system_id = required_i64(&record, "solarSystemID")?;
+        let type_id = required_i64(&record, "typeID")?;
+        let use_operation_name = required_bool(&record, "useOperationName")?;
+
+        insert.execute(rusqlite::params![
+            id,
+            celestial_index,
+            operation_id,
+            orbit_moon_id,
+            orbit_planet_id,
+            orbit_index,
+            owner_id,
+            x,
+            y,
+            z,
+            reprocessing_efficiency,
+            reprocessing_hangar_flag,
+            reprocessing_stations_take,
+            solar_system_id,
+            type_id,
+            use_operation_name
+        ])?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+// ---------------------------------------------------------------------
 // Orquestador
 // ---------------------------------------------------------------------
 
@@ -1388,6 +1620,9 @@ pub fn parse_connections(connection: &Connection) -> Result<usize, BuilderError>
 ///
 /// `star_types` counts `typeStar`'s rows (not its own phase: they're
 /// generated by [`parse_types`] when it detects "Sun"-group types).
+/// `station_operation_services`/`station_operation_types` count rows
+/// in those two junction tables (not their own phase either: they're
+/// generated by [`parse_station_operations`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ParseSummary {
     pub categories: usize,
@@ -1411,6 +1646,11 @@ pub struct ParseSummary {
     /// distinguished, same criterion as `stargates`.
     pub moons: usize,
     pub connections: usize,
+    pub station_services: usize,
+    pub station_operations: usize,
+    pub station_operation_services: usize,
+    pub station_operation_types: usize,
+    pub npc_stations: usize,
 }
 
 /// Runs the full parsing pipeline over `sde_directory`, in the same
@@ -1433,12 +1673,21 @@ pub struct ParseSummary {
 ///
 /// ## Current scope
 ///
-/// Covers the 14 functions this file ports (phase 1 to phase 9):
+/// Covers the 14 functions ported from Python (phase 1 to phase 9):
 /// categories, groups, types (+ `typeStar`), races, NPC corporations,
 /// factions (+ `factionRace`), regions, constellations, solar systems,
 /// stargates (gated by `config.with_gates`), stars, planets, moons
 /// (gated by `config.with_moons`) and connections -- **full parity**
-/// with Python's `parse_data()`.
+/// with Python's `parse_data()`. Phase 10 (`stationServices`,
+/// `stationOperations` + its two junction tables, `npcStations`) has
+/// no Python equivalent -- see [`parse_npc_stations`]'s docstring for
+/// why. It runs last and unconditionally (no config flag gates it, same
+/// as most phases besides gates/moons), but its `orbitMoonId`
+/// resolution depends on `parse_moons`/`parse_planets` having already
+/// populated `mapMoons`/`mapPlanets` -- if `config.with_moons` was
+/// `false`, every station that would otherwise resolve to a moon
+/// resolves to neither instead (both `orbitMoonId`/`orbitPlanetId`
+/// `NULL`), same as the one genuinely-neither station in the real data.
 pub fn parse_data(
     connection: &mut Connection,
     sde_directory: &Path,
@@ -1471,6 +1720,16 @@ pub fn parse_data(
     };
     let connections = parse_connections(&tx)?;
 
+    let station_services = parse_station_services(&tx, sde_directory, config)?;
+    let station_operations = parse_station_operations(&tx, sde_directory, config)?;
+    let station_operation_services: usize = tx
+        .query_row("SELECT COUNT(*) FROM stationOperationServices", [], |row| row.get::<usize, i64>(0))?
+        as usize;
+    let station_operation_types: usize = tx
+        .query_row("SELECT COUNT(*) FROM stationOperationTypes", [], |row| row.get::<usize, i64>(0))?
+        as usize;
+    let npc_stations = parse_npc_stations(&tx, sde_directory)?;
+
     tx.commit()?;
 
     Ok(ParseSummary {
@@ -1489,6 +1748,11 @@ pub fn parse_data(
         planets,
         moons,
         connections,
+        station_services,
+        station_operations,
+        station_operation_services,
+        station_operation_types,
+        npc_stations,
     })
 }
 
@@ -3316,5 +3580,321 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 0, "table {table} should be empty after the rollback");
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // stationServices / stationOperations / npcStations
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn parse_station_services_inserts_rows() {
+        let dir = TempSdeDir::new(
+            "station_services",
+            &[(
+                "stationServices.jsonl",
+                "{\"_key\": 3, \"serviceName\": {\"en\": \"Courier Missions\"}}\n\
+                 {\"_key\": 5, \"serviceName\": {\"en\": \"Reprocessing Plant\"}}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        let config = ParserConfig::default();
+
+        let count = parse_station_services(&connection, &dir.path, &config).unwrap();
+        assert_eq!(count, 2);
+
+        let name: String = connection
+            .query_row(
+                "SELECT serviceName FROM stationServices WHERE serviceId = 3",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "Courier Missions");
+    }
+
+    /// Common prerequisites for `parse_station_operations`'s tests: a
+    /// minimal `invTypes` row (for `stationOperationTypes.typeId`'s FK)
+    /// and one `stationServices` row (for `stationOperationServices`'s
+    /// FK).
+    fn setup_for_station_operations(connection: &Connection) {
+        crate::builder::schema::create_schema(connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO invCategories (categoryId, categoryName, published) VALUES (1, 'Celestial', 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO invGroups (groupId, categoryId, groupName, anchorable) VALUES (1, 1, 'Station', 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO invTypes (typeId, groupId, typeName, published) VALUES (1531, 1, 'Station Type', 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO stationServices (serviceId, serviceName) VALUES (3, 'Courier Missions')",
+                [],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn parse_station_operations_inserts_row_and_junction_tables() {
+        let dir = TempSdeDir::new(
+            "station_operations_full",
+            &[(
+                "stationOperations.jsonl",
+                "{\"_key\": 26, \"activityID\": 1, \"operationName\": {\"en\": \"Test Op\"}, \
+                 \"description\": {\"en\": \"A test operation\"}, \
+                 \"border\": 0.0, \"corridor\": 0.2, \"fringe\": 0.7, \"hub\": 0.1, \"ratio\": 0.65, \
+                 \"manufacturingFactor\": 0.98, \"researchFactor\": 0.98, \
+                 \"services\": [3], \
+                 \"stationTypes\": [{\"_key\": 1, \"_value\": 1531}]}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        setup_for_station_operations(&connection);
+        let config = ParserConfig::default();
+
+        let count = parse_station_operations(&connection, &dir.path, &config).unwrap();
+        assert_eq!(count, 1);
+
+        let name: String = connection
+            .query_row(
+                "SELECT operationName FROM stationOperations WHERE operationId = 26",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "Test Op");
+
+        let service_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM stationOperationServices WHERE operationId = 26",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(service_count, 1);
+
+        let type_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM stationOperationTypes WHERE operationId = 26",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(type_count, 1);
+    }
+
+    #[test]
+    fn parse_station_operations_without_description_or_station_types() {
+        // Matches the real data: description present in 55/68,
+        // stationTypes in 47/68 -- both genuinely optional.
+        let dir = TempSdeDir::new(
+            "station_operations_minimal",
+            &[(
+                "stationOperations.jsonl",
+                "{\"_key\": 27, \"activityID\": 1, \"operationName\": {\"en\": \"Minimal Op\"}, \
+                 \"border\": 0.0, \"corridor\": 0.0, \"fringe\": 0.0, \"hub\": 0.0, \"ratio\": 0.0, \
+                 \"manufacturingFactor\": 0.98, \"researchFactor\": 0.98, \"services\": []}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        setup_for_station_operations(&connection);
+        let config = ParserConfig::default();
+
+        let count = parse_station_operations(&connection, &dir.path, &config).unwrap();
+        assert_eq!(count, 1);
+
+        let description: Option<String> = connection
+            .query_row(
+                "SELECT description FROM stationOperations WHERE operationId = 27",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(description, None);
+
+        let type_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM stationOperationTypes WHERE operationId = 27",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(type_count, 0);
+    }
+
+    /// Common prerequisites for `parse_npc_stations`'s tests: everything
+    /// `setup_for_station_operations` provides, plus a solar system, a
+    /// planet (40000001), a moon orbiting that planet (40000002), a
+    /// corporation (1000002), and a `stationOperations` row (26) --
+    /// enough to satisfy every foreign key `npcStations` declares.
+    fn setup_for_npc_stations(connection: &Connection) {
+        setup_for_station_operations(connection);
+        connection
+            .execute("INSERT INTO races (raceId, raceName) VALUES (1, 'Caldari')", [])
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO npcCorporations (corporationId, corporationName, tickerName, deleted, raceId) \
+                 VALUES (1000002, 'Test Corp', 'TEST', 0, 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapRegions (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
+                 VALUES (10000002, 'The Forge', NULL, 0, 0, 0, 5, NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapConstellations (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
+                 VALUES (20000020, 'Kimotoro', 10000002, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapSolarSystems \
+                 (solarSystemId, solarSystemName, constellationId, radius, centerX, centerY, centerZ, security) \
+                 VALUES (30000001, 'A', 20000020, 1.0, 0, 0, 0, 0.5)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapPlanets \
+                 (planetId, solarSystemId, planetaryIndex, typeId, positionX, positionY, positionZ) \
+                 VALUES (40000001, 30000001, 1, 1531, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapMoons \
+                 (solarSystemId, moonId, moonIndex, planetId, typeId, positionX, positionY, positionZ) \
+                 VALUES (30000001, 40000002, 1, 40000001, 1531, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO stationOperations \
+                 (operationId, activityId, operationName, border, corridor, fringe, hub, ratio, \
+                  manufacturingFactor, researchFactor) \
+                 VALUES (26, 1, 'Test Op', 0.0, 0.2, 0.7, 0.1, 0.65, 0.98, 0.98)",
+                [],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn parse_npc_stations_resolves_moon_orbit() {
+        let dir = TempSdeDir::new(
+            "npc_stations_moon",
+            &[(
+                "npcStations.jsonl",
+                "{\"_key\": 60000004, \"celestialIndex\": 10, \"operationID\": 26, \
+                 \"orbitID\": 40000002, \"orbitIndex\": 1, \"ownerID\": 1000002, \
+                 \"position\": {\"x\": 1.0, \"y\": 2.0, \"z\": 3.0}, \
+                 \"reprocessingEfficiency\": 0.5, \"reprocessingHangarFlag\": 4, \
+                 \"reprocessingStationsTake\": 0.05, \"solarSystemID\": 30000001, \
+                 \"typeID\": 1531, \"useOperationName\": true}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        setup_for_npc_stations(&connection);
+
+        let count = parse_npc_stations(&connection, &dir.path).unwrap();
+        assert_eq!(count, 1);
+
+        let (orbit_moon, orbit_planet): (Option<i64>, Option<i64>) = connection
+            .query_row(
+                "SELECT orbitMoonId, orbitPlanetId FROM npcStations WHERE stationId = 60000004",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(orbit_moon, Some(40000002));
+        assert_eq!(orbit_planet, None);
+    }
+
+    #[test]
+    fn parse_npc_stations_resolves_planet_orbit() {
+        let dir = TempSdeDir::new(
+            "npc_stations_planet",
+            &[(
+                "npcStations.jsonl",
+                "{\"_key\": 60000010, \"celestialIndex\": 1, \"operationID\": 26, \
+                 \"orbitID\": 40000001, \"ownerID\": 1000002, \
+                 \"position\": {\"x\": 1.0, \"y\": 2.0, \"z\": 3.0}, \
+                 \"reprocessingEfficiency\": 0.5, \"reprocessingHangarFlag\": 4, \
+                 \"reprocessingStationsTake\": 0.05, \"solarSystemID\": 30000001, \
+                 \"typeID\": 1531, \"useOperationName\": true}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        setup_for_npc_stations(&connection);
+
+        let count = parse_npc_stations(&connection, &dir.path).unwrap();
+        assert_eq!(count, 1);
+
+        let (orbit_moon, orbit_planet, orbit_index): (Option<i64>, Option<i64>, Option<i64>) = connection
+            .query_row(
+                "SELECT orbitMoonId, orbitPlanetId, orbitIndex FROM npcStations WHERE stationId = 60000010",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(orbit_moon, None);
+        assert_eq!(orbit_planet, Some(40000001));
+        // orbitIndex genuinely absent in this fixture, matching the real
+        // pattern (only present for moon-orbiting stations).
+        assert_eq!(orbit_index, None);
+    }
+
+    #[test]
+    fn parse_npc_stations_leaves_both_orbit_columns_null_when_neither_matches() {
+        // Mirrors the one real record (60015187) whose orbitID matches
+        // neither a real moon nor a real planet.
+        let dir = TempSdeDir::new(
+            "npc_stations_neither",
+            &[(
+                "npcStations.jsonl",
+                "{\"_key\": 60015187, \"operationID\": 26, \
+                 \"orbitID\": 999999999, \"ownerID\": 1000002, \
+                 \"position\": {\"x\": 1.0, \"y\": 2.0, \"z\": 3.0}, \
+                 \"reprocessingEfficiency\": 0.5, \"reprocessingHangarFlag\": 4, \
+                 \"reprocessingStationsTake\": 0.025, \"solarSystemID\": 30000001, \
+                 \"typeID\": 1531, \"useOperationName\": true}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        setup_for_npc_stations(&connection);
+
+        let count = parse_npc_stations(&connection, &dir.path).unwrap();
+        assert_eq!(count, 1);
+
+        let (celestial_index, orbit_moon, orbit_planet): (Option<i64>, Option<i64>, Option<i64>) = connection
+            .query_row(
+                "SELECT celestialIndex, orbitMoonId, orbitPlanetId FROM npcStations WHERE stationId = 60015187",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(celestial_index, None);
+        assert_eq!(orbit_moon, None);
+        assert_eq!(orbit_planet, None);
     }
 }
