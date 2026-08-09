@@ -124,11 +124,3 @@ stations -- gets written but can't be queried from `SdeManager` today.
   `sde-builder build --with-third-party`, so a plain build produces a
   database containing canonical SDE data only.
 
-## Reading what's already written
-
-Before adding more files to write, it's worth considering that the
-biggest gap today isn't file coverage, it's reading: of the 29 tables
-that already exist in the schema (27 static + 2 dynamic, from
-`builder::dotlan`), only `mapAbstractSystems` has complete read
-coverage. Adding more files to write without expanding `SdeManager` in
-parallel only grows that gap, it doesn't shrink it.
