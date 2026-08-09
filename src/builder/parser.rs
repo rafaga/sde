@@ -1921,6 +1921,23 @@ pub fn parse_data(
     // (not a column name), so foreign_key_list(<table>) is queried too
     // (cached per table, since multiple violations often share one) to
     // translate that index into the actual column.
+    //
+    // One specific violation is known and expected, not a bug: real SDE
+    // data (confirmed against a real npcCorporations.jsonl/
+    // npcStations.jsonl sample, and again against a real user's full SDE
+    // build, August 2026) has exactly two corporations -- Doomheim
+    // (1000001, the sink corporation characters get moved to when
+    // deleted) and InterBus (1000148, an NPC courier service) -- whose
+    // `stationID` (60000001) matches no real station in npcStations.
+    // Neither corporation operates out of an actual station, so this
+    // isn't a parsing bug to fix; the FK is cleared to NULL for exactly
+    // this (table, column, parent) combination, right here, instead of
+    // failing the whole build over two corporations that were never
+    // going to resolve. No other DEFERRABLE column in this crate has any
+    // confirmed real instance of this -- every other violation still
+    // fails loudly below, since silently nulling out a column with no
+    // real-data evidence that it can legitimately be unresolved would
+    // risk masking an actual bug instead of a known data quirk.
     {
         let mut fk_list_cache: std::collections::HashMap<
             String,
@@ -1929,6 +1946,7 @@ pub fn parse_data(
         let mut check = tx.prepare("PRAGMA foreign_key_check")?;
         let mut rows = check.query([])?;
         let mut violations = Vec::new();
+        let mut to_null: Vec<i64> = Vec::new();
         while let Some(row) = rows.next()? {
             let table: String = row.get(0)?;
             let rowid: Option<i64> = row.get(1)?;
@@ -1952,12 +1970,25 @@ pub fn parse_data(
                 .map(String::as_str)
                 .unwrap_or("<unknown column>");
 
+            if table == "npcCorporations" && column == "stationId" && parent == "npcStations" {
+                if let Some(rowid) = rowid {
+                    to_null.push(rowid);
+                    continue;
+                }
+            }
+
             let rowid_str = rowid
                 .map(|r| r.to_string())
                 .unwrap_or_else(|| "N/A".to_string());
             violations.push(format!(
                 "table {table}, rowid {rowid_str}, column {column} references {parent}"
             ));
+        }
+        for rowid in to_null {
+            tx.execute(
+                "UPDATE npcCorporations SET stationId = NULL WHERE rowid = ?1",
+                [rowid],
+            )?;
         }
         if !violations.is_empty() {
             return Err(BuilderError::Data(format!(
@@ -3996,6 +4027,86 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM npcCorporations", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn parse_data_clears_dangling_npc_corporation_station_id_instead_of_failing() {
+        // Same fixture as the previous test, except the dangling reference
+        // is specifically npcCorporations.stationId -> npcStations (not
+        // enemyId) -- the one confirmed-real case (Doomheim/InterBus, both
+        // stationID 60000001, neither a real station) that parse_data()
+        // resolves automatically instead of failing the whole build.
+        let dir = TempSdeDir::new(
+            "parse_data_dangling_station_id",
+            &[
+                (
+                    "categories.jsonl",
+                    "{\"_key\": 6, \"name\": {\"en\": \"Celestial\"}, \"published\": true}\n",
+                ),
+                (
+                    "groups.jsonl",
+                    "{\"_key\": 6, \"categoryID\": 6, \"name\": {\"en\": \"Sun\"}, \"anchorable\": false}\n\
+                     {\"_key\": 7, \"categoryID\": 6, \"name\": {\"en\": \"Frigate\"}, \"anchorable\": false}\n",
+                ),
+                (
+                    "races.jsonl",
+                    "{\"_key\": 1, \"name\": {\"en\": \"Caldari\"}}\n",
+                ),
+                (
+                    "npcCorporations.jsonl",
+                    "{\"_key\": 1000001, \"name\": {\"en\": \"Doomheim\"}, \
+                     \"tickerName\": \"D\", \"deleted\": false, \"extent\": \"L\", \
+                     \"hasPlayerPersonnelManager\": false, \"initialPrice\": 0, \"memberLimit\": -1, \
+                     \"minSecurity\": 0.0, \"minimumJoinStanding\": 1, \
+                     \"sendCharTerminationMessage\": true, \"shares\": 1000, \"size\": \"L\", \
+                     \"taxRate\": 0.0, \"uniqueName\": true, \"iconID\": 500, \"raceID\": 1, \
+                     \"stationID\": 60000001}\n",
+                ),
+                ("factions.jsonl", ""),
+                ("npcCorporationDivisions.jsonl", ""),
+                ("stationServices.jsonl", ""),
+                ("stationOperations.jsonl", ""),
+                ("npcStations.jsonl", ""),
+                (
+                    "mapRegions.jsonl",
+                    "{\"_key\": 10000002, \"name\": {\"en\": \"The Forge\"}, \"nebulaID\": 5, \
+                     \"position\": {\"x\": 100.0, \"y\": 200.0, \"z\": 300.0}}\n",
+                ),
+                (
+                    "mapConstellations.jsonl",
+                    "{\"_key\": 20000020, \"name\": {\"en\": \"Kimotoro\"}, \"regionID\": 10000002, \
+                     \"position\": {\"x\": 110.0, \"y\": 210.0, \"z\": 310.0}}\n",
+                ),
+                (
+                    "mapSolarSystems.jsonl",
+                    "{\"_key\": 30000142, \"name\": {\"en\": \"Jita\"}, \"constellationID\": 20000020, \
+                     \"radius\": 999999999.0, \"position\": {\"x\": -100.0, \"y\": 200.0, \"z\": -300.0}, \
+                     \"securityStatus\": 0.9459}\n",
+                ),
+                ("mapStargates.jsonl", ""),
+                ("mapStars.jsonl", ""),
+                ("mapPlanets.jsonl", ""),
+                ("mapMoons.jsonl", ""),
+                ("types.jsonl", ""),
+            ],
+        );
+        let mut connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        let config = ParserConfig::default();
+
+        // Doesn't fail -- the known Doomheim/InterBus-style case is
+        // cleared to NULL automatically, not reported as an error.
+        let summary = parse_data(&mut connection, &dir.path, &config).unwrap();
+        assert_eq!(summary.npc_corporations, 1);
+
+        let station_id: Option<i64> = connection
+            .query_row(
+                "SELECT stationId FROM npcCorporations WHERE corporationId = 1000001",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(station_id, None);
     }
 
     #[test]
