@@ -1922,8 +1922,10 @@ pub fn parse_data(
     // (cached per table, since multiple violations often share one) to
     // translate that index into the actual column.
     {
-        let mut fk_list_cache: std::collections::HashMap<String, std::collections::HashMap<i64, String>> =
-            std::collections::HashMap::new();
+        let mut fk_list_cache: std::collections::HashMap<
+            String,
+            std::collections::HashMap<i64, String>,
+        > = std::collections::HashMap::new();
         let mut check = tx.prepare("PRAGMA foreign_key_check")?;
         let mut rows = check.query([])?;
         let mut violations = Vec::new();
@@ -1950,7 +1952,9 @@ pub fn parse_data(
                 .map(String::as_str)
                 .unwrap_or("<unknown column>");
 
-            let rowid_str = rowid.map(|r| r.to_string()).unwrap_or_else(|| "N/A".to_string());
+            let rowid_str = rowid
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| "N/A".to_string());
             violations.push(format!(
                 "table {table}, rowid {rowid_str}, column {column} references {parent}"
             ));
