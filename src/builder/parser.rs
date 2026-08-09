@@ -1908,6 +1908,62 @@ pub fn parse_data(
         })? as usize;
     let npc_stations = parse_npc_stations(&tx, sde_directory)?;
 
+    // Diagnostic: PRAGMA foreign_key_check runs within this transaction,
+    // before COMMIT, so it can point at exactly which row/table/FK is
+    // unsatisfied -- instead of letting a bare `tx.commit()` fail with
+    // SQLite's generic "FOREIGN KEY constraint failed" (no indication of
+    // which of this crate's several DEFERRABLE constraints -- across
+    // npcCorporations/npcStations/factions -- is the actual culprit).
+    // Real EVE data is large enough (thousands of NPC corporations) that
+    // guessing at the cause from the generic message alone isn't
+    // reliable; this turns a silent COMMIT failure into a precise,
+    // actionable one. foreign_key_check only gives a numeric fk index
+    // (not a column name), so foreign_key_list(<table>) is queried too
+    // (cached per table, since multiple violations often share one) to
+    // translate that index into the actual column.
+    {
+        let mut fk_list_cache: std::collections::HashMap<String, std::collections::HashMap<i64, String>> =
+            std::collections::HashMap::new();
+        let mut check = tx.prepare("PRAGMA foreign_key_check")?;
+        let mut rows = check.query([])?;
+        let mut violations = Vec::new();
+        while let Some(row) = rows.next()? {
+            let table: String = row.get(0)?;
+            let rowid: Option<i64> = row.get(1)?;
+            let parent: String = row.get(2)?;
+            let fkid: i64 = row.get(3)?;
+
+            if !fk_list_cache.contains_key(&table) {
+                let mut column_by_fkid = std::collections::HashMap::new();
+                let mut fk_list = tx.prepare(&format!("PRAGMA foreign_key_list({table})"))?;
+                let mut fk_rows = fk_list.query([])?;
+                while let Some(fk_row) = fk_rows.next()? {
+                    let id: i64 = fk_row.get(0)?;
+                    let from_column: String = fk_row.get(3)?;
+                    column_by_fkid.insert(id, from_column);
+                }
+                fk_list_cache.insert(table.clone(), column_by_fkid);
+            }
+            let column = fk_list_cache
+                .get(&table)
+                .and_then(|m| m.get(&fkid))
+                .map(String::as_str)
+                .unwrap_or("<unknown column>");
+
+            let rowid_str = rowid.map(|r| r.to_string()).unwrap_or_else(|| "N/A".to_string());
+            violations.push(format!(
+                "table {table}, rowid {rowid_str}, column {column} references {parent}"
+            ));
+        }
+        if !violations.is_empty() {
+            return Err(BuilderError::Data(format!(
+                "foreign_key_check found {} unsatisfied constraint(s) before commit:\n  {}",
+                violations.len(),
+                violations.join("\n  ")
+            )));
+        }
+    }
+
     tx.commit()?;
 
     Ok(ParseSummary {
@@ -3846,6 +3902,96 @@ mod tests {
             .unwrap();
         assert_eq!(dest_gate, 50000002);
         assert_eq!(dest_system, 30002187);
+    }
+
+    #[test]
+    fn parse_data_reports_precise_diagnostic_for_unsatisfied_deferred_fk() {
+        // Same fixture as parse_data_happy_path_returns_summary_and_commits,
+        // except npcCorporations carries an enemyID that never resolves
+        // to any real corporation anywhere in the file -- confirms the
+        // PRAGMA foreign_key_check diagnostic (run right before COMMIT)
+        // correctly names the table and column, instead of just letting
+        // the raw COMMIT fail with SQLite's generic, unspecific message.
+        let dir = TempSdeDir::new(
+            "parse_data_dangling_fk",
+            &[
+                (
+                    "categories.jsonl",
+                    "{\"_key\": 6, \"name\": {\"en\": \"Celestial\"}, \"published\": true}\n",
+                ),
+                (
+                    "groups.jsonl",
+                    "{\"_key\": 6, \"categoryID\": 6, \"name\": {\"en\": \"Sun\"}, \"anchorable\": false}\n\
+                     {\"_key\": 7, \"categoryID\": 6, \"name\": {\"en\": \"Frigate\"}, \"anchorable\": false}\n",
+                ),
+                (
+                    "races.jsonl",
+                    "{\"_key\": 1, \"name\": {\"en\": \"Caldari\"}}\n",
+                ),
+                (
+                    "npcCorporations.jsonl",
+                    "{\"_key\": 1000004, \"name\": {\"en\": \"CBD Corporation\"}, \
+                     \"tickerName\": \"CBD\", \"deleted\": false, \"extent\": \"L\", \
+                     \"hasPlayerPersonnelManager\": false, \"initialPrice\": 0, \"memberLimit\": -1, \
+                     \"minSecurity\": 0.0, \"minimumJoinStanding\": 1, \
+                     \"sendCharTerminationMessage\": true, \"shares\": 1000, \"size\": \"L\", \
+                     \"taxRate\": 0.0, \"uniqueName\": true, \"iconID\": 500, \"raceID\": 1, \
+                     \"enemyID\": 999999999}\n",
+                ),
+                (
+                    "factions.jsonl",
+                    "{\"_key\": 500001, \"name\": {\"en\": \"Caldari State\"}, \"iconID\": 600, \
+                     \"sizeFactor\": 3.0, \"uniqueName\": true, \"description\": {\"en\": \"x\"}, \
+                     \"corporationID\": 1000004, \"memberRaces\": [1]}\n",
+                ),
+                ("npcCorporationDivisions.jsonl", ""),
+                ("stationServices.jsonl", ""),
+                ("stationOperations.jsonl", ""),
+                ("npcStations.jsonl", ""),
+                (
+                    "mapRegions.jsonl",
+                    "{\"_key\": 10000002, \"name\": {\"en\": \"The Forge\"}, \"nebulaID\": 5, \
+                     \"position\": {\"x\": 100.0, \"y\": 200.0, \"z\": 300.0}}\n",
+                ),
+                (
+                    "mapConstellations.jsonl",
+                    "{\"_key\": 20000020, \"name\": {\"en\": \"Kimotoro\"}, \"regionID\": 10000002, \
+                     \"position\": {\"x\": 110.0, \"y\": 210.0, \"z\": 310.0}}\n",
+                ),
+                (
+                    "mapSolarSystems.jsonl",
+                    "{\"_key\": 30000142, \"name\": {\"en\": \"Jita\"}, \"constellationID\": 20000020, \
+                     \"radius\": 999999999.0, \"position\": {\"x\": -100.0, \"y\": 200.0, \"z\": -300.0}, \
+                     \"securityStatus\": 0.9459}\n",
+                ),
+                ("mapStargates.jsonl", ""),
+                ("mapStars.jsonl", ""),
+                ("mapPlanets.jsonl", ""),
+                ("mapMoons.jsonl", ""),
+                ("types.jsonl", ""),
+            ],
+        );
+        let mut connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        let config = ParserConfig::default();
+
+        let error = parse_data(&mut connection, &dir.path, &config).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("npcCorporations"),
+            "diagnostic should name the table: {message}"
+        );
+        assert!(
+            message.contains("enemyId"),
+            "diagnostic should name the actual column, not just a numeric fk index: {message}"
+        );
+
+        // Confirms the transaction genuinely rolled back -- the row with
+        // the dangling enemyId never persisted.
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM npcCorporations", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]
