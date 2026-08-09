@@ -229,7 +229,7 @@ pub struct ParserConfig {
     /// ([`parse_moons`]) entirely -- doesn't call it at all. Default
     /// `true`, same as `SdeConfig.with_moons` in Python.
     pub with_moons: bool,
-    /// if true, [`parse_data`] present elements bieng parsed in stdout as they are processed, 
+    /// if true, [`parse_data`] present elements bieng parsed in stdout as they are processed,
     /// otherwise it will be silent. Default `false`.
     pub verbose: bool,
     /// If `true`, [`build_database`] also fetches and layers in
@@ -636,7 +636,7 @@ pub fn parse_groups(
 
         count += 1;
     }
-    if config.verbose{
+    if config.verbose {
         println!("Parsed {count} groups");
     }
     Ok(count)
@@ -1020,7 +1020,7 @@ pub fn parse_factions(
 
         count += 1;
     }
-    if config.verbose  {
+    if config.verbose {
         println!("Parsed {count} factions");
     }
     Ok(count)
@@ -1069,7 +1069,7 @@ pub fn parse_regions(
         ])?;
         count += 1;
     }
-    if config.verbose  {
+    if config.verbose {
         println!("Parsed {count} regions");
     }
     Ok(count)
@@ -1223,7 +1223,7 @@ pub fn parse_solar_systems(
         ])?;
         count += 1;
     }
-    if config.verbose{
+    if config.verbose {
         println!("Parsed {count} solar systems");
     }
     Ok(count)
@@ -1604,7 +1604,10 @@ pub fn parse_moons(
 /// they always end up returning
 /// `(msga.solarSystemId, msgb.solarSystemId)` in that order in
 /// practice, but they're ported literally as they are in Python.
-pub fn parse_connections(connection: &Connection, config: &ParserConfig) -> Result<usize, BuilderError> {
+pub fn parse_connections(
+    connection: &Connection,
+    config: &ParserConfig,
+) -> Result<usize, BuilderError> {
     let count = connection.execute(
         "INSERT INTO mapSystemConnections (systemA, systemB) \
          SELECT MIN(msga.solarSystemId, msgb.solarSystemId), \
@@ -2138,7 +2141,14 @@ pub async fn build_database(
             with_jove_observatories: true,
             with_special_ore: true,
         };
-        dotlan::process(connection, client, sde_directory, maps_url_base, &dotlan_config).await?;
+        dotlan::process(
+            connection,
+            client,
+            sde_directory,
+            maps_url_base,
+            &dotlan_config,
+        )
+        .await?;
     }
 
     Ok(summary)

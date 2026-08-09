@@ -23,10 +23,10 @@ See [ERD.md](ERD.md) for the diagram of the tables already implemented.
 | `types.jsonl` | Core taxonomy | `invTypes`, `typeStar` | ✅ | ❌ |
 | `races.jsonl` | Core taxonomy | `races` | ✅ | ❌ |
 | `factions.jsonl` | Factions & NPC corporations | `factions`, `factionRace` | ✅ | ❌ |
-| `npcCorporations.jsonl` | Factions & NPC corporations | `npcCorporations` + 4 junction tables | ✅ | ❌ |
+| `npcCorporations.jsonl` | Factions & NPC corporations | `npcCorporations`, `npcCorporationAllowedRaces`, `npcCorporationDivisionAssignments`, `npcCorporationTrades`, `npcCorporationInvestors` | ✅ | ❌ |
 | `npcCorporationDivisions.jsonl` | Factions & NPC corporations | `npcCorporationDivisions` | ✅ | ❌ |
 | `npcStations.jsonl` | NPC stations | `npcStations` | ✅ | ❌ |
-| `stationOperations.jsonl` | NPC stations | `stationOperations` + 2 junction tables | ✅ | ❌ |
+| `stationOperations.jsonl` | NPC stations | `stationOperations`, `stationOperationServices`, `stationOperationTypes` | ✅ | ❌ |
 | `stationServices.jsonl` | NPC stations | `stationServices` | ✅ | ❌ |
 | `mapRegions.jsonl` | Universe / map | `mapRegions` | ✅ | 🟡 |
 | `mapConstellations.jsonl` | Universe / map | `mapConstellations` | ✅ | 🟡 |

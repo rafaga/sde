@@ -259,17 +259,24 @@ Everything above the `%%` comment inside the diagram comes from
 `mapTriglavianStatus`, and the four extra `mapSolarSystems` columns
 (`iceBelt`, `trigStatusID`, `joveObservatory`, `specialOreAnom`) are
 different: they don't exist in `schema.sql` at all. `builder::dotlan`
-adds each of them at runtime (`CREATE TABLE`/`ALTER TABLE`), and,
-except for `mapAbstractSystems`, each is gated by its own config flag
-— a database built with a given flag off simply doesn't have that
-table/column, rather than having it sit there empty. This is why
+adds each of them at runtime (`CREATE TABLE`/`ALTER TABLE`), and this
+whole layer is opt-in: none of it runs at all unless
+`ParserConfig.with_third_party` is set (`sde-builder build
+--with-third-party`), off by default -- a plain build produces a
+database containing canonical SDE data only, since none of this comes
+from CCP's official export. When it does run, `mapAbstractSystems` is
+added unconditionally (no sub-flag of its own beyond
+`with_third_party`); the other four are each gated by their own
+`DotlanConfig` flag on top of that -- a database built with a given
+flag off simply doesn't have that table/column, rather than having it
+sit there empty. This -- plus the `with_third_party` gate -- is why
 they're kept out of the static schema in the first place: this data
 comes from outside CCP's official SDE, and folding it into the
 canonical schema would blur that line.
 
-| Addition | Always added? |
+| Addition | Added when `with_third_party` is on? |
 |---|---|
-| `mapAbstractSystems` | Yes, unconditionally |
+| `mapAbstractSystems` | Always |
 | `iceBelt` (on `mapSolarSystems`) | Only if `with_icebelts` |
 | `mapTriglavianStatus` + `trigStatusID` | Only if `with_triglavian_status` |
 | `joveObservatory` (on `mapSolarSystems`) | Only if `with_jove_observatories` |

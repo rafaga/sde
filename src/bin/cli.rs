@@ -14,7 +14,11 @@ const MAPS_URL: &str = "http://evemaps.dotlan.net/svg/";
 const SDE_VARIANT: &str = "jsonl";
 
 #[derive(Parser)]
-#[command(name = "sde-builder", version, about = "Builds/updates sde.db from EVE Online's Static Data Export")]
+#[command(
+    name = "sde-builder",
+    version,
+    about = "Builds/updates sde.db from EVE Online's Static Data Export"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -104,13 +108,19 @@ async fn main() -> anyhow::Result<()> {
         .context("checking for a new SDE build")?;
 
     if !force && !changed && output.exists() {
-        println!("sde: {} is already up to date, nothing to do", output.display());
+        println!(
+            "sde: {} is already up to date, nothing to do",
+            output.display()
+        );
         return Ok(());
     }
 
     if output.exists() {
         std::fs::remove_file(&output).context("removing the previous database")?;
-        println!("sde: removing the previous {}, a new SDE build is available", output.display());
+        println!(
+            "sde: removing the previous {}, a new SDE build is available",
+            output.display()
+        );
     }
 
     let zip_path = data_dir.join(format!("sde-{SDE_VARIANT}.zip"));
@@ -138,9 +148,10 @@ async fn main() -> anyhow::Result<()> {
         verbose: !quiet,
         with_third_party,
     };
-    let _summary = parser::build_database(&mut connection, &sde_dir, &client, MAPS_URL, &parser_config)
-        .await
-        .context("building the database")?;
+    let _summary =
+        parser::build_database(&mut connection, &sde_dir, &client, MAPS_URL, &parser_config)
+            .await
+            .context("building the database")?;
     println!("sde: Parse complete");
 
     let third_party_note = if with_third_party {
@@ -148,6 +159,9 @@ async fn main() -> anyhow::Result<()> {
     } else {
         " (canonical SDE only)"
     };
-    println!("sde: build complete{third_party_note} -> {}", output.display());
+    println!(
+        "sde: build complete{third_party_note} -> {}",
+        output.display()
+    );
     Ok(())
 }
