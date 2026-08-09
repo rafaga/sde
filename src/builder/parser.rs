@@ -168,6 +168,8 @@
 //!   code. This port doesn't replicate it.
 
 use crate::builder::BuilderError;
+use crate::builder::dotlan::{self, DotlanConfig};
+use reqwest::Client;
 use rusqlite::Connection;
 use serde_json::Value;
 use std::io::BufRead;
@@ -230,6 +232,17 @@ pub struct ParserConfig {
     /// if true, [`parse_data`] present elements bieng parsed in stdout as they are processed, 
     /// otherwise it will be silent. Default `false`.
     pub verbose: bool,
+    /// If `true`, [`build_database`] also fetches and layers in
+    /// `builder::dotlan`'s community-maintained data on top of the
+    /// canonical SDE (ice belts, Jove Observatories, Triglavian
+    /// invasion status, special ore anomalies, and
+    /// `mapAbstractSystems` itself -- the one part of that layer that
+    /// isn't gated by its own `DotlanConfig` flag). Default `false`:
+    /// none of this comes from CCP's official export, so a database
+    /// built with the default config contains canonical SDE data only.
+    /// Has no effect on [`parse_data`] directly -- only
+    /// [`build_database`], which calls both, consults it.
+    pub with_third_party: bool,
 }
 
 impl Default for ParserConfig {
@@ -245,6 +258,7 @@ impl Default for ParserConfig {
             with_gates: true,
             with_moons: true,
             verbose: false,
+            with_third_party: false,
         }
     }
 }
@@ -2087,6 +2101,47 @@ pub fn parse_data(
         station_operation_types,
         npc_stations,
     })
+}
+
+/// Runs the full database build: the canonical SDE parse
+/// ([`parse_data`]), plus -- gated behind `config.with_third_party`,
+/// off by default -- `builder::dotlan`'s community-maintained layer on
+/// top of it. Schema creation is the caller's responsibility, same as
+/// [`parse_data`] already requires (both expect the schema to exist
+/// already).
+///
+/// Exists so that a library consumer calling this crate directly (not
+/// through the `sde-builder` binary) gets the exact same
+/// canonical-vs-third-party behavior the CLI does, driven by the same
+/// [`ParserConfig`] -- centralizing that decision here instead of
+/// leaving it to every caller (CLI included) to reimplement the same
+/// `if config.with_third_party { dotlan::process(...) }` check.
+///
+/// `client`/`maps_url_base` are the same two pieces of information
+/// [`dotlan::process`] itself needs -- passed through unchanged, not
+/// duplicated as separate config fields, so a caller that isn't using
+/// `with_third_party` doesn't need to supply a real `maps_url_base` at
+/// all (any string works; it's never read).
+pub async fn build_database(
+    connection: &mut Connection,
+    sde_directory: &Path,
+    client: &Client,
+    maps_url_base: &str,
+    config: &ParserConfig,
+) -> Result<ParseSummary, BuilderError> {
+    let summary = parse_data(connection, sde_directory, config)?;
+
+    if config.with_third_party {
+        let dotlan_config = DotlanConfig {
+            with_icebelts: true,
+            with_triglavian_status: true,
+            with_jove_observatories: true,
+            with_special_ore: true,
+        };
+        dotlan::process(connection, client, sde_directory, maps_url_base, &dotlan_config).await?;
+    }
+
+    Ok(summary)
 }
 
 #[cfg(test)]

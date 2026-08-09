@@ -1,6 +1,6 @@
 # Entity-Relationship Diagram
 
-Generated from `src/builder/schema.sql` (22 tables, the static schema
+Generated from `src/builder/schema.sql` (27 tables, the static schema
 that's always present), plus the tables/columns `builder::dotlan` adds
 at runtime rather than declaring statically (see the note below the
 diagram). Attribute lists are trimmed to primary/foreign keys plus one
@@ -14,6 +14,17 @@ were declared in the schema but never populated by any version of this
 project, Rust or Python — verified against real SDE exports
 (`npcStations.jsonl`, `stationOperations.jsonl`,
 `stationServices.jsonl`), not a rename of the old design.
+
+`npcCorporations` (6 → 27 columns) and `factions` (6 → 12 columns) were
+similarly expanded against real data (`npcCorporations.jsonl`,
+`npcCorporationDivisions.jsonl`, `factions.jsonl`) -- the original
+versions captured only a small subset of what the real SDE actually
+provides. `npcCorporations.enemyId`/`friendId`/`stationId`/`factionId`/
+`solarSystemId`, `npcCorporationInvestors.investorId`, and
+`factions.solarSystemId` are `DEFERRABLE` in the real schema (not shown
+in this diagram's simplified relationship notation): several reference
+tables that are only populated in later parsing phases, or reference
+`npcCorporations` itself.
 
 ```mermaid
 erDiagram
@@ -39,11 +50,38 @@ erDiagram
         int corporationId PK
         string corporationName
         int raceId FK
+        int enemyId FK
+        int friendId FK
+        int factionId FK
+        int solarSystemId FK
+        int stationId FK
+    }
+    npcCorporationDivisions {
+        int divisionId PK
+        string internalName
+    }
+    npcCorporationAllowedRaces {
+        int corporationId PK, FK
+        int raceId PK, FK
+    }
+    npcCorporationDivisionAssignments {
+        int corporationId PK, FK
+        int divisionId PK, FK
+    }
+    npcCorporationTrades {
+        int corporationId PK, FK
+        int typeId PK, FK
+    }
+    npcCorporationInvestors {
+        int corporationId PK, FK
+        int investorId PK, FK
     }
     factions {
         int factionId PK
         string factionName
         int corporationId FK
+        int militiaCorporationId FK
+        int solarSystemId FK
     }
     factionRace {
         int factionId PK, FK
@@ -145,7 +183,7 @@ erDiagram
     invCategories ||--|{ invGroups : ""
     invGroups ||--o{ invTypes : ""
     races ||--o{ npcCorporations : ""
-    npcCorporations ||--o{ factions : ""
+    npcCorporations ||--o{ factions : "corporationId"
     factions ||--|{ factionRace : ""
     races ||--|{ factionRace : ""
     factions ||--o{ mapRegions : ""
@@ -171,7 +209,22 @@ erDiagram
     stationOperations ||--|{ npcStations : ""
     mapMoons ||--o{ npcStations : "orbitMoonId"
     mapPlanets ||--o{ npcStations : "orbitPlanetId"
-    npcCorporations ||--|{ npcStations : ""
+    npcCorporations ||--|{ npcStations : "ownerId"
+    npcCorporations ||--o{ npcCorporations : "enemyId"
+    npcCorporations ||--o{ npcCorporations : "friendId"
+    factions ||--o{ npcCorporations : "factionId"
+    mapSolarSystems ||--o{ npcCorporations : ""
+    npcStations ||--o{ npcCorporations : "stationId"
+    npcCorporations ||--o{ factions : "militiaCorporationId"
+    mapSolarSystems ||--o{ factions : ""
+    npcCorporations ||--|{ npcCorporationAllowedRaces : ""
+    races ||--|{ npcCorporationAllowedRaces : ""
+    npcCorporations ||--|{ npcCorporationDivisionAssignments : ""
+    npcCorporationDivisions ||--|{ npcCorporationDivisionAssignments : ""
+    npcCorporations ||--|{ npcCorporationTrades : ""
+    invTypes ||--|{ npcCorporationTrades : ""
+    npcCorporations ||--|{ npcCorporationInvestors : "corporationId"
+    npcCorporations ||--|{ npcCorporationInvestors : "investorId"
     invTypes ||--|{ npcStations : ""
     stationOperations ||--|{ stationOperationServices : ""
     stationServices ||--|{ stationOperationServices : ""
@@ -186,10 +239,12 @@ erDiagram
 
 - `||--|{` — the referenced row is required (`NOT NULL` foreign key).
 - `||--o{` — the reference is optional (nullable foreign key).
-- `factionRace`, `factionSolarSystem`, and `stationOperationServices`
-  are pure join tables (composite primary key, no columns of their
-  own). `stationOperationTypes` is almost the same, plus a plain
-  `sizeKey` integer that isn't itself a foreign key.
+- `factionRace`, `factionSolarSystem`, `stationOperationServices`,
+  `npcCorporationAllowedRaces`, `npcCorporationDivisionAssignments`,
+  `npcCorporationTrades`, and `npcCorporationInvestors` are pure join
+  tables (composite primary key, no columns of their own).
+  `stationOperationTypes` is almost the same, plus a plain `sizeKey`
+  integer that isn't itself a foreign key.
 - `mapSystemGates` has two separate foreign keys into
   `mapSolarSystems` (`solarSystemId`, `destinationSystemId`) plus a
   self-reference (`destinationGateId`, the paired gate on the other

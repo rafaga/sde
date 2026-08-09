@@ -34,8 +34,6 @@ already provided.
   `objects`, for consuming an already-built `sde.db`.
 - **`builder`** — adds the pipeline that (re)builds `sde.db` from
   scratch. Installs the `sde-builder` CLI binary.
-- **`gui`** — adds a GUI for the pipeline that (re)builds `sde.db` from
-  scratch.(`sde-builder-gui`). Implies `builder`.
 
 ## Usage
 
@@ -57,13 +55,20 @@ let connections = sde.get_connections()?; // RTree<MapSegment>, for spatial quer
 
 ## Building `sde.db`
 
-With the `builder` feature enabled, the `sde` binary checks for a newer
-SDE release, downloads and unpacks it if needed, and rebuilds the
-database from it:
+With the `builder` feature enabled, the `sde-builder` binary checks for
+a newer SDE release, downloads and unpacks it if needed, and rebuilds
+the database from it:
 
 ```sh
-cargo run --bin sde --features builder
+cargo run --bin sde-builder --features builder -- build
 ```
+
+`build` takes a few flags -- `--force` to rebuild even if the database
+is already up to date, `-q`/`--quiet` to suppress the parser's
+per-phase progress output, and `-o`/`--output <path>` to change where
+the database is written (`sde.db` by default). See
+`cargo run --bin sde-builder --features builder -- build --help` for
+the full list.
 
 ## Architecture
 
@@ -85,8 +90,6 @@ See [ERD.md](ERD.md) for the database's entity-relationship diagram.
 
 - [databaseCreator](https://github.com/rafaga/databaseCreator) — the
   Python prototype this crate ports and extends.
-- [egui-map](https://github.com/rafaga/egui-map) — the map-rendering
-  widget `sde-gui` builds on.
 
 ## License
 
