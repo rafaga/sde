@@ -8,6 +8,7 @@ use sde::builder::dotlan::DotlanConfig;
 use sde::builder::parser::{ParserConfig, ProjectedAxis};
 use sde::builder::{dotlan, extract, http, parser, schema, sde_index};
 use std::path::PathBuf;
+use clap::{Parser, Subcommand};
 
 const SDE_URL: &str = "https://developers.eveonline.com/static-data/tranquility/";
 const MAPS_URL: &str = "http://evemaps.dotlan.net/svg/";
@@ -78,20 +79,11 @@ async fn main() -> anyhow::Result<()> {
         map_void: true,
         with_gates: true,
         with_moons: true,
+        verbose: true,
     };
-    let summary = parser::parse_data(&mut connection, &sde_dir, &parser_config)
+    let _summary = parser::parse_data(&mut connection, &sde_dir, &parser_config)
         .context("parsing the SDE data")?;
-    println!(
-        "sde: parsed {} regions, {} constellations, {} solar systems, {} stargates, {} stars, {} planets, {} moons, {} connections",
-        summary.regions,
-        summary.constellations,
-        summary.solar_systems,
-        summary.stargates,
-        summary.stars,
-        summary.planets,
-        summary.moons,
-        summary.connections,
-    );
+    println!("sde: Parse complete");
 
     // Matches database_builder.py's ExternalParser.configuration overrides.
     let dotlan_config = DotlanConfig {

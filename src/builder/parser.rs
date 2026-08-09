@@ -227,6 +227,9 @@ pub struct ParserConfig {
     /// ([`parse_moons`]) entirely -- doesn't call it at all. Default
     /// `true`, same as `SdeConfig.with_moons` in Python.
     pub with_moons: bool,
+    /// if true, [`parse_data`] present elements bieng parsed in stdout as they are processed, 
+    /// otherwise it will be silent. Default `false`.
+    pub verbose: bool,
 }
 
 impl Default for ParserConfig {
@@ -241,6 +244,7 @@ impl Default for ParserConfig {
             map_void: false,
             with_gates: true,
             with_moons: true,
+            verbose: false,
         }
     }
 }
@@ -576,6 +580,9 @@ pub fn parse_categories(
         insert_category.execute(rusqlite::params![id, name, published])?;
         count += 1;
     }
+    if config.verbose {
+        println!("Parsed {count} categories");
+    }
     Ok(count)
 }
 
@@ -614,6 +621,9 @@ pub fn parse_groups(
         }
 
         count += 1;
+    }
+    if config.verbose{
+        println!("Parsed {count} groups");
     }
     Ok(count)
 }
@@ -695,6 +705,9 @@ pub fn parse_types(
 
         count += 1;
     }
+    if config.verbose {
+        println!("Parsed {count} types");
+    }
     Ok(count)
 }
 
@@ -720,6 +733,9 @@ pub fn parse_races(
 
         insert_race.execute(rusqlite::params![id, name])?;
         count += 1;
+    }
+    if config.verbose {
+        println!("Parsed {count} races");
     }
     Ok(count)
 }
@@ -752,6 +768,9 @@ pub fn parse_npc_corporation_divisions(
         let leader_type_name = required_localized(&record, "leaderTypeName", config)?;
         insert.execute(rusqlite::params![id, internal_name, leader_type_name])?;
         count += 1;
+    }
+    if config.verbose {
+        println!("Parsed {count} npcCorporationDivisions");
     }
     Ok(count)
 }
@@ -911,6 +930,9 @@ pub fn parse_npc_corporations(
 
         count += 1;
     }
+    if config.verbose {
+        println!("Parsed {count} npcCorporations");
+    }
     Ok(count)
 }
 
@@ -984,6 +1006,9 @@ pub fn parse_factions(
 
         count += 1;
     }
+    if config.verbose  {
+        println!("Parsed {count} factions");
+    }
     Ok(count)
 }
 
@@ -1030,6 +1055,9 @@ pub fn parse_regions(
         ])?;
         count += 1;
     }
+    if config.verbose  {
+        println!("Parsed {count} regions");
+    }
     Ok(count)
 }
 
@@ -1073,6 +1101,9 @@ pub fn parse_constellations(
             id, name, region_id, center_x, center_y, center_z
         ])?;
         count += 1;
+    }
+    if config.verbose {
+        println!("Parsed {count} constellations");
     }
     Ok(count)
 }
@@ -1178,6 +1209,9 @@ pub fn parse_solar_systems(
         ])?;
         count += 1;
     }
+    if config.verbose{
+        println!("Parsed {count} solar systems");
+    }
     Ok(count)
 }
 
@@ -1228,6 +1262,7 @@ pub fn parse_stargates(
     connection: &Connection,
     sde_directory: &Path,
     state: &SystemScopeState,
+    config: &ParserConfig,
 ) -> Result<usize, BuilderError> {
     let mut insert_gate = connection.prepare(
         "INSERT INTO mapSystemGates (systemGateId, solarSystemId, typeId, \
@@ -1260,6 +1295,9 @@ pub fn parse_stargates(
             destination_system_id,
         ])?;
         count += 1;
+    }
+    if config.verbose {
+        println!("Parsed {count} stargates");
     }
     Ok(count)
 }
@@ -1305,6 +1343,7 @@ pub fn parse_stars(
     sde_directory: &Path,
     state: &SystemScopeState,
     star_state: &StarTypeState,
+    config: &ParserConfig,
 ) -> Result<usize, BuilderError> {
     let mut insert_star = connection.prepare(
         "INSERT INTO mapStars (starId, solarSystemId, locked, radius, starTypeId) \
@@ -1342,6 +1381,9 @@ pub fn parse_stars(
             star_type_id
         ])?;
         count += 1;
+    }
+    if config.verbose {
+        println!("Parsed {count} stars");
     }
     Ok(count)
 }
@@ -1382,6 +1424,7 @@ pub fn parse_planets(
     connection: &Connection,
     sde_directory: &Path,
     state: &SystemScopeState,
+    config: &ParserConfig,
 ) -> Result<usize, BuilderError> {
     let mut insert_planet = connection.prepare(
         "INSERT INTO mapPlanets (planetId, solarSystemId, planetaryIndex, fragmented, radius, \
@@ -1418,6 +1461,9 @@ pub fn parse_planets(
             pos_z,
         ])?;
         count += 1;
+    }
+    if config.verbose {
+        println!("Parsed {count} planets");
     }
     Ok(count)
 }
@@ -1471,6 +1517,7 @@ pub fn parse_moons(
     connection: &Connection,
     sde_directory: &Path,
     state: &SystemScopeState,
+    config: &ParserConfig,
 ) -> Result<usize, BuilderError> {
     let mut insert_moon = connection.prepare(
         "INSERT INTO mapMoons (moonId, solarSystemId, moonIndex, planetId, typeId, radius, \
@@ -1506,6 +1553,9 @@ pub fn parse_moons(
         ])?;
         count += 1;
     }
+    if config.verbose {
+        println!("Parsed {count} moons");
+    }
     Ok(count)
 }
 
@@ -1540,7 +1590,7 @@ pub fn parse_moons(
 /// they always end up returning
 /// `(msga.solarSystemId, msgb.solarSystemId)` in that order in
 /// practice, but they're ported literally as they are in Python.
-pub fn parse_connections(connection: &Connection) -> Result<usize, BuilderError> {
+pub fn parse_connections(connection: &Connection, config: &ParserConfig) -> Result<usize, BuilderError> {
     let count = connection.execute(
         "INSERT INTO mapSystemConnections (systemA, systemB) \
          SELECT MIN(msga.solarSystemId, msgb.solarSystemId), \
@@ -1550,6 +1600,9 @@ pub fn parse_connections(connection: &Connection) -> Result<usize, BuilderError>
          WHERE msga.solarSystemId < msgb.solarSystemId",
         [],
     )?;
+    if config.verbose {
+        println!("Parsed {count} system connections");
+    }
     Ok(count)
 }
 
@@ -1580,6 +1633,9 @@ pub fn parse_station_services(
         let name = required_localized(&record, "serviceName", config)?;
         insert.execute(rusqlite::params![id, name])?;
         count += 1;
+    }
+    if config.verbose {
+        println!("Parsed {count} station services");
     }
     Ok(count)
 }
@@ -1667,6 +1723,9 @@ pub fn parse_station_operations(
 
         count += 1;
     }
+    if config.verbose {
+        println!("Parsed {count} station operations");
+    }
     Ok(count)
 }
 
@@ -1712,6 +1771,7 @@ pub fn parse_station_operations(
 pub fn parse_npc_stations(
     connection: &Connection,
     sde_directory: &Path,
+    config: &ParserConfig,
 ) -> Result<usize, BuilderError> {
     let mut moon_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
     {
@@ -1782,6 +1842,9 @@ pub fn parse_npc_stations(
             use_operation_name
         ])?;
         count += 1;
+    }
+    if config.verbose {
+        println!("Parsed {count} NPC stations");
     }
     Ok(count)
 }
@@ -1883,18 +1946,18 @@ pub fn parse_data(
     let mut scope = SystemScopeState::default();
     let solar_systems = parse_solar_systems(&tx, sde_directory, config, &mut scope)?;
     let stargates = if config.with_gates {
-        parse_stargates(&tx, sde_directory, &scope)?
+        parse_stargates(&tx, sde_directory, &scope, config)?
     } else {
         0
     };
-    let stars = parse_stars(&tx, sde_directory, &scope, &state)?;
-    let planets = parse_planets(&tx, sde_directory, &scope)?;
+    let stars = parse_stars(&tx, sde_directory, &scope, &state, config)?;
+    let planets = parse_planets(&tx, sde_directory, &scope, config)?;
     let moons = if config.with_moons {
-        parse_moons(&tx, sde_directory, &scope)?
+        parse_moons(&tx, sde_directory, &scope, config)?
     } else {
         0
     };
-    let connections = parse_connections(&tx)?;
+    let connections = parse_connections(&tx, config)?;
 
     let station_services = parse_station_services(&tx, sde_directory, config)?;
     let station_operations = parse_station_operations(&tx, sde_directory, config)?;
@@ -1906,7 +1969,7 @@ pub fn parse_data(
         tx.query_row("SELECT COUNT(*) FROM stationOperationTypes", [], |row| {
             row.get::<usize, i64>(0)
         })? as usize;
-    let npc_stations = parse_npc_stations(&tx, sde_directory)?;
+    let npc_stations = parse_npc_stations(&tx, sde_directory, config)?;
 
     // Diagnostic: PRAGMA foreign_key_check runs within this transaction,
     // before COMMIT, so it can point at exactly which row/table/FK is

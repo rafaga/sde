@@ -20,10 +20,10 @@ name = "sde-builder"
 path = "src/bin/cli.rs"
 required-features = ["builder"]
 
-[[bin]]
-name = "sde-builder-gui"
-path = "src/bin/gui.rs"
-required-features = ["gui"]
+#[[bin]]
+#name = "sde-builder-gui"
+#path = "src/bin/gui.rs"
+#required-features = ["gui"]
 
 [badges]
 # The `maintenance` table indicates the status of the maintenance of
@@ -63,26 +63,26 @@ builder = [
     "dep:clap",
     "dep:anyhow",
 ]
-gui = ["builder", "dep:eframe"]
+# gui = ["builder", "dep:eframe"]
 
 [dependencies]
 kdtree = "0.8"
 rstar = "0.13"
-rusqlite = { version = "0.40.1", features = ["bundled", "backup", "blob", "array"] }
+rusqlite = { version = "0.40", features = ["bundled", "backup", "blob", "array"] }
 
 # --- Dependencias opcionales, solo activas con la feature "builder" ---
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "stream"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"], optional = true }
 futures = { version = "0.3", optional = true }
-zip = { version = "8.6.0", default-features = false, features = ["deflate"], optional = true }
-roxmltree = { version = "0.21.1", optional = true }
+zip = { version = "8.6", default-features = false, features = ["deflate"], optional = true }
+roxmltree = { version = "0.21", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
-clap = { version = "4", features = ["derive"], optional = true }
+clap = { version = "4.6.6", features = ["derive"], optional = true }
 anyhow = { version = "1", optional = true }
 
 # --- Solo activa con la feature "gui", alineada a la versión de egui/eframe que ya usa egui-map ---
-eframe = { version = "0.36.1", optional = true }
+# eframe = { version = "0.36.1", optional = true }
 
 [dev-dependencies]
 wiremock = "0.6"
