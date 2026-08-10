@@ -299,7 +299,11 @@ impl ParserConfig {
 
     /// Same as [`Self::localized`], but a missing/unusable field is a
     /// data error ([`BuilderError::Data`]) instead of a silent `None`.
-    fn required_localized<'a>(&self, record: &'a Value, field: &str) -> Result<&'a str, BuilderError> {
+    fn required_localized<'a>(
+        &self,
+        record: &'a Value,
+        field: &str,
+    ) -> Result<&'a str, BuilderError> {
         self.localized(record, field).ok_or_else(|| {
             BuilderError::Data(format!(
                 "record has no localizable field `{field}` in `{}`/`en`: {record}",
