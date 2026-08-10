@@ -32,7 +32,7 @@
 //! and `_parse_constellations` in Python.
 //!
 //! Phase 4 adds `mapSolarSystems`, with the k-space/w-space/abyssal/void
-//! scope filter ([`system_in_scope`]) and the isometric projection
+//! scope filter ([`ParserConfig::system_in_scope`]) and the isometric projection
 //! ([`isometric_projection_2d`]). Equivalent to `_parse_solar_systems()`
 //! in Python.
 //!
@@ -216,7 +216,7 @@ pub struct ParserConfig {
     /// `SdeConfig.map_abyssal` in Python.
     pub map_abyssal: bool,
     /// Include "void" systems. Default `false`, same as
-    /// `SdeConfig.map_void` in Python. See [`system_in_scope`] for a
+    /// `SdeConfig.map_void` in Python. See [`ParserConfig::system_in_scope`] for a
     /// note on why, today, `map_wspace`/`map_abyssal`/`map_void` all
     /// end up gating on the same check.
     pub map_void: bool,
@@ -263,6 +263,52 @@ impl Default for ParserConfig {
     }
 }
 
+impl ParserConfig {
+    /// Decides whether a solar system should be imported, based on the
+    /// `map_kspace`/`map_wspace`/`map_abyssal`/`map_void` flags. Exact port
+    /// of `_system_in_scope()` in Python.
+    ///
+    /// The reworked SDE no longer splits k-space/w-space/abyssal/void by
+    /// directory like the old one did; the only confirmed discriminator in
+    /// the record itself is `wormholeClassID` (only present in systems that
+    /// are NOT k-space). CCP doesn't expose a finer-grained flag to
+    /// distinguish abyssal from void at this level, so -- same as in
+    /// Python -- `map_wspace`/`map_abyssal`/`map_void` currently share the
+    /// same check ("does it have a `wormholeClassID`?").
+    fn system_in_scope(&self, wormhole_class_id: Option<i64>) -> bool {
+        match wormhole_class_id {
+            None => self.map_kspace,
+            Some(_) => self.map_wspace || self.map_abyssal || self.map_void,
+        }
+    }
+
+    /// Reads a localized string field (`{"en": "...", "es": "...",
+    /// ...}`), preferring `self.language`, falling back to `"en"`.
+    /// Also accepts a plain (non-localized) string field. `None` if the
+    /// field is absent or neither shape.
+    fn localized<'a>(&self, record: &'a Value, field: &str) -> Option<&'a str> {
+        match record.get(field) {
+            Some(Value::Object(map)) => map
+                .get(self.language.as_str())
+                .or_else(|| map.get("en"))
+                .and_then(Value::as_str),
+            Some(Value::String(s)) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Same as [`Self::localized`], but a missing/unusable field is a
+    /// data error ([`BuilderError::Data`]) instead of a silent `None`.
+    fn required_localized<'a>(&self, record: &'a Value, field: &str) -> Result<&'a str, BuilderError> {
+        self.localized(record, field).ok_or_else(|| {
+            BuilderError::Data(format!(
+                "record has no localizable field `{field}` in `{}`/`en`: {record}",
+                self.language
+            ))
+        })
+    }
+}
+
 /// Axis choice used by [`crate::objects::MapPoint::to_2d`] and
 /// [`isometric_projection_2d`] -- moved to `crate::objects` (core, not
 /// gated by the `builder` feature) since `MapPoint` needs it too, on
@@ -289,24 +335,6 @@ pub fn isometric_projection_2d(x: f64, y: f64, z: f64, axis: ProjectedAxis) -> (
     }
 }
 
-/// Decides whether a solar system should be imported, based on the
-/// `map_kspace`/`map_wspace`/`map_abyssal`/`map_void` flags. Exact port
-/// of `_system_in_scope()` in Python.
-///
-/// The reworked SDE no longer splits k-space/w-space/abyssal/void by
-/// directory like the old one did; the only confirmed discriminator in
-/// the record itself is `wormholeClassID` (only present in systems that
-/// are NOT k-space). CCP doesn't expose a finer-grained flag to
-/// distinguish abyssal from void at this level, so -- same as in
-/// Python -- `map_wspace`/`map_abyssal`/`map_void` currently share the
-/// same check ("does it have a `wormholeClassID`?").
-fn system_in_scope(wormhole_class_id: Option<i64>, config: &ParserConfig) -> bool {
-    match wormhole_class_id {
-        None => config.map_kspace,
-        Some(_) => config.map_wspace || config.map_abyssal || config.map_void,
-    }
-}
-
 /// State shared between [`parse_groups`] and [`parse_types`], equivalent
 /// to `SdeParser._stars` (`DataBrigde`) in Python.
 #[derive(Debug, Default)]
@@ -320,7 +348,7 @@ pub struct StarTypeState {
     pub star_type_ids: std::collections::HashMap<i64, i64>,
 }
 
-/// Solar system ids that passed the [`system_in_scope`] filter,
+/// Solar system ids that passed the [`ParserConfig::system_in_scope`] filter,
 /// populated by [`parse_solar_systems`]. Equivalent to
 /// `self._systems_in_scope` in Python, which `_parse_stargates`,
 /// `_parse_stars`, `_parse_planets` and `_parse_moons` use to filter
@@ -356,21 +384,6 @@ fn iter_jsonl_records(
     }))
 }
 
-/// Extracts the string localized to `config.language` from a field
-/// shaped like `{"en": "...", "es": "...", ...}`, falling back to
-/// `"en"`. If `field` is already a plain string (not an object), it's
-/// returned as-is. Equivalent to `_localized()` in Python.
-fn localized<'a>(record: &'a Value, field: &str, config: &ParserConfig) -> Option<&'a str> {
-    match record.get(field) {
-        Some(Value::Object(map)) => map
-            .get(config.language.as_str())
-            .or_else(|| map.get("en"))
-            .and_then(Value::as_str),
-        Some(Value::String(s)) => Some(s.as_str()),
-        _ => None,
-    }
-}
-
 /// Extracts a required integer field from the record. Equivalent to a
 /// `dict[key]`-style access in Python (which raises `KeyError` if
 /// missing): if the field isn't present or isn't numeric, this is a
@@ -387,26 +400,6 @@ fn required_i64(record: &Value, field: &str) -> Result<i64, BuilderError> {
 /// Python (`None` if missing, no error).
 fn optional_i64(record: &Value, field: &str) -> Option<i64> {
     record.get(field).and_then(Value::as_i64)
-}
-
-/// Extracts a required localized name (via [`localized`]); if the field
-/// is missing or isn't a localizable string/object, this is a data
-/// error. The name columns this feeds (`categoryName`, `groupName`,
-/// `typeName`, `raceName`) are all `TEXT NOT NULL` in the STRICT
-/// schema -- Python would also fail here (with an `IntegrityError` when
-/// trying to insert `NULL`), so it's treated just as "hard" as
-/// `required_i64` instead of silently inserting an empty string.
-fn required_localized<'a>(
-    record: &'a Value,
-    field: &str,
-    config: &ParserConfig,
-) -> Result<&'a str, BuilderError> {
-    localized(record, field, config).ok_or_else(|| {
-        BuilderError::Data(format!(
-            "record has no localizable field `{field}` in `{}`/`en`: {record}",
-            config.language
-        ))
-    })
 }
 
 /// Extracts an optional boolean field. Equivalent to `dict.get(key)`.
@@ -588,7 +581,7 @@ pub fn parse_categories(
     for record in iter_jsonl_records(sde_directory, "categories")? {
         let record = record?;
         let id = required_i64(&record, "_key")?;
-        let name = required_localized(&record, "name", config)?;
+        let name = config.required_localized(&record, "name")?;
         let published = optional_bool(&record, "published");
 
         insert_category.execute(rusqlite::params![id, name, published])?;
@@ -625,7 +618,7 @@ pub fn parse_groups(
         let record = record?;
         let id = required_i64(&record, "_key")?;
         let category_id = required_i64(&record, "categoryID")?;
-        let name = required_localized(&record, "name", config)?;
+        let name = config.required_localized(&record, "name")?;
         let anchorable = optional_bool(&record, "anchorable");
 
         insert_group.execute(rusqlite::params![id, category_id, name, anchorable])?;
@@ -691,7 +684,7 @@ pub fn parse_types(
         let record = record?;
         let id = required_i64(&record, "_key")?;
         let group_id = required_i64(&record, "groupID")?;
-        let name = required_localized(&record, "name", config)?.to_string();
+        let name = config.required_localized(&record, "name")?.to_string();
         let icon_id = optional_i64(&record, "iconID");
         let published = optional_bool(&record, "published");
         let volume = optional_f64(&record, "volume");
@@ -743,7 +736,7 @@ pub fn parse_races(
     for record in iter_jsonl_records(sde_directory, "races")? {
         let record = record?;
         let id = required_i64(&record, "_key")?;
-        let name = required_localized(&record, "name", config)?;
+        let name = config.required_localized(&record, "name")?;
 
         insert_race.execute(rusqlite::params![id, name])?;
         count += 1;
@@ -779,7 +772,7 @@ pub fn parse_npc_corporation_divisions(
         let record = record?;
         let id = required_i64(&record, "_key")?;
         let internal_name = required_str(&record, "internalName")?;
-        let leader_type_name = required_localized(&record, "leaderTypeName", config)?;
+        let leader_type_name = config.required_localized(&record, "leaderTypeName")?;
         insert.execute(rusqlite::params![id, internal_name, leader_type_name])?;
         count += 1;
     }
@@ -849,10 +842,10 @@ pub fn parse_npc_corporations(
     for record in iter_jsonl_records(sde_directory, "npcCorporations")? {
         let record = record?;
         let id = required_i64(&record, "_key")?;
-        let name = required_localized(&record, "name", config)?;
+        let name = config.required_localized(&record, "name")?;
         let ticker = required_str(&record, "tickerName")?;
         let deleted = required_bool(&record, "deleted")?;
-        let description = localized(&record, "description", config);
+        let description = config.localized(&record, "description");
         let extent = required_str(&record, "extent")?;
         let has_player_personnel_manager = required_bool(&record, "hasPlayerPersonnelManager")?;
         let initial_price = required_i64(&record, "initialPrice")?;
@@ -986,12 +979,12 @@ pub fn parse_factions(
     for record in iter_jsonl_records(sde_directory, "factions")? {
         let record = record?;
         let id = required_i64(&record, "_key")?;
-        let name = required_localized(&record, "name", config)?;
+        let name = config.required_localized(&record, "name")?;
         let icon_id = required_i64(&record, "iconID")?;
         let size_factor = required_f64(&record, "sizeFactor")?;
         let unique_name = required_bool(&record, "uniqueName")?;
-        let description = required_localized(&record, "description", config)?;
-        let short_description = localized(&record, "shortDescription", config);
+        let description = config.required_localized(&record, "description")?;
+        let short_description = config.localized(&record, "shortDescription");
         let flat_logo = optional_str(&record, "flatLogo");
         let flat_logo_with_name = optional_str(&record, "flatLogoWithName");
         let corporation_id = optional_i64(&record, "corporationID");
@@ -1051,7 +1044,7 @@ pub fn parse_regions(
     for record in iter_jsonl_records(sde_directory, "mapRegions")? {
         let record = record?;
         let id = required_i64(&record, "_key")?;
-        let name = required_localized(&record, "name", config)?;
+        let name = config.required_localized(&record, "name")?;
         let faction_id = optional_i64(&record, "factionID");
         let nebula = required_i64(&record, "nebulaID")?;
         let wormhole_class_id = optional_i64(&record, "wormholeClassID");
@@ -1107,7 +1100,7 @@ pub fn parse_constellations(
             Some(id) => id,
             None => required_i64(&record, "_key")?,
         };
-        let name = required_localized(&record, "name", config)?;
+        let name = config.required_localized(&record, "name")?;
         let region_id = required_i64(&record, "regionID")?;
         let (center_x, center_y, center_z) = required_position(&record)?;
 
@@ -1128,7 +1121,7 @@ pub fn parse_constellations(
 
 /// Populates `mapSolarSystems` from
 /// `<sde_directory>/mapSolarSystems.jsonl`, filtering by
-/// [`system_in_scope`] and accumulating the ids that pass the filter
+/// [`ParserConfig::system_in_scope`] and accumulating the ids that pass the filter
 /// into `state.systems_in_scope`. Requires `mapConstellations` to
 /// already be populated (FK `mapSolarSystems.constellationId ->
 /// mapConstellations.constellationId`). Returns the number of rows
@@ -1168,12 +1161,12 @@ pub fn parse_solar_systems(
         let record = record?;
         let system_id = required_i64(&record, "_key")?;
         let wormhole_class_id = optional_i64(&record, "wormholeClassID");
-        if !system_in_scope(wormhole_class_id, config) {
+        if !config.system_in_scope(wormhole_class_id) {
             continue;
         }
         state.systems_in_scope.insert(system_id);
 
-        let name = required_localized(&record, "name", config)?;
+        let name = config.required_localized(&record, "name")?;
         let constellation_id = required_i64(&record, "constellationID")?;
         let corridor = optional_bool(&record, "corridor");
         let fringe = optional_bool(&record, "fringe");
@@ -1647,7 +1640,7 @@ pub fn parse_station_services(
     for record in iter_jsonl_records(sde_directory, "stationServices")? {
         let record = record?;
         let id = required_i64(&record, "_key")?;
-        let name = required_localized(&record, "serviceName", config)?;
+        let name = config.required_localized(&record, "serviceName")?;
         insert.execute(rusqlite::params![id, name])?;
         count += 1;
     }
@@ -1668,9 +1661,9 @@ pub fn parse_station_services(
 /// `border`, `corridor`, `fringe`, `hub`, `manufacturingFactor`,
 /// `operationName`, `ratio`, `researchFactor`, `services` are present
 /// in 100% of records -- treated as required
-/// ([`required_i64`]/[`required_f64`]/[`required_localized`]).
+/// ([`required_i64`]/[`required_f64`]/[`ParserConfig::required_localized`]).
 /// `description` is present in 55/68 (80.9%) -- optional
-/// ([`localized`], not [`required_localized`]). `stationTypes` is
+/// ([`ParserConfig::localized`], not [`ParserConfig::required_localized`]). `stationTypes` is
 /// present in 47/68 (69.1%) -- also optional, only inserted into
 /// `stationOperationTypes` when the record actually carries it.
 ///
@@ -1702,8 +1695,8 @@ pub fn parse_station_operations(
         let record = record?;
         let id = required_i64(&record, "_key")?;
         let activity_id = required_i64(&record, "activityID")?;
-        let name = required_localized(&record, "operationName", config)?;
-        let description = localized(&record, "description", config);
+        let name = config.required_localized(&record, "operationName")?;
+        let description = config.localized(&record, "description");
         let border = required_f64(&record, "border")?;
         let corridor = required_f64(&record, "corridor")?;
         let fringe = required_f64(&record, "fringe")?;
@@ -2349,7 +2342,7 @@ mod tests {
         let record: Value =
             serde_json::from_str(r#"{"name": {"en": "Jita", "de": "Jita"}}"#).unwrap();
         // "fr" isn't present -> falls back to "en".
-        assert_eq!(localized(&record, "name", &config), Some("Jita"));
+        assert_eq!(config.localized(&record, "name"), Some("Jita"));
     }
 
     #[test]
@@ -2360,7 +2353,7 @@ mod tests {
         };
         let record: Value =
             serde_json::from_str(r#"{"name": {"en": "Jita", "de": "Jita (de)"}}"#).unwrap();
-        assert_eq!(localized(&record, "name", &config), Some("Jita (de)"));
+        assert_eq!(config.localized(&record, "name"), Some("Jita (de)"));
     }
 
     #[test]
@@ -2909,9 +2902,9 @@ mod tests {
     #[test]
     fn system_in_scope_kspace_gates_on_map_kspace() {
         let mut config = ParserConfig::default();
-        assert!(system_in_scope(None, &config)); // default: map_kspace=true
+        assert!(config.system_in_scope(None)); // default: map_kspace=true
         config.map_kspace = false;
-        assert!(!system_in_scope(None, &config));
+        assert!(!config.system_in_scope(None));
     }
 
     #[test]
@@ -2922,9 +2915,9 @@ mod tests {
             map_void: false,
             ..Default::default()
         };
-        assert!(!system_in_scope(Some(5), &config));
+        assert!(!config.system_in_scope(Some(5)));
         config.map_wspace = true;
-        assert!(system_in_scope(Some(5), &config));
+        assert!(config.system_in_scope(Some(5)));
     }
 
     #[test]
