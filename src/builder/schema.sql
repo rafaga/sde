@@ -267,7 +267,14 @@ CREATE TABLE mapSolarSystems (
   position2DX REAL, position2DY REAL,
   regional INTEGER CHECK (regional IN (0,1)),
   security REAL NOT NULL CHECK (security BETWEEN -1.0 AND 1.0),
-  securityClass TEXT
+  securityClass TEXT,
+  -- Present in 692 of a real 8490-record sample (August 2026): mostly
+  -- 8, plus scattered values 14-18 -- no small contiguous range like
+  -- C1-C6=1-6 would suggest, so left unconstrained (no CHECK) rather
+  -- than guessing at valid values. No lookup table exists for this in
+  -- the SDE (unlike e.g. typeStar), so, same as
+  -- mapRegions.wormholeClassId, it's a plain integer, not an FK.
+  wormholeClassId INTEGER
 ) STRICT;
 CREATE INDEX idx_mapSolarSystems_constellationId ON mapSolarSystems(constellationId);
 
@@ -281,7 +288,26 @@ CREATE TABLE factionSolarSystem (
 CREATE UNIQUE INDEX factionId ON factionSolarSystem (factionId);
 
 -- ------------------------------------------------------------
--- Portales / conexiones / cuerpos celestes
+-- Disallowed Anchorable structures by Solar System
+-- ------------------------------------------------------------
+
+-- It gets the disallowed list of anchorable types and their respective groups
+
+CREATE TABLE mapSolarSystemDisallowedAnchors (
+  solarSystemId INTEGER NOT NULL REFERENCES mapSolarSystems(solarSystemId)
+                  ON UPDATE CASCADE ON DELETE CASCADE,
+  typeId        INTEGER NOT NULL REFERENCES invTypes(typeId)
+                  ON UPDATE CASCADE ON DELETE CASCADE,
+  groupId       INTEGER NOT NULL REFERENCES invGroups(groupId)
+                  ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT pkey PRIMARY KEY (solarSystemId, typeId) ON CONFLICT FAIL
+) STRICT, WITHOUT ROWID;
+CREATE INDEX idx_mapSolarSystemDisallowedAnchors_groupId ON mapSolarSystemDisallowedAnchors (groupId);
+CREATE INDEX idx_mapSolarSystemDisallowedAnchors_typeId ON mapSolarSystemDisallowedAnchors (typeId);
+CREATE INDEX idx_mapSolarSystemDisallowedAnchors_solarSystemId_groupId ON mapSolarSystemDisallowedAnchors (solarSystemId, groupId);
+
+-- ------------------------------------------------------------
+-- Portals / conections / celestial bodies
 -- ------------------------------------------------------------
 
 CREATE TABLE mapSystemGates (
@@ -366,7 +392,7 @@ CREATE UNIQUE INDEX moonId ON mapMoons(moonId);
 CREATE INDEX idx_mapMoons_planetId ON mapMoons(planetId);
 
 -- ------------------------------------------------------------
--- Estaciones / corporaciones NPC por sistema
+-- Stations / NPC corporations by system
 -- ------------------------------------------------------------
 
 -- Community-maintained bits stop here; the tables below cover NPC
