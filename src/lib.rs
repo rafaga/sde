@@ -61,10 +61,9 @@ impl<'a> SdeManager<'a> {
     /// this helper inverts: `get_systempoints`/`get_connections` do,
     /// `get_abstract_systems`/`get_abstract_connections` don't (that was
     /// also the case in the previous code, before this migration).
-    /// Applies the adjustment factor (`self.factor`) and, if `invert` is
-    /// `true`, flips the sign of both components. Used by
-    /// [`Self::get_systempoints`]/[`Self::get_abstract_systems`] (which
-    /// build [`objects::MapPoint`], `coords: [f64; 3]`) and
+    ///
+    /// Used by [`Self::get_systempoints`]/[`Self::get_abstract_systems`]
+    /// (which build [`objects::MapPoint`], `coords: [f64; 3]`) and
     /// [`Self::get_connections`]/[`Self::get_abstract_connections`]
     /// (building [`objects::MapSegment`], `point1`/`point2: [f64; 2]`) --
     /// both types are `f64` throughout, so there's a single version of
@@ -130,7 +129,17 @@ impl<'a> SdeManager<'a> {
         let filter = Vec::new();
         self.universe.regions = self.get_region(filter.clone(), None)?;
         self.universe.constellations = self.get_constellation(filter.clone())?;
-        self.universe.solar_systems = self.get_solarsystem(filter)?;
+        self.universe.solar_systems = self.get_solarsystem(filter.clone())?;
+        self.universe.planets = self
+            .get_planet(filter.clone())?
+            .into_iter()
+            .map(|planet| (planet.id, planet))
+            .collect();
+        self.universe.moons = self
+            .get_moon(filter)?
+            .into_iter()
+            .map(|moon| (moon.id, moon))
+            .collect();
         Ok(true)
     }
 
@@ -600,7 +609,7 @@ impl<'a> SdeManager<'a> {
 
         let mut query =
             String::from("SELECT mss.solarSystemId, mss.solarSystemName, mc.regionId, ");
-        query += " mc.centerX, mc.centerY, mc.centerZ, mss.position2DX, mss.position2DY, ";
+        query += " mss.centerX, mss.centerY, mss.centerZ, mss.position2DX, mss.position2DY, ";
         query += " mss.constellationId FROM mapSolarSystems AS mss ";
         query +=
             " INNER JOIN mapConstellations AS mc ON(mss.constellationId = mc.constellationId)  ";
