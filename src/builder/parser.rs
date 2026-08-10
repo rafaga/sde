@@ -389,106 +389,9 @@ fn iter_jsonl_records(
 }
 
 
-// ---------------------------------------------------------------------
-// invCategories
-// ---------------------------------------------------------------------
 
-/// Populates `invCategories` from `<sde_directory>/categories.jsonl`.
-/// Returns the number of rows inserted. Equivalent to
-/// `_parse_categories()` in Python.
-pub fn parse_categories(
-    connection: &Connection,
-    sde_directory: &Path,
-    config: &ParserConfig,
-) -> Result<usize, BuilderError> {
-    let mut insert_category = connection.prepare(
-        "INSERT INTO invCategories (categoryId, categoryName, published) VALUES (?1, ?2, ?3)",
-    )?;
 
-    let mut count = 0usize;
-    for record in iter_jsonl_records(sde_directory, "categories")? {
-        let record = record?;
-        let id = required_i64(&record, "_key")?;
-        let name = config.required_localized(&record, "name")?;
-        let published = optional_bool(&record, "published");
 
-        insert_category.execute(rusqlite::params![id, name, published])?;
-        count += 1;
-    }
-    if config.verbose {
-        println!("Parsed {count} categories");
-    }
-    Ok(count)
-}
-
-// ---------------------------------------------------------------------
-// invGroups
-// ---------------------------------------------------------------------
-
-/// Populates `invGroups` from `<sde_directory>/groups.jsonl`. Along the
-/// way, detects the group named exactly `"Sun"` and saves its id in
-/// `state.sun_group_id` -- [`parse_types`] needs it to recognize star
-/// types. Returns the number of rows inserted. Equivalent to
-/// `_parse_groups()` in Python.
-pub fn parse_groups(
-    connection: &Connection,
-    sde_directory: &Path,
-    config: &ParserConfig,
-    state: &mut StarTypeState,
-) -> Result<usize, BuilderError> {
-    let mut insert_group = connection.prepare(
-        "INSERT INTO invGroups (groupId, categoryId, groupName, anchorable) \
-         VALUES (?1, ?2, ?3, ?4)",
-    )?;
-
-    let mut count = 0usize;
-    for record in iter_jsonl_records(sde_directory, "groups")? {
-        let record = record?;
-        let id = required_i64(&record, "_key")?;
-        let category_id = required_i64(&record, "categoryID")?;
-        let name = config.required_localized(&record, "name")?;
-        let anchorable = optional_bool(&record, "anchorable");
-
-        insert_group.execute(rusqlite::params![id, category_id, name, anchorable])?;
-
-        if name == "Sun" {
-            state.sun_group_id = Some(id);
-        }
-
-        count += 1;
-    }
-    if config.verbose {
-        println!("Parsed {count} groups");
-    }
-    Ok(count)
-}
-
-// ---------------------------------------------------------------------
-// invTypes (+ typeStar for star types)
-// ---------------------------------------------------------------------
-
-/// Inserts a row into `typeStar` and returns the `starTypeId` SQLite
-/// assigned it. Equivalent to `add_star_type()` in Python (which does
-/// the same thing: INSERT and then a SELECT to read it back by
-/// `typeId`, since `typeStar.starTypeId` has no `AUTOINCREMENT` -- it's
-/// a plain `ROWID` that still gets auto-assigned).
-fn add_star_type(
-    connection: &Connection,
-    type_id: i64,
-    name: &str,
-    color: &str,
-) -> Result<i64, BuilderError> {
-    connection.execute(
-        "INSERT INTO typeStar (typeId, name, color) VALUES (?1, ?2, ?3)",
-        rusqlite::params![type_id, name, color],
-    )?;
-    let star_type_id = connection.query_row(
-        "SELECT starTypeId FROM typeStar WHERE typeId = ?1",
-        rusqlite::params![type_id],
-        |row| row.get(0),
-    )?;
-    Ok(star_type_id)
-}
 
 
 pub struct Parser{
@@ -505,6 +408,33 @@ impl Parser{
             sde_directory: sde_directory.to_path_buf(),
             config,
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // invTypes (+ typeStar for star types)
+    // ---------------------------------------------------------------------
+
+    /// Inserts a row into `typeStar` and returns the `starTypeId` SQLite
+    /// assigned it. Equivalent to `add_star_type()` in Python (which does
+    /// the same thing: INSERT and then a SELECT to read it back by
+    /// `typeId`, since `typeStar.starTypeId` has no `AUTOINCREMENT` -- it's
+    /// a plain `ROWID` that still gets auto-assigned).
+    fn add_star_type(
+        &self,
+        type_id: i64,
+        name: &str,
+        color: &str,
+    ) -> Result<i64, BuilderError> {
+        self.connection.execute(
+            "INSERT INTO typeStar (typeId, name, color) VALUES (?1, ?2, ?3)",
+            rusqlite::params![type_id, name, color],
+        )?;
+        let star_type_id = self.connection.query_row(
+            "SELECT starTypeId FROM typeStar WHERE typeId = ?1",
+            rusqlite::params![type_id],
+            |row| row.get(0),
+        )?;
+        Ok(star_type_id)
     }
 
     /// Extracts a required integer field from the record. Equivalent to a
@@ -746,6 +676,76 @@ impl Parser{
     }
 
     // ---------------------------------------------------------------------
+    // invCategories
+    // ---------------------------------------------------------------------
+
+    /// Populates `invCategories` from `<sde_directory>/categories.jsonl`.
+    /// Returns the number of rows inserted. Equivalent to
+    /// `_parse_categories()` in Python.
+    pub fn parse_categories(
+        &self
+    ) -> Result<usize, BuilderError> {
+        let mut insert_category = self.connection.prepare(
+            "INSERT INTO invCategories (categoryId, categoryName, published) VALUES (?1, ?2, ?3)",
+        )?;
+
+        let mut count = 0usize;
+        for record in iter_jsonl_records(self.config.sde_directory, "categories")? {
+            let record = record?;
+            let id = required_i64(&record, "_key")?;
+            let name = self.config.required_localized(&record, "name")?;
+            let published = self.optional_bool(&record, "published");
+
+            insert_category.execute(rusqlite::params![id, name, published])?;
+            count += 1;
+        }
+        if self.config.verbose {
+            println!("Parsed {count} categories");
+        }
+        Ok(count)
+    }
+
+    // ---------------------------------------------------------------------
+    // invGroups
+    // ---------------------------------------------------------------------
+
+    /// Populates `invGroups` from `<sde_directory>/groups.jsonl`. Along the
+    /// way, detects the group named exactly `"Sun"` and saves its id in
+    /// `state.sun_group_id` -- [`parse_types`] needs it to recognize star
+    /// types. Returns the number of rows inserted. Equivalent to
+    /// `_parse_groups()` in Python.
+    pub fn parse_groups(
+        &self,
+        state: &mut StarTypeState,
+    ) -> Result<usize, BuilderError> {
+        let mut insert_group = self.connection.prepare(
+            "INSERT INTO invGroups (groupId, categoryId, groupName, anchorable) \
+            VALUES (?1, ?2, ?3, ?4)",
+        )?;
+
+        let mut count = 0usize;
+        for record in iter_jsonl_records(self.config.sde_directory, "groups")? {
+            let record = record?;
+            let id = self.required_i64(&record, "_key")?;
+            let category_id = self.required_i64(&record, "categoryID")?;
+            let name = self.config.required_localized(&record, "name")?;
+            let anchorable = self.optional_bool(&record, "anchorable");
+
+            insert_group.execute(rusqlite::params![id, category_id, name, anchorable])?;
+
+            if name == "Sun" {
+                state.sun_group_id = Some(id);
+            }
+
+            count += 1;
+        }
+        if self.config.verbose {
+            println!("Parsed {count} groups");
+        }
+        Ok(count)
+    }
+
+    // ---------------------------------------------------------------------
     // races
     // ---------------------------------------------------------------------
 
@@ -756,7 +756,7 @@ impl Parser{
             self.connection.prepare("INSERT INTO races (raceId, raceName) VALUES (?1, ?2)")?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.sde_directory, "races")? {
+        for record in iter_jsonl_records(self.config.sde_directory, "races")? {
             let record = record?;
             let id = self.required_i64(&record, "_key")?;
             let name = self.config.required_localized(&record, "name")?;
@@ -789,7 +789,7 @@ impl Parser{
         )?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.sde_directory, "npcCorporationDivisions")? {
+        for record in iter_jsonl_records(self.config.sde_directory, "npcCorporationDivisions")? {
             let record = record?;
             let id = self.required_i64(&record, "_key")?;
             let internal_name = self.required_str(&record, "internalName")?;
@@ -858,7 +858,7 @@ impl Parser{
         )?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.sde_directory, "npcCorporations")? {
+        for record in iter_jsonl_records(self.config.sde_directory, "npcCorporations")? {
             let record = record?;
             let id = self.required_i64(&record, "_key")?;
             let name = self.config.required_localized(&record, "name")?;
