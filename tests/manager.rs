@@ -27,6 +27,22 @@ struct Fixture {
 
 impl Fixture {
     fn new(test_name: &str) -> Self {
+        Self::build(test_name, true)
+    }
+
+    /// Same schema as [`Self::new`], but without `mapAbstractSystems`
+    /// at all -- simulates a database built without
+    /// `--with-third-party` (`ParserConfig.with_third_party = false`),
+    /// where `builder::dotlan::process()` never ran, so that table was
+    /// never created. Used to confirm
+    /// `get_abstract_systems`/`get_abstract_connections` fail
+    /// gracefully (a plain `Err`) rather than panicking when it's
+    /// absent.
+    fn new_without_dotlan(test_name: &str) -> Self {
+        Self::build(test_name, false)
+    }
+
+    fn build(test_name: &str, include_abstract_systems: bool) -> Self {
         let id = COUNTER.fetch_add(1, Ordering::SeqCst);
         let path = std::env::temp_dir().join(format!(
             "sde_test_{}_{}_{}.db",
@@ -67,11 +83,6 @@ impl Fixture {
                 solarSystemId INTEGER NOT NULL,
                 planetId INTEGER NOT NULL
             );
-            CREATE TABLE mapAbstractSystems (
-                solarSystemId INTEGER PRIMARY KEY,
-                x REAL, y REAL,
-                regionId INTEGER NOT NULL
-            );
 
             INSERT INTO mapRegions (regionId, regionName) VALUES
                 (10000001, 'Region Alpha'),
@@ -93,13 +104,25 @@ impl Fixture {
                 (40000003, 1, 30000003);
             INSERT INTO mapMoons (moonId, moonIndex, solarSystemId, planetId) VALUES
                 (50000001, 1, 30000001, 40000001);
-            INSERT INTO mapAbstractSystems (solarSystemId, x, y, regionId) VALUES
-                (30000001, 10.0, 20.0, 10000001),
-                (30000002, 30.0, 40.0, 10000001),
-                (30000003, 50.0, 60.0, 10000002);
             ",
         )
         .expect("cannot populate fixture database");
+        if include_abstract_systems {
+            conn.execute_batch(
+                "
+                CREATE TABLE mapAbstractSystems (
+                    solarSystemId INTEGER PRIMARY KEY,
+                    x REAL, y REAL,
+                    regionId INTEGER NOT NULL
+                );
+                INSERT INTO mapAbstractSystems (solarSystemId, x, y, regionId) VALUES
+                    (30000001, 10.0, 20.0, 10000001),
+                    (30000002, 30.0, 40.0, 10000001),
+                    (30000003, 50.0, 60.0, 10000002);
+                ",
+            )
+            .expect("cannot populate mapAbstractSystems");
+        }
         conn.close().expect("cannot close fixture database");
         Fixture { path }
     }
@@ -528,6 +551,34 @@ fn abstract_connections_filtered_by_region_requires_both_ends_inside() {
     assert!(tree.iter().any(|line| line.id == expected_id
         && line.point1 == [0.1, 0.2]
         && line.point2 == [0.3, 0.4]));
+}
+
+#[test]
+fn abstract_systems_fails_gracefully_without_dotlan_table() {
+    // Regression test: a database built without --with-third-party
+    // (ParserConfig.with_third_party = false) never gets
+    // mapAbstractSystems created at all, since builder::dotlan::process()
+    // never runs. get_abstract_systems() must fail gracefully (a plain
+    // Err) rather than panicking when that table is absent.
+    let fixture = Fixture::new_without_dotlan("abstract_systems_missing");
+    let manager = fixture.manager();
+    let error = manager.get_abstract_systems(vec![]).unwrap_err();
+    assert!(
+        error.to_string().contains("mapAbstractSystems"),
+        "error should mention the missing table: {error}"
+    );
+}
+
+#[test]
+fn abstract_connections_fails_gracefully_without_dotlan_table() {
+    // Same regression as above, for get_abstract_connections().
+    let fixture = Fixture::new_without_dotlan("abstract_connections_missing");
+    let manager = fixture.manager();
+    let error = manager.get_abstract_connections(vec![]).unwrap_err();
+    assert!(
+        error.to_string().contains("mapAbstractSystems"),
+        "error should mention the missing table: {error}"
+    );
 }
 
 // -------------------------------------------------------------------------

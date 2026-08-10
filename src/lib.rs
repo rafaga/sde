@@ -41,7 +41,13 @@ pub struct SdeManager<'a> {
 }
 
 impl<'a> SdeManager<'a> {
-    /// Creates a new SdeManager using a path to build the connection
+    /// Creates a new `SdeManager` pointing at the SQLite database at
+    /// `path` (not opened yet -- each method opens its own connection
+    /// via [`Self::get_standart_connection`] when it actually needs
+    /// one). `factor` is the coordinate-scaling divisor/multiplier used
+    /// throughout (see [`Self::scale_coords`]); it's also passed to
+    /// [`objects::Universe::new`] to build the initial, empty
+    /// `universe`. `invert_coordinates` starts `true`.
     pub fn new(path: &Path, factor: i64) -> SdeManager<'_> {
         SdeManager {
             path,
@@ -117,14 +123,15 @@ impl<'a> SdeManager<'a> {
         Error::ToSqlConversionFailure(Box::new(err))
     }
 
-    /// Method that retrieve all Eve Online universe data and some dictionaries to quick
-    /// access the available data.
-    ///
-    /// Data retrieved:
-    ///
-    /// - Regions
-    /// - Constellations
-    /// - Solar Systems
+    /// Populates `self.universe` with the whole SDE: regions,
+    /// constellations, solar systems, planets, and moons, all
+    /// unfiltered (an empty id list to each underlying getter means "no
+    /// filter, return everything" throughout this API). `planets`/
+    /// `moons` come back from [`Self::get_planet`]/[`Self::get_moon`]
+    /// as a `Vec`, keyed here by `.id` into the `HashMap` shape
+    /// `universe.planets`/`.moons` actually store. Always returns
+    /// `Ok(true)` -- the `bool` carries no information beyond
+    /// "succeeded" (any failure short-circuits via `?` instead).
     pub fn get_universe(&mut self) -> Result<bool, Error> {
         let filter = Vec::new();
         self.universe.regions = self.get_region(filter.clone(), None)?;
@@ -143,8 +150,25 @@ impl<'a> SdeManager<'a> {
         Ok(true)
     }
 
-    /// Function to get all the K-Space solar systems coordinates from the SDE including data to build a map
-    /// and search for basic stuff
+    /// All K-space solar systems with a computed 2D map projection,
+    /// indexed in a [`kdtree::KdTree`] by `[x, y, 0.0]` (the third
+    /// component unused, kept for API consistency with
+    /// [`objects::MapPoint`]'s 3D shape) -- built for nearest-neighbor
+    /// queries, e.g. hit-testing a mouse click on a rendered map.
+    ///
+    /// "K-space" here means `solarSystemId` between `30000000` and
+    /// `30999999`, a hardcoded range rather than a query against
+    /// `ParserConfig`'s k-space/w-space/abyssal/void flags (those only
+    /// affect what [`builder::parser`] writes at build time, not what
+    /// this read-side method selects). Systems without a 2D projection
+    /// (`position2DX`/`position2DY` both `NULL` -- CCP doesn't provide
+    /// one for every system, and [`builder::parser`] only computes one
+    /// locally when `force_isometric_position_2d` is set) are excluded
+    /// entirely rather than appearing with a placeholder position.
+    ///
+    /// Each point also carries the ids of every solar system it has a
+    /// stargate connection to (via `mapSystemConnections`), in
+    /// [`objects::MapPoint::connections`].
     pub fn get_systempoints(&self) -> Result<KdTree<f64, MapPoint, [f64; 3]>, Error> {
         let connection = self.get_standart_connection()?;
 
@@ -204,6 +228,20 @@ impl<'a> SdeManager<'a> {
         Ok(tree)
     }
 
+    /// The 2D bounding box (`EveRegionArea.max`/`.min`) of every
+    /// K-space region (`regionId` between `10000000` and `10999999`),
+    /// computed from the `MAX`/`MIN` of every solar system's
+    /// `position2DX`/`position2DY` across all its constellations.
+    /// Regions where every system lacks a 2D projection are excluded
+    /// (there's no box to report); regions with at least one projected
+    /// system still get a box even if others in it are missing one,
+    /// since `MAX`/`MIN` ignore individual `NULL`s.
+    ///
+    /// If `self.invert_coordinates`, both corners get their sign
+    /// flipped *and* swapped with each other -- flipping the sign alone
+    /// would leave what used to be the maximum corner with the smaller
+    /// (now negative) coordinates, so `max`/`min` would no longer
+    /// actually describe the box's extremes without the swap.
     pub fn get_region_coordinates(&self) -> Result<Vec<EveRegionArea>, Error> {
         let connection = self.get_standart_connection()?;
 
@@ -263,6 +301,15 @@ impl<'a> SdeManager<'a> {
         Ok(areas)
     }
 
+    /// Finds solar systems by a case-insensitive substring match on
+    /// their name (`%name%`), returning every match as
+    /// `(solarSystemId, solarSystemName, regionId, regionName)` --
+    /// there can be more than one, and there's no k-space/w-space
+    /// filter here (unlike [`Self::get_systempoints`]). The query does
+    /// `LOWER(solarSystemName) LIKE ?1` without lowercasing `name`
+    /// itself, but that's not a bug: SQLite's `LIKE` is already
+    /// case-insensitive for ASCII by default, so the `LOWER()` on the
+    /// column side is redundant, not load-bearing.
     pub fn get_system_id(
         &self,
         name: String,
@@ -288,6 +335,14 @@ impl<'a> SdeManager<'a> {
         Ok(results)
     }
 
+    /// The real 3D coordinates (`centerX`/`Y`/`Z`, always `NOT NULL` in
+    /// the schema, unlike the nullable `position2DX`/`Y` used
+    /// elsewhere) of the solar system with id `id_node`, scaled by
+    /// `self.factor` and sign-flipped if `self.invert_coordinates`.
+    /// `Ok(None)` if no system has that id -- not an error. (The local
+    /// variable holding the id as a string is misleadingly named
+    /// `system_like_name`: despite the name, the query does an exact
+    /// `= ?1` match, not a `LIKE`.)
     pub fn get_system_coords(&self, id_node: usize) -> Result<Option<MapPoint>, Error> {
         let connection = self.get_standart_connection()?;
 
@@ -364,6 +419,28 @@ impl<'a> SdeManager<'a> {
         Ok(RTree::bulk_load(results))
     }
 
+    /// Same shape and purpose as [`Self::get_systempoints`], but for the
+    /// abstract map (`mapAbstractSystems`, from `builder::dotlan`'s
+    /// community-maintained, third-party layer -- see
+    /// `ParserConfig.with_third_party`) instead of the canonical one:
+    /// every abstract system, optionally filtered to just the given
+    /// `regions` (an empty `Vec` means no filter, same convention as
+    /// every other filtered getter here), indexed in a
+    /// [`kdtree::KdTree`] with each point's stargate connections
+    /// attached. Unlike [`Self::get_systempoints`], coordinates are
+    /// never inverted here regardless of `self.invert_coordinates` --
+    /// that was already the case before this migration, not a new
+    /// inconsistency.
+    ///
+    /// `mapAbstractSystems` doesn't exist at all in a database built
+    /// without `--with-third-party` (or, equivalently,
+    /// `ParserConfig.with_third_party = false`) -- this method returns
+    /// `Err(rusqlite::Error::SqliteFailure(..., "no such table:
+    /// mapAbstractSystems"))` in that case, not a panic. There's
+    /// currently no way to check for this ahead of the call other than
+    /// handling that `Err`; a fingerprint of what a given database
+    /// actually contains, queryable without hitting this error, is
+    /// planned but not implemented yet.
     pub fn get_abstract_systems(
         &self,
         regions: Vec<u32>,
@@ -440,6 +517,11 @@ impl<'a> SdeManager<'a> {
     /// (`mapAbstractSystems`), optionally filtered by region. Also
     /// indexed in an [`rstar::RTree`] for the same spatial-query
     /// reasons.
+    ///
+    /// Same caveat as [`Self::get_abstract_systems`]: fails with
+    /// `Err(rusqlite::Error::SqliteFailure(..., "no such table:
+    /// mapAbstractSystems"))`, not a panic, against a database built
+    /// without `--with-third-party`.
     pub fn get_abstract_connections(&self, regions: Vec<u32>) -> Result<RTree<MapSegment>, Error> {
         let connection = self.get_standart_connection()?;
 
@@ -485,6 +567,14 @@ impl<'a> SdeManager<'a> {
         Ok(RTree::bulk_load(results))
     }
 
+    /// Opens a fresh read connection to `self.path` with sensible
+    /// defaults for this crate's read-only workload: the `rarray`
+    /// virtual table module loaded (every filtered getter here passes
+    /// its id list through it) and `PRAGMA foreign_keys = ON` for
+    /// consistency with the rest of the codebase, even though it has no
+    /// effect on `SELECT`-only queries. Called once per public method
+    /// that needs the database -- there's no connection pooling or
+    /// reuse across calls.
     fn get_standart_connection(&self) -> Result<Connection, Error> {
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
@@ -514,6 +604,13 @@ impl<'a> SdeManager<'a> {
         Ok(connection)
     }
 
+    /// Every region, optionally narrowed by `regions` (an id allowlist)
+    /// and/or `region_name` (a case-insensitive substring match, same
+    /// `LIKE` caveat as [`Self::get_system_id`]) -- both empty/`None`
+    /// means no filter; both given combines them with `AND`. Each
+    /// returned [`objects::Region`] has its `constellations` populated
+    /// (a second query, filtered to just the regions the first one
+    /// matched).
     pub fn get_region(
         &self,
         regions: Vec<u32>,
@@ -602,6 +699,18 @@ impl<'a> SdeManager<'a> {
         Ok(result)
     }
 
+    /// Every solar system, optionally narrowed to just the given
+    /// `constellation` ids (empty means no filter), keyed by
+    /// `solarSystemId`. Each [`objects::SolarSystem`] carries both its
+    /// real 3D position (`real_coords`, from its own
+    /// `centerX`/`Y`/`Z`) and its 2D map position (`projected_coords`,
+    /// from `position2DX`/`Y`, falling back to `(0.0, 0.0)` if the
+    /// system has none) plus its stargate `connections`, populated by a
+    /// second query over `mapSystemConnections`. Unlike
+    /// [`Self::get_systempoints`]/[`Self::get_connections`], systems
+    /// without a 2D projection are kept (with that fallback position)
+    /// rather than excluded -- this method feeds general system data,
+    /// not just the map.
     fn get_solarsystem(&self, constellation: Vec<u32>) -> Result<HashMap<u32, SolarSystem>, Error> {
         // preparing the connections that will be shared between threads
         let connection = self.get_standart_connection()?;
@@ -687,7 +796,11 @@ impl<'a> SdeManager<'a> {
         Ok(result)
     }
 
-    /// Function to get every Constellation or a Constellation based on an specific Region
+    /// Every constellation, optionally narrowed to just the given
+    /// `regions` (an id allowlist; empty means no filter). Each
+    /// [`objects::Constellation`] has its `solar_systems` populated (a
+    /// second query, filtered to just the constellations the first one
+    /// matched) -- same two-query shape as [`Self::get_region`].
     fn get_constellation(&self, regions: Vec<u32>) -> Result<HashMap<u32, Constellation>, Error> {
         // preparing the connections that will be shared between threads
         let connection = self.get_standart_connection()?;
@@ -745,7 +858,12 @@ impl<'a> SdeManager<'a> {
         Ok(result)
     }
 
-    /// Function to get every Planet or all Planets for a specific Solar System
+    /// Every planet, optionally narrowed to just the given
+    /// `solar_systems` (an id allowlist; empty means no filter). Unlike
+    /// [`Self::get_region`]/[`Self::get_constellation`]/
+    /// [`Self::get_solarsystem`], this returns a flat `Vec`, not a
+    /// `HashMap` keyed by id -- [`Self::get_universe`] keys it into one
+    /// itself when populating `universe.planets`.
     pub fn get_planet(&self, solar_systems: Vec<u32>) -> Result<Vec<Planet>, Error> {
         // preparing the connections that will be shared between threads
         let connection = self.get_standart_connection()?;
@@ -783,7 +901,10 @@ impl<'a> SdeManager<'a> {
         Ok(result)
     }
 
-    /// Function to get every Moon or all Moons for a specific planet
+    /// Every moon, optionally narrowed to just the given `planets` (an
+    /// id allowlist; empty means no filter). Same flat-`Vec` shape as
+    /// [`Self::get_planet`] -- [`Self::get_universe`] keys it into a
+    /// `HashMap` itself when populating `universe.moons`.
     pub fn get_moon(&self, planets: Vec<u32>) -> Result<Vec<Moon>, Error> {
         // preparing the connections that will be shared between threads
         let connection = self.get_standart_connection()?;
