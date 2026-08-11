@@ -1008,6 +1008,38 @@ impl Parser {
     /// once), so each one that's present gets its own row in
     /// `mapSolarSystemSubType` instead of collapsing into a column that
     /// would have to silently drop one of the values.
+    ///
+    /// `disallowedAnchorCategories`/`disallowedAnchorGroups` populate
+    /// `mapSolarSystemDisallowedAnchorableCategories`/`...Groups` (one
+    /// row per id present) -- confirmed independent of each other
+    /// against real data (a system can restrict a specific group
+    /// without its category appearing in its own
+    /// `disallowedAnchorCategories`, and vice versa), and confirmed
+    /// free of within-array duplicates across all 670 real records that
+    /// carry either field, so inserting each id as encountered, without
+    /// deduplicating first, doesn't risk a `PRIMARY KEY` violation.
+    ///
+    /// # Fields read from the source but not persisted as columns
+    ///
+    /// `regionID`, `starID`, `planetIDs`, and `stargateIDs` are all
+    /// present in the real data (100%/95.3%/95.3%/62.0% of records
+    /// respectively) but deliberately have no corresponding column:
+    /// each is fully redundant with a relationship already captured
+    /// from the *other* side. Confirmed against every real record
+    /// checked (August 2026): `starID` always matches
+    /// `mapStars.solarSystemID` (0 mismatches in 8089 checked),
+    /// `planetIDs` always matches the set of `mapPlanets.solarSystemID`
+    /// for that system (0 mismatches in 8088 checked), and `regionID`
+    /// always matches the region derived by following
+    /// `constellationID` through `mapRegions.constellationIDs` (0
+    /// mismatches in all 8490 checked). `stargateIDs` isn't checked the
+    /// same way here, but is the same kind of redundancy by design:
+    /// the two-system connection it encodes is already derived from
+    /// `mapSystemGates` by [`Self::parse_connections`], without needing
+    /// this field at all. Storing any of the four as a column would
+    /// just be a second copy of data already in the database, with no
+    /// mechanism keeping the two in sync if they were ever expected to
+    /// diverge.
     pub fn parse_solar_systems(
         &self,
         connection: &Connection,
@@ -1022,6 +1054,14 @@ impl Parser {
         )?;
         let mut insert_subtype = connection
             .prepare("INSERT INTO mapSolarSystemSubType (solarSystemId, subType) VALUES (?1, ?2)")?;
+        let mut insert_disallowed_category = connection.prepare(
+            "INSERT INTO mapSolarSystemDisallowedAnchorableCategories (solarSystemId, categoryId) \
+            VALUES (?1, ?2)",
+        )?;
+        let mut insert_disallowed_group = connection.prepare(
+            "INSERT INTO mapSolarSystemDisallowedAnchorableGroups (solarSystemId, groupId) \
+            VALUES (?1, ?2)",
+        )?;
 
         let mut count = 0usize;
         for record in iter_jsonl_records(&self.sde_directory, "mapSolarSystems")? {
@@ -1099,6 +1139,18 @@ impl Parser {
                 if self.optional_bool(&record, subtype) == Some(true) {
                     insert_subtype.execute(rusqlite::params![system_id, subtype])?;
                 }
+            }
+
+            // disallowedAnchorCategories/disallowedAnchorGroups are
+            // independent arrays (confirmed: neither can be derived
+            // from the other via invGroups.categoryId), so each gets
+            // its own junction table, populated the same way as
+            // subType above -- one row per id present.
+            for category_id in self.optional_i64_array(&record, "disallowedAnchorCategories")? {
+                insert_disallowed_category.execute(rusqlite::params![system_id, category_id])?;
+            }
+            for group_id in self.optional_i64_array(&record, "disallowedAnchorGroups")? {
+                insert_disallowed_group.execute(rusqlite::params![system_id, group_id])?;
             }
 
             count += 1;
@@ -2778,7 +2830,7 @@ mod tests {
                  \"radius\": 999999999.0, \"position\": {\"x\": -100.0, \"y\": 200.0, \"z\": -300.0}, \
                  \"securityStatus\": 0.9459, \"securityClass\": \"B\", \"corridor\": false, \
                  \"fringe\": false, \"hub\": true, \"international\": true, \"regional\": true, \
-                 \"factionID\": 500001, \
+                 \"factionID\": 500001, \"disallowedAnchorCategories\": [22, 65], \
                  \"luminosity\": 0.049, \"position2D\": {\"x\": 12.5, \"y\": -7.25}}\n",
             )],
         );
@@ -2806,6 +2858,12 @@ mod tests {
                  (factionId, factionName, iconId, sizeFactor, uniqueName, description) \
                  VALUES (500001, 'Caldari State', 1, 1.0, 1, 'x')",
                 [],
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO invCategories (categoryId, categoryName, published) VALUES \
+                 (22, 'Deployable', 1), (65, 'Structure', 1);",
             )
             .unwrap();
         let config = ParserConfig::default();
@@ -2866,6 +2924,100 @@ mod tests {
         // hub: true in the fixture -> collapsed into type="hub".
         assert_eq!(system_type, Some("hub".to_string()));
         assert_eq!(faction_id, Some(500001));
+
+        // disallowedAnchorCategories: [22, 65] in the fixture (real
+        // values for Jita, August 2026) -> one row per id.
+        let mut categories: Vec<i64> = connection
+            .prepare(
+                "SELECT categoryId FROM mapSolarSystemDisallowedAnchorableCategories \
+                 WHERE solarSystemId = 30000142",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        categories.sort();
+        assert_eq!(categories, vec![22, 65]);
+
+        // disallowedAnchorGroups: absent from the fixture -> no rows at
+        // all, not an error (confirms the absence case, complementing
+        // the presence case above).
+        let group_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM mapSolarSystemDisallowedAnchorableGroups \
+                 WHERE solarSystemId = 30000142",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(group_count, 0);
+    }
+
+    #[test]
+    fn parse_solar_systems_inserts_disallowed_anchor_groups() {
+        let dir = TempSdeDir::new(
+            "solar_systems_disallowed_groups",
+            &[(
+                "mapSolarSystems.jsonl",
+                "{\"_key\": 30000001, \"name\": {\"en\": \"Sys\"}, \"constellationID\": 20000001, \
+                 \"radius\": 1.0, \"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}, \
+                 \"securityStatus\": 0.5, \"disallowedAnchorGroups\": [12, 340, 448]}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapRegions \
+                 (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
+                 VALUES (10000001, 'R', NULL, 0, 0, 0, 5, NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapConstellations \
+                 (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
+                 VALUES (20000001, 'C', 10000001, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        // Real ids (August 2026): groupId 12/340/448 are all Container
+        // variants (Cargo/Secure/Audit Log Secure), categoryId 2
+        // (Celestial) -- unrelated to the categoryId 22/65 (Deployable/
+        // Structure) used in the disallowedAnchorCategories test above,
+        // confirming the two are independent in practice, not just in
+        // the schema.
+        connection
+            .execute_batch(
+                "INSERT INTO invCategories (categoryId, categoryName, published) VALUES \
+                 (2, 'Celestial', 1); \
+                 INSERT INTO invGroups (groupId, groupName, categoryId, anchorable) VALUES \
+                 (12, 'Cargo Container', 2, 1), \
+                 (340, 'Secure Cargo Container', 2, 1), \
+                 (448, 'Audit Log Secure Container', 2, 1);",
+            )
+            .unwrap();
+
+        let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
+        let mut scope = SystemScopeState::default();
+        let count = parser.parse_solar_systems(&connection, &mut scope).unwrap();
+        assert_eq!(count, 1);
+
+        let mut groups: Vec<i64> = connection
+            .prepare(
+                "SELECT groupId FROM mapSolarSystemDisallowedAnchorableGroups \
+                 WHERE solarSystemId = 30000001",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        groups.sort();
+        assert_eq!(groups, vec![12, 340, 448]);
     }
 
     #[test]

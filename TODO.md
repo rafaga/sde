@@ -30,7 +30,7 @@ See [ERD.md](ERD.md) for the diagram of the tables already implemented.
 | `stationServices.jsonl` | NPC stations | `stationServices` | ✅ | ❌ |
 | `mapRegions.jsonl` | Universe / map | `mapRegions` | ✅ | 🟡 |
 | `mapConstellations.jsonl` | Universe / map | `mapConstellations` | ✅ | 🟡 |
-| `mapSolarSystems.jsonl` | Universe / map | `mapSolarSystems`, `factionSolarSystem`, `mapSolarSystemDisallowedAnchorableCategories`, `mapSolarSystemDisallowedAnchorableGroups`, `mapSolarSystemSubType` | 🟡 | 🟡 |
+| `mapSolarSystems.jsonl` | Universe / map | `mapSolarSystems`, `factionSolarSystem`, `mapSolarSystemDisallowedAnchorableCategories`, `mapSolarSystemDisallowedAnchorableGroups`, `mapSolarSystemSubType` | ✅ | 🟡 |
 | `mapStargates.jsonl` | Universe / map | `mapSystemGates`, `mapSystemConnections` | ✅ | 🟡 |
 | `mapStars.jsonl` | Universe / map | `mapStars` | ✅ | ❌ |
 | `mapPlanets.jsonl` | Universe / map | `mapPlanets` | ✅ | 🟡 |
@@ -123,9 +123,4 @@ stations -- gets written but can't be queried from `SdeManager` today.
   default -- gated behind `ParserConfig.with_third_party` /
   `sde-builder build --with-third-party`, so a plain build produces a
   database containing canonical SDE data only.
-- `mapSolarSystemDisallowedAnchorableCategories`/`...Groups` exist in
-  the schema (confirmed independent of each other against real data --
-  see [ERD.md](ERD.md)), but nothing populates them yet -- no
-  `parse_*` function reads `disallowedAnchorCategories`/
-  `disallowedAnchorGroups` from `mapSolarSystems.jsonl` at all.
 

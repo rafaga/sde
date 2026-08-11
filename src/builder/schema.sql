@@ -286,6 +286,21 @@ CREATE TABLE mapSolarSystems (
   -- excluded: no gameplay purpose outside the client's own rendering,
   -- and no consumer of this crate has asked for it. Not modeled, and
   -- not counted as part of this table's write-side implementation.
+  --
+  -- `regionID`, `starID`, `planetIDs`, and `stargateIDs` (present in
+  -- 100%/95.3%/95.3%/62.0% of the 8490 records checked, August 2026)
+  -- are also deliberately not modeled here -- unlike visualEffect,
+  -- not because they're unused, but because each is fully redundant
+  -- with a relationship already captured from the other side
+  -- (mapStars/mapPlanets/mapSystemGates each carry their own
+  -- solarSystemId, and constellationId already chains to a region via
+  -- mapConstellations). Confirmed against every real record: `starID`
+  -- always matches `mapStars.solarSystemID`, `planetIDs` always
+  -- matches the real set of `mapPlanets.solarSystemID` for that
+  -- system, and `regionID` always matches the region derived by
+  -- following `constellationID` through a region's own
+  -- `constellationIDs` list -- 0 mismatches in every case. A column
+  -- here would just be a second copy of data already in the database.
 ) STRICT;
 CREATE INDEX idx_mapSolarSystems_constellationId ON mapSolarSystems(constellationId);
 CREATE INDEX idx_mapSolarSystems_factionId ON mapSolarSystems(factionId);

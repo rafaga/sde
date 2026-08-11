@@ -705,11 +705,9 @@ impl<'a> SdeManager<'a> {
     /// `disallowed_anchor_categories`, and `disallowed_anchor_groups`,
     /// each populated by its own second query (over
     /// `mapSystemConnections`/`mapSolarSystemDisallowedAnchorableCategories`/
-    /// `...Groups` respectively). The latter two are currently always
-    /// empty in practice -- no `parse_*` function populates those
-    /// tables yet (see [TODO.md](https://github.com/rafaga/sde/blob/main/TODO.md))
-    /// -- but querying them here means read support doesn't need
-    /// revisiting once write support exists. Unlike
+    /// `...Groups` respectively) -- empty for the (large majority of)
+    /// systems with no restrictions of that kind, populated for the
+    /// ones that do. Unlike
     /// [`Self::get_systempoints`]/[`Self::get_connections`], systems
     /// without a 2D projection are kept (with that fallback position)
     /// rather than excluded -- this method feeds general system data,
