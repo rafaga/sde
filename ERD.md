@@ -1,6 +1,6 @@
 # Entity-Relationship Diagram
 
-Generated from `src/builder/schema.sql` (27 tables, the static schema
+Generated from `src/builder/schema.sql` (29 tables, the static schema
 that's always present), plus the tables/columns `builder::dotlan` adds
 at runtime rather than declaring statically (see the note below the
 diagram). Attribute lists are trimmed to primary/foreign keys plus one
@@ -106,6 +106,14 @@ erDiagram
         int joveObservatory
         int specialOreAnom
     }
+    mapSolarSystemDisallowedAnchorableCategories {
+        int solarSystemId PK, FK
+        int categoryId PK, FK
+    }
+    mapSolarSystemDisallowedAnchorableGroups {
+        int solarSystemId PK, FK
+        int groupId PK, FK
+    }
     factionSolarSystem {
         int solarSystemId PK, FK
         int factionId PK, FK
@@ -190,6 +198,10 @@ erDiagram
     mapRegions ||--|{ mapConstellations : ""
     mapConstellations ||--o{ mapSolarSystems : ""
     mapSolarSystems ||--|{ factionSolarSystem : ""
+    mapSolarSystems ||--|{ mapSolarSystemDisallowedAnchorableCategories : ""
+    invCategories ||--|{ mapSolarSystemDisallowedAnchorableCategories : ""
+    mapSolarSystems ||--|{ mapSolarSystemDisallowedAnchorableGroups : ""
+    invGroups ||--|{ mapSolarSystemDisallowedAnchorableGroups : ""
     factions ||--|{ factionSolarSystem : ""
     mapSolarSystems ||--|{ mapSystemGates : "origin"
     mapSolarSystems ||--|{ mapSystemGates : "destination"
@@ -241,8 +253,10 @@ erDiagram
 - `||--o{` — the reference is optional (nullable foreign key).
 - `factionRace`, `factionSolarSystem`, `stationOperationServices`,
   `npcCorporationAllowedRaces`, `npcCorporationDivisionAssignments`,
-  `npcCorporationTrades`, and `npcCorporationInvestors` are pure join
-  tables (composite primary key, no columns of their own).
+  `npcCorporationTrades`, `npcCorporationInvestors`,
+  `mapSolarSystemDisallowedAnchorableCategories`, and
+  `mapSolarSystemDisallowedAnchorableGroups` are pure join tables
+  (composite primary key, no columns of their own).
   `stationOperationTypes` is almost the same, plus a plain `sizeKey`
   integer that isn't itself a foreign key.
 - `mapSystemGates` has two separate foreign keys into

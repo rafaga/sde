@@ -257,9 +257,11 @@ CREATE TABLE mapSolarSystems (
   solarSystemName TEXT NOT NULL,
   constellationId INTEGER REFERENCES mapConstellations(constellationId)
                     ON UPDATE CASCADE ON DELETE SET NULL,
-  corridor      INTEGER CHECK (corridor IN (0,1)),
-  fringe        INTEGER CHECK (fringe IN (0,1)),
-  hub           INTEGER CHECK (hub IN (0,1)),
+  -- Confirmed mutually exclusive against a real 8490-record sample
+  -- (August 2026): every record has at most one of hub/corridor/fringe
+  -- true, never two at once (2715/1931/787 records respectively, plus
+  -- 3057 with none) -- a single TEXT column, not three booleans.
+  type          TEXT CHECK (type IN ('hub', 'corridor', 'fringe')),
   international INTEGER CHECK (international IN (0,1)),
   luminosity REAL,
   radius REAL NOT NULL,
@@ -274,9 +276,21 @@ CREATE TABLE mapSolarSystems (
   -- than guessing at valid values. No lookup table exists for this in
   -- the SDE (unlike e.g. typeStar), so, same as
   -- mapRegions.wormholeClassId, it's a plain integer, not an FK.
-  wormholeClassId INTEGER
+  wormholeClassId INTEGER,
+  -- Present in only 70 of a real 8490-record sample (August 2026).
+  -- Not DEFERRABLE: `factions` is parsed before `mapSolarSystems`
+  -- (unlike e.g. npcCorporations.factionId, which needs deferral),
+  -- so this can be a plain, immediately-checked foreign key.
+  factionId INTEGER REFERENCES factions(factionId)
+              ON UPDATE CASCADE ON DELETE SET NULL
+  -- `visualEffect` (a nebula/graphical-effect identifier string,
+  -- present in only 130 of the 8490 records checked) is deliberately
+  -- excluded: no gameplay purpose outside the client's own rendering,
+  -- and no consumer of this crate has asked for it. Not modeled, and
+  -- not counted as part of this table's write-side implementation.
 ) STRICT;
 CREATE INDEX idx_mapSolarSystems_constellationId ON mapSolarSystems(constellationId);
+CREATE INDEX idx_mapSolarSystems_factionId ON mapSolarSystems(factionId);
 
 CREATE TABLE factionSolarSystem (
   solarSystemId INTEGER NOT NULL REFERENCES mapSolarSystems(solarSystemId)
@@ -288,23 +302,46 @@ CREATE TABLE factionSolarSystem (
 CREATE UNIQUE INDEX factionId ON factionSolarSystem (factionId);
 
 -- ------------------------------------------------------------
--- Disallowed Anchorable structures by Solar System
+-- Disallowed anchorable categories/groups by Solar System
 -- ------------------------------------------------------------
+-- Two separate tables, not one: `disallowedAnchorCategories` and
+-- `disallowedAnchorGroups` are independent arrays in the real SDE,
+-- not a parent/child pair -- confirmed against the full real
+-- dataset (August 2026): a system can restrict a specific group
+-- (e.g. groupId 361, Mobile Warp Disruptor) without its category
+-- (22, Deployable) appearing in its own disallowedAnchorCategories
+-- at all (solar system 31000005 does exactly this), so modeling
+-- them as one row with both a categoryId and a groupId would force
+-- a pairing the source data doesn't have. Named `...Anchorable...`
+-- (matching `invGroups.anchorable`, the real SDE attribute this is
+-- about) rather than `...Anchor...`, and kept clearly distinct from
+-- one another and from the table these replace.
 
--- It gets the disallowed list of anchorable types and their respective groups
-
-CREATE TABLE mapSolarSystemDisallowedAnchors (
+-- Categories entirely disallowed from being anchored in a solar
+-- system (e.g. categoryId 65 = Structure, 22 = Deployable).
+CREATE TABLE mapSolarSystemDisallowedAnchorableCategories (
   solarSystemId INTEGER NOT NULL REFERENCES mapSolarSystems(solarSystemId)
                   ON UPDATE CASCADE ON DELETE CASCADE,
-  typeId        INTEGER NOT NULL REFERENCES invTypes(typeId)
+  categoryId    INTEGER NOT NULL REFERENCES invCategories(categoryId)
+                  ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT pkey PRIMARY KEY (solarSystemId, categoryId) ON CONFLICT FAIL
+) STRICT, WITHOUT ROWID;
+CREATE INDEX idx_mapSolarSystemDisallowedAnchorableCategories_categoryId
+  ON mapSolarSystemDisallowedAnchorableCategories (categoryId);
+
+-- Specific groups disallowed from being anchored in a solar system
+-- (e.g. groupId 361 = Mobile Warp Disruptor), independent of the
+-- category-level restrictions above.
+CREATE TABLE mapSolarSystemDisallowedAnchorableGroups (
+  solarSystemId INTEGER NOT NULL REFERENCES mapSolarSystems(solarSystemId)
                   ON UPDATE CASCADE ON DELETE CASCADE,
   groupId       INTEGER NOT NULL REFERENCES invGroups(groupId)
                   ON UPDATE CASCADE ON DELETE CASCADE,
-  CONSTRAINT pkey PRIMARY KEY (solarSystemId, typeId) ON CONFLICT FAIL
+  CONSTRAINT pkey PRIMARY KEY (solarSystemId, groupId) ON CONFLICT FAIL
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX idx_mapSolarSystemDisallowedAnchors_groupId ON mapSolarSystemDisallowedAnchors (groupId);
-CREATE INDEX idx_mapSolarSystemDisallowedAnchors_typeId ON mapSolarSystemDisallowedAnchors (typeId);
-CREATE INDEX idx_mapSolarSystemDisallowedAnchors_solarSystemId_groupId ON mapSolarSystemDisallowedAnchors (solarSystemId, groupId);
+CREATE INDEX idx_mapSolarSystemDisallowedAnchorableGroups_groupId
+  ON mapSolarSystemDisallowedAnchorableGroups (groupId);
+
 
 -- ------------------------------------------------------------
 -- Portals / conections / celestial bodies

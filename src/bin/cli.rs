@@ -47,9 +47,9 @@ enum Command {
         /// default: none of this comes from CCP's official export, so
         /// a plain `build` produces a database that's canonical SDE
         /// data only. Sets `ParserConfig.with_third_party` -- see
-        /// [`parser::build_database`], which is what actually consults
-        /// it; this binary itself makes no canonical-vs-third-party
-        /// decision on its own.
+        /// [`parser::Parser::build_database`], which is what actually
+        /// consults it; this binary itself makes no
+        /// canonical-vs-third-party decision on its own.
         #[arg(long)]
         with_third_party: bool,
     },
@@ -83,7 +83,7 @@ enum Command {
 /// Whether to include `builder::dotlan`'s community-maintained,
 /// third-party data (see `--with-third-party` above) -- and everything
 /// else about how the database gets built -- is decided by
-/// [`parser::build_database`], not by this function. That's
+/// [`parser::Parser::build_database`], not by this function. That's
 /// deliberate: a library consumer calling `build_database` directly,
 /// without going through this binary at all, gets the exact same
 /// behavior for the exact same `ParserConfig`, since the decision
@@ -148,10 +148,11 @@ async fn main() -> anyhow::Result<()> {
         verbose: !quiet,
         with_third_party,
     };
-    let _summary =
-        parser::build_database(&mut connection, &sde_dir, &client, MAPS_URL, &parser_config)
-            .await
-            .context("building the database")?;
+    let sde_parser = parser::Parser::new(&sde_dir, parser_config);
+    let _summary = sde_parser
+        .build_database(&mut connection, &client, MAPS_URL)
+        .await
+        .context("building the database")?;
     println!("sde: Parse complete");
 
     let third_party_note = if with_third_party {

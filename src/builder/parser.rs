@@ -388,23 +388,14 @@ fn iter_jsonl_records(
     }))
 }
 
-
-
-
-
-
-
-pub struct Parser{
-    connection: Connection,
+pub struct Parser {
     sde_directory: std::path::PathBuf,
     config: ParserConfig,
 }
 
-impl Parser{
-
-    pub fn new(connection: Connection, sde_directory: &Path, config: ParserConfig) -> Self {
+impl Parser {
+    pub fn new(sde_directory: &Path, config: ParserConfig) -> Self {
         Self {
-            connection,
             sde_directory: sde_directory.to_path_buf(),
             config,
         }
@@ -421,15 +412,16 @@ impl Parser{
     /// a plain `ROWID` that still gets auto-assigned).
     fn add_star_type(
         &self,
+        connection: &Connection,
         type_id: i64,
         name: &str,
         color: &str,
     ) -> Result<i64, BuilderError> {
-        self.connection.execute(
+        connection.execute(
             "INSERT INTO typeStar (typeId, name, color) VALUES (?1, ?2, ?3)",
             rusqlite::params![type_id, name, color],
         )?;
-        let star_type_id = self.connection.query_row(
+        let star_type_id = connection.query_row(
             "SELECT starTypeId FROM typeStar WHERE typeId = ?1",
             rusqlite::params![type_id],
             |row| row.get(0),
@@ -509,7 +501,9 @@ impl Parser{
                 .iter()
                 .map(|item| {
                     item.as_i64().ok_or_else(|| {
-                        BuilderError::Data(format!("non-integer element in array `{field}`: {item}"))
+                        BuilderError::Data(format!(
+                            "non-integer element in array `{field}`: {item}"
+                        ))
                     })
                 })
                 .collect(),
@@ -540,7 +534,12 @@ impl Parser{
     /// the nested access `record[outer][inner]` in Python (both levels are
     /// `dict[key]`, not `.get()`) -- used for `destination.stargateID`/
     /// `destination.solarSystemID` in [`parse_stargates`].
-    fn required_nested_i64(&self, record: &Value, outer: &str, inner: &str) -> Result<i64, BuilderError> {
+    fn required_nested_i64(
+        &self,
+        record: &Value,
+        outer: &str,
+        inner: &str,
+    ) -> Result<i64, BuilderError> {
         let outer_val = record.get(outer).ok_or_else(|| {
             BuilderError::Data(format!("record missing required field `{outer}`: {record}"))
         })?;
@@ -617,7 +616,6 @@ impl Parser{
         record.get(outer)?.get(inner).and_then(Value::as_f64)
     }
 
-
     /// Populates `invTypes` from `<sde_directory>/types.jsonl`, and along
     /// the way `typeStar` for any type belonging to the "Sun" group (detected
     /// by [`parse_groups`] via `state.sun_group_id`). Returns the number of
@@ -626,18 +624,16 @@ impl Parser{
     /// the dead `process` code and malformed star names are handled.
     pub fn parse_types(
         &self,
-        //connection: &Connection,
-        //sde_directory: &Path,
-        config: &ParserConfig,
+        connection: &Connection,
         state: &mut StarTypeState,
     ) -> Result<usize, BuilderError> {
-        let mut insert_type = self.connection.prepare(
+        let mut insert_type = connection.prepare(
             "INSERT INTO invTypes (typeId, groupId, typeName, iconId, published, volume) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.sde_directory, "types")? {
+        for record in iter_jsonl_records(&self.sde_directory, "types")? {
             let record = record?;
             let id = self.required_i64(&record, "_key")?;
             let group_id = self.required_i64(&record, "groupID")?;
@@ -659,7 +655,7 @@ impl Parser{
                         .strip_prefix('(')
                         .and_then(|s| s.strip_suffix(')'))
                         .unwrap_or(color_token);
-                    let star_type_id = self.add_star_type(&self.connection, id, star_name, color)?;
+                    let star_type_id = self.add_star_type(connection, id, star_name, color)?;
                     state.star_type_ids.insert(id, star_type_id);
                 }
                 // Fewer than 3 tokens: not treated as a star. See "Known
@@ -682,17 +678,15 @@ impl Parser{
     /// Populates `invCategories` from `<sde_directory>/categories.jsonl`.
     /// Returns the number of rows inserted. Equivalent to
     /// `_parse_categories()` in Python.
-    pub fn parse_categories(
-        &self
-    ) -> Result<usize, BuilderError> {
-        let mut insert_category = self.connection.prepare(
+    pub fn parse_categories(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        let mut insert_category = connection.prepare(
             "INSERT INTO invCategories (categoryId, categoryName, published) VALUES (?1, ?2, ?3)",
         )?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.config.sde_directory, "categories")? {
+        for record in iter_jsonl_records(&self.sde_directory, "categories")? {
             let record = record?;
-            let id = required_i64(&record, "_key")?;
+            let id = self.required_i64(&record, "_key")?;
             let name = self.config.required_localized(&record, "name")?;
             let published = self.optional_bool(&record, "published");
 
@@ -716,15 +710,16 @@ impl Parser{
     /// `_parse_groups()` in Python.
     pub fn parse_groups(
         &self,
+        connection: &Connection,
         state: &mut StarTypeState,
     ) -> Result<usize, BuilderError> {
-        let mut insert_group = self.connection.prepare(
+        let mut insert_group = connection.prepare(
             "INSERT INTO invGroups (groupId, categoryId, groupName, anchorable) \
             VALUES (?1, ?2, ?3, ?4)",
         )?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.config.sde_directory, "groups")? {
+        for record in iter_jsonl_records(&self.sde_directory, "groups")? {
             let record = record?;
             let id = self.required_i64(&record, "_key")?;
             let category_id = self.required_i64(&record, "categoryID")?;
@@ -751,12 +746,12 @@ impl Parser{
 
     /// Populates `races` from `<sde_directory>/races.jsonl`. Returns the
     /// number of rows inserted. Equivalent to `_parse_races()` in Python.
-    pub fn parse_races(&self) -> Result<usize, BuilderError> {
+    pub fn parse_races(&self, connection: &Connection) -> Result<usize, BuilderError> {
         let mut insert_race =
-            self.connection.prepare("INSERT INTO races (raceId, raceName) VALUES (?1, ?2)")?;
+            connection.prepare("INSERT INTO races (raceId, raceName) VALUES (?1, ?2)")?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.config.sde_directory, "races")? {
+        for record in iter_jsonl_records(&self.sde_directory, "races")? {
             let record = record?;
             let id = self.required_i64(&record, "_key")?;
             let name = self.config.required_localized(&record, "name")?;
@@ -781,15 +776,16 @@ impl Parser{
     /// real SDE export, same as `npcStations`'s subsystem (see that
     /// function's docstring).
     pub fn parse_npc_corporation_divisions(
-        &self
+        &self,
+        connection: &Connection,
     ) -> Result<usize, BuilderError> {
-        let mut insert = self.connection.prepare(
+        let mut insert = connection.prepare(
             "INSERT INTO npcCorporationDivisions (divisionId, internalName, leaderTypeName) \
             VALUES (?1, ?2, ?3)",
         )?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.config.sde_directory, "npcCorporationDivisions")? {
+        for record in iter_jsonl_records(&self.sde_directory, "npcCorporationDivisions")? {
             let record = record?;
             let id = self.required_i64(&record, "_key")?;
             let internal_name = self.required_str(&record, "internalName")?;
@@ -829,10 +825,8 @@ impl Parser{
     /// without a second real example to confirm the shape against.
     /// `ceoID`/`divisions[].leaderID` are kept as plain unconstrained
     /// integers (no character table exists to reference).
-    pub fn parse_npc_corporations(
-        &self
-    ) -> Result<usize, BuilderError> {
-        let mut insert_corp = self. connection.prepare(
+    pub fn parse_npc_corporations(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        let mut insert_corp = connection.prepare(
             "INSERT INTO npcCorporations \
             (corporationId, corporationName, tickerName, deleted, description, extent, \
             hasPlayerPersonnelManager, initialPrice, memberLimit, minSecurity, minimumJoinStanding, \
@@ -842,23 +836,23 @@ impl Parser{
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, \
                     ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
         )?;
-        let mut insert_allowed_race = self.connection.prepare(
+        let mut insert_allowed_race = connection.prepare(
             "INSERT INTO npcCorporationAllowedRaces (corporationId, raceId) VALUES (?1, ?2)",
         )?;
-        let mut insert_division = self. connection.prepare(
+        let mut insert_division = connection.prepare(
             "INSERT INTO npcCorporationDivisionAssignments \
             (corporationId, divisionId, divisionNumber, leaderId, size) \
             VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
-        let mut insert_trade = self.connection.prepare(
+        let mut insert_trade = connection.prepare(
             "INSERT INTO npcCorporationTrades (corporationId, typeId, affinity) VALUES (?1, ?2, ?3)",
         )?;
-        let mut insert_investor = self.connection.prepare(
+        let mut insert_investor = connection.prepare(
             "INSERT INTO npcCorporationInvestors (corporationId, investorId, shares) VALUES (?1, ?2, ?3)",
         )?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.config.sde_directory, "npcCorporations")? {
+        for record in iter_jsonl_records(&self.sde_directory, "npcCorporations")? {
             let record = record?;
             let id = self.required_i64(&record, "_key")?;
             let name = self.config.required_localized(&record, "name")?;
@@ -866,12 +860,14 @@ impl Parser{
             let deleted = self.required_bool(&record, "deleted")?;
             let description = self.config.localized(&record, "description");
             let extent = self.required_str(&record, "extent")?;
-            let has_player_personnel_manager = self.required_bool(&record, "hasPlayerPersonnelManager")?;
+            let has_player_personnel_manager =
+                self.required_bool(&record, "hasPlayerPersonnelManager")?;
             let initial_price = self.required_i64(&record, "initialPrice")?;
             let member_limit = self.required_i64(&record, "memberLimit")?;
             let min_security = self.required_f64(&record, "minSecurity")?;
             let minimum_join_standing = self.required_f64(&record, "minimumJoinStanding")?;
-            let send_char_termination_message = self.required_bool(&record, "sendCharTerminationMessage")?;
+            let send_char_termination_message =
+                self.required_bool(&record, "sendCharTerminationMessage")?;
             let shares = self.required_i64(&record, "shares")?;
             let size = self.required_str(&record, "size")?;
             let size_factor = self.optional_f64(&record, "sizeFactor");
@@ -980,10 +976,8 @@ impl Parser{
     /// `shortDescription`/`flatLogo`/`flatLogoWithName`/
     /// `militiaCorporationID` are rarer (14.8%/66.7%/22.2%/22.2%) but
     /// genuinely present.
-    pub fn parse_factions(
-        &self,
-    ) -> Result<usize, BuilderError> {
-        let mut insert_faction = self.connection.prepare(
+    pub fn parse_factions(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        let mut insert_faction = connection.prepare(
             "INSERT INTO factions \
             (factionId, factionName, iconId, sizeFactor, uniqueName, description, shortDescription, \
             flatLogo, flatLogoWithName, corporationId, militiaCorporationId, solarSystemId) \
@@ -993,7 +987,7 @@ impl Parser{
             connection.prepare("INSERT INTO factionRace (factionId, raceId) VALUES (?1, ?2)")?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(sde_directory, "factions")? {
+        for record in iter_jsonl_records(&self.sde_directory, "factions")? {
             let record = record?;
             let id = self.required_i64(&record, "_key")?;
             let name = self.config.required_localized(&record, "name")?;
@@ -1047,16 +1041,14 @@ impl Parser{
     /// `maxProjX`/`maxProjY` aren't included in the INSERT: the DDL gives
     /// them `DEFAULT(0.0)` and Python doesn't specify them in its own query
     /// either, so SQLite applies that default automatically in both cases.
-    pub fn parse_regions(
-        &self
-    ) -> Result<usize, BuilderError> {
-        let mut insert_region = self.connection.prepare(
+    pub fn parse_regions(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        let mut insert_region = connection.prepare(
             "INSERT INTO mapRegions (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.sde_directory, "mapRegions")? {
+        for record in iter_jsonl_records(&self.sde_directory, "mapRegions")? {
             let record = record?;
             let id = self.required_i64(&record, "_key")?;
             let name = self.config.required_localized(&record, "name")?;
@@ -1098,16 +1090,14 @@ impl Parser{
     /// `element['constellationID'] if 'constellationID' in element else
     /// element['_key']` (see "Known deviations" in the module's docstring
     /// for the nuance of when this differs).
-    pub fn parse_constellations(
-        &self
-    ) -> Result<usize, BuilderError> {
-        let mut insert_constellation = self.connection.prepare(
+    pub fn parse_constellations(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        let mut insert_constellation = connection.prepare(
             "INSERT INTO mapConstellations (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.sde_directory, "mapConstellations")? {
+        for record in iter_jsonl_records(&self.sde_directory, "mapConstellations")? {
             let record = record?;
             let id = match self.optional_i64(&record, "constellationID") {
                 Some(id) => id,
@@ -1163,17 +1153,19 @@ impl Parser{
     /// field that wasn't captured anywhere.
     pub fn parse_solar_systems(
         &self,
+        connection: &Connection,
         state: &mut SystemScopeState,
     ) -> Result<usize, BuilderError> {
-        let mut insert_system = self.connection.prepare(
+        let mut insert_system = connection.prepare(
             "INSERT INTO mapSolarSystems (solarSystemId, solarSystemName, constellationId, \
-            corridor, fringe, hub, international, luminosity, radius, centerX, centerY, centerZ, \
-            regional, security, securityClass, position2DX, position2DY, wormholeClassId) \
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            type, international, luminosity, radius, centerX, centerY, centerZ, \
+            regional, security, securityClass, position2DX, position2DY, wormholeClassId, \
+            factionId) \
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         )?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.sde_directory, "mapSolarSystems")? {
+        for record in iter_jsonl_records(&self.sde_directory, "mapSolarSystems")? {
             let record = record?;
             let system_id = self.required_i64(&record, "_key")?;
             let wormhole_class_id = self.optional_i64(&record, "wormholeClassID");
@@ -1184,9 +1176,20 @@ impl Parser{
 
             let name = self.config.required_localized(&record, "name")?;
             let constellation_id = self.required_i64(&record, "constellationID")?;
-            let corridor = self.optional_bool(&record, "corridor");
-            let fringe = self.optional_bool(&record, "fringe");
-            let hub = self.optional_bool(&record, "hub");
+            // hub/corridor/fringe are confirmed mutually exclusive against
+            // real data (never two at once across 8490 real records) --
+            // collapsed into a single `type` column instead of three
+            // separate booleans. Order doesn't matter here precisely
+            // because they never co-occur.
+            let system_type = if self.optional_bool(&record, "hub") == Some(true) {
+                Some("hub")
+            } else if self.optional_bool(&record, "corridor") == Some(true) {
+                Some("corridor")
+            } else if self.optional_bool(&record, "fringe") == Some(true) {
+                Some("fringe")
+            } else {
+                None
+            };
             let international = self.optional_bool(&record, "international");
             let luminosity = self.optional_f64(&record, "luminosity");
             let radius = self.required_f64(&record, "radius")?;
@@ -1195,6 +1198,7 @@ impl Parser{
             let regional = self.optional_bool(&record, "regional");
             let security = self.required_f64(&record, "securityStatus")?;
             let security_class = self.optional_str(&record, "securityClass");
+            let faction_id = self.optional_i64(&record, "factionID");
 
             let (position_2d_x, position_2d_y) = if self.config.force_isometric_position_2d {
                 let (x2d, y2d) = isometric_projection_2d(
@@ -1215,9 +1219,7 @@ impl Parser{
                 system_id,
                 name,
                 constellation_id,
-                corridor,
-                fringe,
-                hub,
+                system_type,
                 international,
                 luminosity,
                 radius,
@@ -1230,6 +1232,7 @@ impl Parser{
                 position_2d_x,
                 position_2d_y,
                 wormhole_class_id,
+                faction_id,
             ])?;
             count += 1;
         }
@@ -1284,16 +1287,17 @@ impl Parser{
     /// file.
     pub fn parse_stargates(
         &self,
+        connection: &Connection,
         state: &SystemScopeState,
     ) -> Result<usize, BuilderError> {
-        let mut insert_gate = self.connection.prepare(
+        let mut insert_gate = connection.prepare(
             "INSERT INTO mapSystemGates (systemGateId, solarSystemId, typeId, \
             positionX, positionY, positionZ, destinationGateId, destinationSystemId) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.sde_directory, "mapStargates")? {
+        for record in iter_jsonl_records(&self.sde_directory, "mapStargates")? {
             let record = record?;
             let solar_system_id = self.required_i64(&record, "solarSystemID")?;
             if !state.systems_in_scope.contains(&solar_system_id) {
@@ -1303,8 +1307,10 @@ impl Parser{
             let id = self.required_i64(&record, "_key")?;
             let type_id = self.required_i64(&record, "typeID")?;
             let (pos_x, pos_y, pos_z) = self.required_position(&record)?;
-            let destination_gate_id = self.required_nested_i64(&record, "destination", "stargateID")?;
-            let destination_system_id = self.required_nested_i64(&record, "destination", "solarSystemID")?;
+            let destination_gate_id =
+                self.required_nested_i64(&record, "destination", "stargateID")?;
+            let destination_system_id =
+                self.required_nested_i64(&record, "destination", "solarSystemID")?;
 
             insert_gate.execute(rusqlite::params![
                 id,
@@ -1318,7 +1324,7 @@ impl Parser{
             ])?;
             count += 1;
         }
-        if config.verbose {
+        if self.config.verbose {
             println!("Parsed {count} stargates");
         }
         Ok(count)
@@ -1362,16 +1368,17 @@ impl Parser{
     /// reject a value that was going to be invalid anyway.
     pub fn parse_stars(
         &self,
+        connection: &Connection,
         state: &SystemScopeState,
         star_state: &StarTypeState,
     ) -> Result<usize, BuilderError> {
-        let mut insert_star = self.connection.prepare(
+        let mut insert_star = connection.prepare(
             "INSERT INTO mapStars (starId, solarSystemId, locked, radius, starTypeId) \
             VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.sde_directory, "mapStars")? {
+        for record in iter_jsonl_records(&self.sde_directory, "mapStars")? {
             let record = record?;
             let solar_system_id = self.required_i64(&record, "solarSystemID")?;
             if !state.systems_in_scope.contains(&solar_system_id) {
@@ -1382,16 +1389,17 @@ impl Parser{
             let locked = self.optional_bool_with_nested_fallback(&record, "locked", "statistics");
             let radius = self.optional_i64_with_nested_fallback(&record, "radius", "statistics");
             let type_id = self.required_i64(&record, "typeID")?;
-            let star_type_id = star_state
-                .star_type_ids
-                .get(&type_id)
-                .copied()
-                .ok_or_else(|| {
-                    BuilderError::Data(format!(
-                        "star {star_id}: typeId {type_id} isn't in star_type_ids \
+            let star_type_id =
+                star_state
+                    .star_type_ids
+                    .get(&type_id)
+                    .copied()
+                    .ok_or_else(|| {
+                        BuilderError::Data(format!(
+                            "star {star_id}: typeId {type_id} isn't in star_type_ids \
                     (parse_types() didn't detect it as a star type)"
-                    ))
-                })?;
+                        ))
+                    })?;
 
             insert_star.execute(rusqlite::params![
                 star_id,
@@ -1402,7 +1410,7 @@ impl Parser{
             ])?;
             count += 1;
         }
-        if config.verbose {
+        if self.config.verbose {
             println!("Parsed {count} stars");
         }
         Ok(count)
@@ -1442,16 +1450,17 @@ impl Parser{
     ///   data.
     pub fn parse_planets(
         &self,
+        connection: &Connection,
         state: &SystemScopeState,
     ) -> Result<usize, BuilderError> {
-        let mut insert_planet = self.connection.prepare(
+        let mut insert_planet = connection.prepare(
             "INSERT INTO mapPlanets (planetId, solarSystemId, planetaryIndex, fragmented, radius, \
             locked, typeId, positionX, positionY, positionZ) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.sde_directory, "mapPlanets")? {
+        for record in iter_jsonl_records(&self.sde_directory, "mapPlanets")? {
             let record = record?;
             let solar_system_id = self.required_i64(&record, "solarSystemID")?;
             if !state.systems_in_scope.contains(&solar_system_id) {
@@ -1460,7 +1469,8 @@ impl Parser{
 
             let id = self.required_i64(&record, "_key")?;
             let planet_index = self.required_i64(&record, "celestialIndex")?;
-            let fragmented = self.optional_bool_with_nested_fallback(&record, "fragmented", "statistics");
+            let fragmented =
+                self.optional_bool_with_nested_fallback(&record, "fragmented", "statistics");
             let radius = self.optional_f64_with_nested_fallback(&record, "radius", "statistics");
             let locked = self.optional_bool_with_nested_fallback(&record, "locked", "statistics");
             let type_id = self.required_i64(&record, "typeID")?;
@@ -1480,7 +1490,7 @@ impl Parser{
             ])?;
             count += 1;
         }
-        if config.verbose {
+        if self.config.verbose {
             println!("Parsed {count} planets");
         }
         Ok(count)
@@ -1533,16 +1543,17 @@ impl Parser{
     /// field to put it in).
     pub fn parse_moons(
         &self,
+        connection: &Connection,
         state: &SystemScopeState,
     ) -> Result<usize, BuilderError> {
-        let mut insert_moon = self.connection.prepare(
+        let mut insert_moon = connection.prepare(
             "INSERT INTO mapMoons (moonId, solarSystemId, moonIndex, planetId, typeId, radius, \
             positionX, positionY, positionZ) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.sde_directory, "mapMoons")? {
+        for record in iter_jsonl_records(&self.sde_directory, "mapMoons")? {
             let record = record?;
             let solar_system_id = self.required_i64(&record, "solarSystemID")?;
             if !state.systems_in_scope.contains(&solar_system_id) {
@@ -1569,7 +1580,7 @@ impl Parser{
             ])?;
             count += 1;
         }
-        if config.verbose {
+        if self.config.verbose {
             println!("Parsed {count} moons");
         }
         Ok(count)
@@ -1606,10 +1617,8 @@ impl Parser{
     /// they always end up returning
     /// `(msga.solarSystemId, msgb.solarSystemId)` in that order in
     /// practice, but they're ported literally as they are in Python.
-    pub fn parse_connections(
-        &self,
-    ) -> Result<usize, BuilderError> {
-        let count = self.connection.execute(
+    pub fn parse_connections(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        let count = connection.execute(
             "INSERT INTO mapSystemConnections (systemA, systemB) \
             SELECT MIN(msga.solarSystemId, msgb.solarSystemId), \
                     MAX(msga.solarSystemId, msgb.solarSystemId) \
@@ -1636,14 +1645,12 @@ impl Parser{
     /// `sde_parser.py` (see [`parse_npc_stations`]'s docstring for why
     /// `staStation`/`staCorporations`, which *were* in both the schema and
     /// the Python prototype, are gone).
-    pub fn parse_station_services(
-        &self
-    ) -> Result<usize, BuilderError> {
-        let mut insert = self.connection
+    pub fn parse_station_services(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        let mut insert = connection
             .prepare("INSERT INTO stationServices (serviceId, serviceName) VALUES (?1, ?2)")?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.sde_directory, "stationServices")? {
+        for record in iter_jsonl_records(&self.sde_directory, "stationServices")? {
             let record = record?;
             let id = self.required_i64(&record, "_key")?;
             let name = self.config.required_localized(&record, "serviceName")?;
@@ -1679,23 +1686,22 @@ impl Parser{
     /// station-size bit-flag, though the SDE itself doesn't document what
     /// each flag means beyond the raw value; `stationOperationTypes.sizeKey`
     /// is kept as a plain integer rather than guessing at named constants.
-    pub fn parse_station_operations(
-        &self
-    ) -> Result<usize, BuilderError> {
-        let mut insert_operation = self.connection.prepare(
+    pub fn parse_station_operations(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        let mut insert_operation = connection.prepare(
             "INSERT INTO stationOperations \
             (operationId, activityId, operationName, description, border, corridor, fringe, hub, \
             ratio, manufacturingFactor, researchFactor) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )?;
-        let mut insert_service = self.connection
-            .prepare("INSERT INTO stationOperationServices (operationId, serviceId) VALUES (?1, ?2)")?;
-        let mut insert_type = self.connection.prepare(
+        let mut insert_service = connection.prepare(
+            "INSERT INTO stationOperationServices (operationId, serviceId) VALUES (?1, ?2)",
+        )?;
+        let mut insert_type = connection.prepare(
             "INSERT INTO stationOperationTypes (operationId, sizeKey, typeId) VALUES (?1, ?2, ?3)",
         )?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.sde_directory, "stationOperations")? {
+        for record in iter_jsonl_records(&self.sde_directory, "stationOperations")? {
             let record = record?;
             let id = self.required_i64(&record, "_key")?;
             let activity_id = self.required_i64(&record, "activityID")?;
@@ -1723,7 +1729,7 @@ impl Parser{
                 research_factor
             ])?;
 
-            for service_id in optional_i64_array(&record, "services")? {
+            for service_id in self.optional_i64_array(&record, "services")? {
                 insert_service.execute(rusqlite::params![id, service_id])?;
             }
 
@@ -1782,12 +1788,10 @@ impl Parser{
     /// moon) are both treated as optional ([`optional_i64`]), matching
     /// their real, confirmed absence rate -- not just a defensive
     /// assumption.
-    pub fn parse_npc_stations(
-        &self
-    ) -> Result<usize, BuilderError> {
+    pub fn parse_npc_stations(&self, connection: &Connection) -> Result<usize, BuilderError> {
         let mut moon_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
         {
-            let mut statement = self.connection.prepare("SELECT moonId FROM mapMoons")?;
+            let mut statement = connection.prepare("SELECT moonId FROM mapMoons")?;
             let mut rows = statement.query([])?;
             while let Some(row) = rows.next()? {
                 moon_ids.insert(row.get(0)?);
@@ -1795,14 +1799,14 @@ impl Parser{
         }
         let mut planet_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
         {
-            let mut statement = self.connection.prepare("SELECT planetId FROM mapPlanets")?;
+            let mut statement = connection.prepare("SELECT planetId FROM mapPlanets")?;
             let mut rows = statement.query([])?;
             while let Some(row) = rows.next()? {
                 planet_ids.insert(row.get(0)?);
             }
         }
 
-        let mut insert = self.connection.prepare(
+        let mut insert = connection.prepare(
             "INSERT INTO npcStations \
             (stationId, celestialIndex, operationId, orbitMoonId, orbitPlanetId, orbitIndex, \
             ownerId, positionX, positionY, positionZ, reprocessingEfficiency, \
@@ -1812,7 +1816,7 @@ impl Parser{
         )?;
 
         let mut count = 0usize;
-        for record in iter_jsonl_records(self.sde_directory, "npcStations")? {
+        for record in iter_jsonl_records(&self.sde_directory, "npcStations")? {
             let record = record?;
             let id = self.required_i64(&record, "_key")?;
             let celestial_index = self.optional_i64(&record, "celestialIndex");
@@ -1830,7 +1834,8 @@ impl Parser{
             let (x, y, z) = self.required_position(&record)?;
             let reprocessing_efficiency = self.required_f64(&record, "reprocessingEfficiency")?;
             let reprocessing_hangar_flag = self.required_i64(&record, "reprocessingHangarFlag")?;
-            let reprocessing_stations_take = self.required_f64(&record, "reprocessingStationsTake")?;
+            let reprocessing_stations_take =
+                self.required_f64(&record, "reprocessingStationsTake")?;
             let solar_system_id = self.required_i64(&record, "solarSystemID")?;
             let type_id = self.required_i64(&record, "typeID")?;
             let use_operation_name = self.required_bool(&record, "useOperationName")?;
@@ -1896,39 +1901,37 @@ impl Parser{
     /// `false`, every station that would otherwise resolve to a moon
     /// resolves to neither instead (both `orbitMoonId`/`orbitPlanetId`
     /// `NULL`), same as the one genuinely-neither station in the real data.
-    pub fn parse_data(
-        &self
-    ) -> Result<ParseSummary, BuilderError> {
-        let tx = self.connection.transaction()?;
+    pub fn parse_data(&self, connection: &mut Connection) -> Result<ParseSummary, BuilderError> {
+        let tx = connection.transaction()?;
 
-        let categories = self.parse_categories()?;
+        let categories = self.parse_categories(&tx)?;
         let mut state = StarTypeState::default();
-        let groups = self.parse_groups()?;
-        let types = self.parse_types()?;
-        let races = self.parse_races()?;
-        let npc_corporation_divisions = self.parse_npc_corporation_divisions()?;
-        let npc_corporations = self.parse_npc_corporations()?;
-        let factions = self.parse_factions()?;
-        let regions = self.parse_regions()?;
-        let constellations = self.parse_constellations()?;
+        let groups = self.parse_groups(&tx, &mut state)?;
+        let types = self.parse_types(&tx, &mut state)?;
+        let races = self.parse_races(&tx)?;
+        let npc_corporation_divisions = self.parse_npc_corporation_divisions(&tx)?;
+        let npc_corporations = self.parse_npc_corporations(&tx)?;
+        let factions = self.parse_factions(&tx)?;
+        let regions = self.parse_regions(&tx)?;
+        let constellations = self.parse_constellations(&tx)?;
         let mut scope = SystemScopeState::default();
-        let solar_systems = self.parse_solar_systems()?;
+        let solar_systems = self.parse_solar_systems(&tx, &mut scope)?;
         let stargates = if self.config.with_gates {
-            self.parse_stargates()?
+            self.parse_stargates(&tx, &scope)?
         } else {
             0
         };
-        let stars = self.parse_stars()?;
-        let planets = self.parse_planets()?;
+        let stars = self.parse_stars(&tx, &scope, &state)?;
+        let planets = self.parse_planets(&tx, &scope)?;
         let moons = if self.config.with_moons {
-            self.parse_moons()?
+            self.parse_moons(&tx, &scope)?
         } else {
             0
         };
-        let connections = self.parse_connections()?;
+        let connections = self.parse_connections(&tx)?;
 
-        let station_services = self.parse_station_services()?;
-        let station_operations = self.parse_station_operations()?;
+        let station_services = self.parse_station_services(&tx)?;
+        let station_operations = self.parse_station_operations(&tx)?;
         let station_operation_services: usize =
             tx.query_row("SELECT COUNT(*) FROM stationOperationServices", [], |row| {
                 row.get::<usize, i64>(0)
@@ -1937,7 +1940,7 @@ impl Parser{
             tx.query_row("SELECT COUNT(*) FROM stationOperationTypes", [], |row| {
                 row.get::<usize, i64>(0)
             })? as usize;
-        let npc_stations = self.parse_npc_stations()?;
+        let npc_stations = self.parse_npc_stations(&tx)?;
 
         // Diagnostic: PRAGMA foreign_key_check runs within this transaction,
         // before COMMIT, so it can point at exactly which row/table/FK is
@@ -2078,10 +2081,11 @@ impl Parser{
     /// all (any string works; it's never read).
     pub async fn build_database(
         &self,
+        connection: &mut Connection,
         client: &Client,
         maps_url_base: &str,
     ) -> Result<ParseSummary, BuilderError> {
-        let summary = parse_data(self.connection, self.sde_directory, self.config)?;
+        let summary = self.parse_data(connection)?;
 
         if self.config.with_third_party {
             let dotlan_config = DotlanConfig {
@@ -2091,9 +2095,9 @@ impl Parser{
                 with_special_ore: true,
             };
             dotlan::process(
-                self.connection,
+                connection,
                 client,
-                self.sde_directory,
+                &self.sde_directory,
                 maps_url_base,
                 &dotlan_config,
             )
@@ -2102,7 +2106,6 @@ impl Parser{
 
         Ok(summary)
     }
-
 }
 
 // ---------------------------------------------------------------------
@@ -2196,8 +2199,9 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let count = parse_categories(&connection, &dir.path, &config).unwrap();
+        let count = parser.parse_categories(&connection).unwrap();
         assert_eq!(count, 1);
 
         let (name, published): (String, i64) = connection
@@ -2224,8 +2228,9 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let count = parse_races(&connection, &dir.path, &config).unwrap();
+        let count = parser.parse_races(&connection).unwrap();
         assert_eq!(count, 2);
 
         let name: String = connection
@@ -2264,13 +2269,14 @@ mod tests {
             )
             .unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
         let mut state = StarTypeState::default();
 
-        let groups = parse_groups(&connection, &dir.path, &config, &mut state).unwrap();
+        let groups = parser.parse_groups(&connection, &mut state).unwrap();
         assert_eq!(groups, 2);
         assert_eq!(state.sun_group_id, Some(6));
 
-        let types = parse_types(&connection, &dir.path, &config, &mut state).unwrap();
+        let types = parser.parse_types(&connection, &mut state).unwrap();
         assert_eq!(types, 2);
 
         // The "Sun"-group type should have generated a row in typeStar.
@@ -2302,8 +2308,9 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let result = parse_categories(&connection, &dir.path, &config);
+        let result = parser.parse_categories(&connection);
         assert!(result.is_err());
     }
 
@@ -2316,8 +2323,9 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let result = parse_categories(&connection, &dir.path, &config);
+        let result = parser.parse_categories(&connection);
         assert!(result.is_err());
     }
 
@@ -2327,9 +2335,10 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
         // categories.jsonl was never written at all.
-        let result = parse_categories(&connection, &dir.path, &config);
+        let result = parser.parse_categories(&connection);
         assert!(result.is_err());
     }
 
@@ -2416,8 +2425,9 @@ mod tests {
             )
             .unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let count = parse_npc_corporations(&connection, &dir.path, &config).unwrap();
+        let count = parser.parse_npc_corporations(&connection).unwrap();
         assert_eq!(count, 1);
 
         let (name, ticker, deleted, extent, shares, ceo_id, icon_id, race_id): (
@@ -2497,8 +2507,9 @@ mod tests {
             )
             .unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let count = parse_npc_corporations(&connection, &dir.path, &config).unwrap();
+        let count = parser.parse_npc_corporations(&connection).unwrap();
         assert_eq!(count, 1);
 
         let allowed_race: i64 = connection
@@ -2558,8 +2569,9 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let result = parse_npc_corporations(&connection, &dir.path, &config);
+        let result = parser.parse_npc_corporations(&connection);
         assert!(result.is_err());
     }
 
@@ -2623,8 +2635,9 @@ mod tests {
             )
             .unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let count = parse_factions(&connection, &dir.path, &config).unwrap();
+        let count = parser.parse_factions(&connection).unwrap();
         assert_eq!(count, 1);
 
         let (name, icon_id, size_factor, unique_name, corporation_id, solar_system_id): (
@@ -2683,8 +2696,9 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let count = parse_factions(&connection, &dir.path, &config).unwrap();
+        let count = parser.parse_factions(&connection).unwrap();
         assert_eq!(count, 1);
 
         let total_faction_race: i64 = connection
@@ -2707,8 +2721,9 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let result = parse_factions(&connection, &dir.path, &config);
+        let result = parser.parse_factions(&connection);
         assert!(result.is_err());
     }
 
@@ -2726,8 +2741,9 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let result = parse_factions(&connection, &dir.path, &config);
+        let result = parser.parse_factions(&connection);
         assert!(result.is_err());
     }
 
@@ -2744,8 +2760,9 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let count = parse_regions(&connection, &dir.path, &config).unwrap();
+        let count = parser.parse_regions(&connection).unwrap();
         assert_eq!(count, 1);
 
         let (name, faction_id, cx, cy, cz, nebula, wh_class, max_x, max_y): (
@@ -2805,8 +2822,9 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let result = parse_regions(&connection, &dir.path, &config);
+        let result = parser.parse_regions(&connection);
         assert!(result.is_err());
     }
 
@@ -2822,8 +2840,9 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let result = parse_regions(&connection, &dir.path, &config);
+        let result = parser.parse_regions(&connection);
         assert!(result.is_err());
     }
 
@@ -2849,8 +2868,9 @@ mod tests {
             )
             .unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let count = parse_constellations(&connection, &dir.path, &config).unwrap();
+        let count = parser.parse_constellations(&connection).unwrap();
         assert_eq!(count, 1);
 
         let (id, name, region_id): (i64, String, i64) = connection
@@ -2887,8 +2907,9 @@ mod tests {
             )
             .unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        parse_constellations(&connection, &dir.path, &config).unwrap();
+        parser.parse_constellations(&connection).unwrap();
 
         let id: i64 = connection
             .query_row("SELECT constellationId FROM mapConstellations", [], |row| {
@@ -2930,6 +2951,7 @@ mod tests {
                  \"radius\": 999999999.0, \"position\": {\"x\": -100.0, \"y\": 200.0, \"z\": -300.0}, \
                  \"securityStatus\": 0.9459, \"securityClass\": \"B\", \"corridor\": false, \
                  \"fringe\": false, \"hub\": true, \"international\": true, \"regional\": true, \
+                 \"factionID\": 500001, \
                  \"luminosity\": 0.049, \"position2D\": {\"x\": 12.5, \"y\": -7.25}}\n",
             )],
         );
@@ -2951,24 +2973,45 @@ mod tests {
                 [],
             )
             .unwrap();
+        connection
+            .execute(
+                "INSERT INTO factions \
+                 (factionId, factionName, iconId, sizeFactor, uniqueName, description) \
+                 VALUES (500001, 'Caldari State', 1, 1.0, 1, 'x')",
+                [],
+            )
+            .unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
         let mut scope = SystemScopeState::default();
 
-        let count = parse_solar_systems(&connection, &dir.path, &config, &mut scope).unwrap();
+        let count = parser.parse_solar_systems(&connection, &mut scope).unwrap();
         assert_eq!(count, 1);
         assert!(scope.systems_in_scope.contains(&30000142));
 
-        let (name, security, security_class, p2dx, p2dy, wormhole_class_id): (
+        let (
+            name,
+            security,
+            security_class,
+            p2dx,
+            p2dy,
+            wormhole_class_id,
+            system_type,
+            faction_id,
+        ): (
             String,
             f64,
             String,
             f64,
             f64,
             Option<i64>,
+            Option<String>,
+            Option<i64>,
         ) = connection
             .query_row(
                 "SELECT solarSystemName, security, securityClass, \
-                     position2DX, position2DY, wormholeClassId FROM mapSolarSystems WHERE solarSystemId = 30000142",
+                     position2DX, position2DY, wormholeClassId, type, factionId \
+                     FROM mapSolarSystems WHERE solarSystemId = 30000142",
                 [],
                 |row| {
                     Ok((
@@ -2978,6 +3021,8 @@ mod tests {
                         row.get(3)?,
                         row.get(4)?,
                         row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
                     ))
                 },
             )
@@ -2991,6 +3036,9 @@ mod tests {
         assert_eq!((p2dx, p2dy), (12.5, -7.25));
         // K-space systems have no wormholeClassID at all in real data.
         assert_eq!(wormhole_class_id, None);
+        // hub: true in the fixture -> collapsed into type="hub".
+        assert_eq!(system_type, Some("hub".to_string()));
+        assert_eq!(faction_id, Some(500001));
     }
 
     #[test]
@@ -3026,9 +3074,10 @@ mod tests {
             force_isometric_position_2d: true,
             ..Default::default()
         };
+        let parser = Parser::new(&dir.path, config);
         let mut scope = SystemScopeState::default();
 
-        parse_solar_systems(&connection, &dir.path, &config, &mut scope).unwrap();
+        parser.parse_solar_systems(&connection, &mut scope).unwrap();
 
         let (p2dx, p2dy): (f64, f64) = connection
             .query_row(
@@ -3079,9 +3128,10 @@ mod tests {
             map_kspace: false,
             ..Default::default()
         };
+        let parser = Parser::new(&dir.path, config);
         let mut scope = SystemScopeState::default();
 
-        let count = parse_solar_systems(&connection, &dir.path, &config, &mut scope).unwrap();
+        let count = parser.parse_solar_systems(&connection, &mut scope).unwrap();
         assert_eq!(count, 1);
         assert!(!scope.systems_in_scope.contains(&1));
         assert!(scope.systems_in_scope.contains(&2));
@@ -3130,9 +3180,10 @@ mod tests {
             )
             .unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
         let mut scope = SystemScopeState::default();
 
-        let result = parse_solar_systems(&connection, &dir.path, &config, &mut scope);
+        let result = parser.parse_solar_systems(&connection, &mut scope);
         assert!(result.is_err());
     }
 
@@ -3219,7 +3270,8 @@ mod tests {
         scope.systems_in_scope.insert(30000002);
 
         let config = ParserConfig::default();
-        let result = parse_stargates(&connection, &dir.path, &scope, &config);
+        let parser = Parser::new(&dir.path, config);
+        let result = parser.parse_stargates(&connection, &scope);
         assert!(result.is_err());
     }
 
@@ -3238,7 +3290,8 @@ mod tests {
 
         let tx = connection.transaction().unwrap();
         let config = ParserConfig::default();
-        let count = parse_stargates(&tx, &dir.path, &scope, &config).unwrap();
+        let parser = Parser::new(&dir.path, config);
+        let count = parser.parse_stargates(&tx, &scope).unwrap();
         assert_eq!(count, 2);
         tx.commit().unwrap();
 
@@ -3275,7 +3328,8 @@ mod tests {
 
         let tx = connection.transaction().unwrap();
         let config = ParserConfig::default();
-        let count = parse_stargates(&tx, &dir.path, &scope, &config).unwrap();
+        let parser = Parser::new(&dir.path, config);
+        let count = parser.parse_stargates(&tx, &scope).unwrap();
         tx.commit().unwrap();
         assert_eq!(count, 0);
 
@@ -3303,7 +3357,8 @@ mod tests {
         scope.systems_in_scope.insert(30000001);
 
         let config = ParserConfig::default();
-        let result = parse_stargates(&connection, &dir.path, &scope, &config);
+        let parser = Parser::new(&dir.path, config);
+        let result = parser.parse_stargates(&connection, &scope);
         assert!(result.is_err());
     }
 
@@ -3340,9 +3395,15 @@ mod tests {
             )
             .unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
         let mut star_state = StarTypeState::default();
-        parse_groups(&connection, &types_dir.path, &config, &mut star_state).unwrap();
-        parse_types(&connection, &types_dir.path, &config, &mut star_state).unwrap();
+        let types_parser = Parser::new(&types_dir.path, config.clone());
+        types_parser
+            .parse_groups(&connection, &mut star_state)
+            .unwrap();
+        types_parser
+            .parse_types(&connection, &mut star_state)
+            .unwrap();
 
         connection
             .execute(
@@ -3390,8 +3451,11 @@ mod tests {
             )],
         );
         let (connection, star_state, scope, config) = setup_for_parse_stars("stars_setup_real");
+        let parser = Parser::new(&dir.path, config);
 
-        let count = parse_stars(&connection, &dir.path, &scope, &star_state, &config).unwrap();
+        let count = parser
+            .parse_stars(&connection, &scope, &star_state)
+            .unwrap();
         assert_eq!(count, 1);
 
         let (solar_system_id, locked, radius): (i64, Option<i64>, i64) = connection
@@ -3421,8 +3485,11 @@ mod tests {
             )],
         );
         let (connection, star_state, scope, config) = setup_for_parse_stars("stars_setup_fallback");
+        let parser = Parser::new(&dir.path, config);
 
-        parse_stars(&connection, &dir.path, &scope, &star_state, &config).unwrap();
+        parser
+            .parse_stars(&connection, &scope, &star_state)
+            .unwrap();
 
         let locked: Option<i64> = connection
             .query_row(
@@ -3444,9 +3511,12 @@ mod tests {
             )],
         );
         let (connection, star_state, scope, config) = setup_for_parse_stars("stars_setup_scope");
+        let parser = Parser::new(&dir.path, config);
         // 30000099 is not in scope (only 30000001 is).
 
-        let count = parse_stars(&connection, &dir.path, &scope, &star_state, &config).unwrap();
+        let count = parser
+            .parse_stars(&connection, &scope, &star_state)
+            .unwrap();
         assert_eq!(count, 0);
 
         let total: i64 = connection
@@ -3467,8 +3537,9 @@ mod tests {
             )],
         );
         let (connection, star_state, scope, config) = setup_for_parse_stars("stars_setup_unknown");
+        let parser = Parser::new(&dir.path, config);
 
-        let result = parse_stars(&connection, &dir.path, &scope, &star_state, &config);
+        let result = parser.parse_stars(&connection, &scope, &star_state);
         assert!(result.is_err());
     }
 
@@ -3527,6 +3598,7 @@ mod tests {
         let mut scope = SystemScopeState::default();
         scope.systems_in_scope.insert(30000001);
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
         (connection, scope, config)
     }
 
@@ -3547,8 +3619,9 @@ mod tests {
             )],
         );
         let (connection, scope, config) = setup_for_parse_planets();
+        let parser = Parser::new(&dir.path, config);
 
-        let count = parse_planets(&connection, &dir.path, &scope, &config).unwrap();
+        let count = parser.parse_planets(&connection, &scope).unwrap();
         assert_eq!(count, 1);
 
         let (planetary_index, fragmented, radius, locked, type_id): (
@@ -3592,9 +3665,10 @@ mod tests {
             )],
         );
         let (connection, scope, config) = setup_for_parse_planets();
+        let parser = Parser::new(&dir.path, config);
         // 30000099 is not in scope (only 30000001 is).
 
-        let count = parse_planets(&connection, &dir.path, &scope, &config).unwrap();
+        let count = parser.parse_planets(&connection, &scope).unwrap();
         assert_eq!(count, 0);
 
         let total: i64 = connection
@@ -3614,8 +3688,9 @@ mod tests {
             )],
         );
         let (connection, scope, config) = setup_for_parse_planets();
+        let parser = Parser::new(&dir.path, config);
 
-        let result = parse_planets(&connection, &dir.path, &scope, &config);
+        let result = parser.parse_planets(&connection, &scope);
         assert!(result.is_err());
     }
 
@@ -3630,8 +3705,9 @@ mod tests {
             )],
         );
         let (connection, scope, config) = setup_for_parse_planets();
+        let parser = Parser::new(&dir.path, config);
 
-        let result = parse_planets(&connection, &dir.path, &scope, &config);
+        let result = parser.parse_planets(&connection, &scope);
         assert!(result.is_err());
     }
 
@@ -3706,6 +3782,7 @@ mod tests {
         let mut scope = SystemScopeState::default();
         scope.systems_in_scope.insert(30000001);
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
         (connection, scope, config)
     }
 
@@ -3721,8 +3798,9 @@ mod tests {
             )],
         );
         let (connection, scope, config) = setup_for_parse_moons();
+        let parser = Parser::new(&dir.path, config);
 
-        let count = parse_moons(&connection, &dir.path, &scope, &config).unwrap();
+        let count = parser.parse_moons(&connection, &scope).unwrap();
         assert_eq!(count, 1);
 
         let (moon_index, planet_id, type_id, radius): (i64, Option<i64>, i64, Option<i64>) =
@@ -3752,8 +3830,9 @@ mod tests {
             )],
         );
         let (connection, scope, config) = setup_for_parse_moons();
+        let parser = Parser::new(&dir.path, config);
 
-        parse_moons(&connection, &dir.path, &scope, &config).unwrap();
+        parser.parse_moons(&connection, &scope).unwrap();
 
         let planet_id: Option<i64> = connection
             .query_row(
@@ -3776,9 +3855,10 @@ mod tests {
             )],
         );
         let (connection, scope, config) = setup_for_parse_moons();
+        let parser = Parser::new(&dir.path, config);
         // 30000099 is not in scope (only 30000001 is).
 
-        let count = parse_moons(&connection, &dir.path, &scope, &config).unwrap();
+        let count = parser.parse_moons(&connection, &scope).unwrap();
         assert_eq!(count, 0);
 
         let total: i64 = connection
@@ -3798,8 +3878,9 @@ mod tests {
             )],
         );
         let (connection, scope, config) = setup_for_parse_moons();
+        let parser = Parser::new(&dir.path, config);
 
-        let result = parse_moons(&connection, &dir.path, &scope, &config);
+        let result = parser.parse_moons(&connection, &scope);
         assert!(result.is_err());
     }
 
@@ -3814,8 +3895,9 @@ mod tests {
             )],
         );
         let (connection, scope, config) = setup_for_parse_moons();
+        let parser = Parser::new(&dir.path, config);
 
-        let result = parse_moons(&connection, &dir.path, &scope, &config);
+        let result = parser.parse_moons(&connection, &scope);
         assert!(result.is_err());
     }
 
@@ -3903,7 +3985,8 @@ mod tests {
         }
 
         let config = ParserConfig::default();
-        let count = parse_connections(&connection, &config).unwrap();
+        let parser = Parser::new(&dir.path, config);
+        let count = parser.parse_connections(&connection).unwrap();
         assert_eq!(count, 1);
 
         let (system_a, system_b): (i64, i64) = connection
@@ -3923,7 +4006,8 @@ mod tests {
         crate::builder::schema::create_schema(&connection).unwrap();
 
         let config = ParserConfig::default();
-        let count = parse_connections(&connection, &config).unwrap();
+        let parser = Parser::new(&dir.path, config);
+        let count = parser.parse_connections(&connection).unwrap();
         assert_eq!(count, 0);
 
         let total: i64 = connection
@@ -4033,6 +4117,7 @@ mod tests {
         let mut connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
         let summary = parse_data(&mut connection, &dir.path, &config).unwrap();
         assert_eq!(
@@ -4347,8 +4432,9 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let count = parse_station_services(&connection, &dir.path, &config).unwrap();
+        let count = parser.parse_station_services(&connection).unwrap();
         assert_eq!(count, 2);
 
         let name: String = connection
@@ -4410,8 +4496,9 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         setup_for_station_operations(&connection);
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let count = parse_station_operations(&connection, &dir.path, &config).unwrap();
+        let count = parser.parse_station_operations(&connection).unwrap();
         assert_eq!(count, 1);
 
         let name: String = connection
@@ -4458,8 +4545,9 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         setup_for_station_operations(&connection);
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let count = parse_station_operations(&connection, &dir.path, &config).unwrap();
+        let count = parser.parse_station_operations(&connection).unwrap();
         assert_eq!(count, 1);
 
         let description: Option<String> = connection
@@ -4573,7 +4661,8 @@ mod tests {
         setup_for_npc_stations(&connection);
 
         let config = ParserConfig::default();
-        let count = parse_npc_stations(&connection, &dir.path, &config).unwrap();
+        let parser = Parser::new(&dir.path, config);
+        let count = parser.parse_npc_stations(&connection).unwrap();
         assert_eq!(count, 1);
 
         let (orbit_moon, orbit_planet): (Option<i64>, Option<i64>) = connection
@@ -4605,7 +4694,8 @@ mod tests {
         setup_for_npc_stations(&connection);
 
         let config = ParserConfig::default();
-        let count = parse_npc_stations(&connection, &dir.path, &config).unwrap();
+        let parser = Parser::new(&dir.path, config);
+        let count = parser.parse_npc_stations(&connection).unwrap();
         assert_eq!(count, 1);
 
         let (orbit_moon, orbit_planet, orbit_index): (Option<i64>, Option<i64>, Option<i64>) = connection
@@ -4642,7 +4732,8 @@ mod tests {
         setup_for_npc_stations(&connection);
 
         let config = ParserConfig::default();
-        let count = parse_npc_stations(&connection, &dir.path, &config).unwrap();
+        let parser = Parser::new(&dir.path, config);
+        let count = parser.parse_npc_stations(&connection).unwrap();
         assert_eq!(count, 1);
 
         let (celestial_index, orbit_moon, orbit_planet): (Option<i64>, Option<i64>, Option<i64>) = connection
@@ -4657,5 +4748,3 @@ mod tests {
         assert_eq!(orbit_planet, None);
     }
 }
-
-
