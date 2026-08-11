@@ -83,6 +83,22 @@ impl Fixture {
                 solarSystemId INTEGER NOT NULL,
                 planetId INTEGER NOT NULL
             );
+            CREATE TABLE invCategories (categoryId INTEGER PRIMARY KEY, categoryName TEXT NOT NULL);
+            CREATE TABLE invGroups (
+                groupId INTEGER PRIMARY KEY,
+                categoryId INTEGER NOT NULL,
+                groupName TEXT NOT NULL
+            );
+            CREATE TABLE mapSolarSystemDisallowedAnchorableCategories (
+                solarSystemId INTEGER NOT NULL,
+                categoryId INTEGER NOT NULL,
+                PRIMARY KEY (solarSystemId, categoryId)
+            );
+            CREATE TABLE mapSolarSystemDisallowedAnchorableGroups (
+                solarSystemId INTEGER NOT NULL,
+                groupId INTEGER NOT NULL,
+                PRIMARY KEY (solarSystemId, groupId)
+            );
 
             INSERT INTO mapRegions (regionId, regionName) VALUES
                 (10000001, 'Region Alpha'),
@@ -104,6 +120,14 @@ impl Fixture {
                 (40000003, 1, 30000003);
             INSERT INTO mapMoons (moonId, moonIndex, solarSystemId, planetId) VALUES
                 (50000001, 1, 30000001, 40000001);
+            INSERT INTO invCategories (categoryId, categoryName) VALUES
+                (65, 'Structure'), (22, 'Deployable');
+            INSERT INTO invGroups (groupId, categoryId, groupName) VALUES
+                (361, 22, 'Mobile Warp Disruptor');
+            INSERT INTO mapSolarSystemDisallowedAnchorableCategories (solarSystemId, categoryId) VALUES
+                (30000001, 65), (30000001, 22);
+            INSERT INTO mapSolarSystemDisallowedAnchorableGroups (solarSystemId, groupId) VALUES
+                (30000001, 361);
             ",
         )
         .expect("cannot populate fixture database");
@@ -324,6 +348,20 @@ fn universe_with_empty_filters_returns_everything() {
     // get_systempoints), so all 4 fixture systems come back, including the
     // out-of-range W-Sys.
     assert_eq!(manager.universe.solar_systems.len(), 4);
+
+    // disallowed_anchor_categories/groups: populated only for the one
+    // system with real fixture data (30000001), empty elsewhere --
+    // confirms both the population and the "genuinely empty, not
+    // missing" cases.
+    let sys_one = &manager.universe.solar_systems[&30000001];
+    let mut categories = sys_one.disallowed_anchor_categories.clone();
+    categories.sort();
+    assert_eq!(categories, vec![22, 65]);
+    assert_eq!(sys_one.disallowed_anchor_groups, vec![361]);
+
+    let sys_two = &manager.universe.solar_systems[&30000002];
+    assert!(sys_two.disallowed_anchor_categories.is_empty());
+    assert!(sys_two.disallowed_anchor_groups.is_empty());
 
     let const_one = &manager.universe.constellations[&20000001];
     assert_eq!(const_one.name, "Const One");

@@ -474,6 +474,18 @@ pub struct SolarSystem {
     pub real_coords: MapPoint,
     /// Solar System 2D Coordinates with the propourse of representing the system in abstraction map.
     pub projected_coords: MapPoint,
+    /// Item categories entirely disallowed from being anchored here
+    /// (e.g. Structure, Deployable) -- via
+    /// `mapSolarSystemDisallowedAnchorableCategories`. Confirmed
+    /// independent of `disallowed_anchor_groups` against real data (a
+    /// system can restrict one without the other) -- see
+    /// [ERD.md](https://github.com/rafaga/sde/blob/main/ERD.md).
+    pub disallowed_anchor_categories: Vec<u32>,
+    /// Specific item groups disallowed from being anchored here (e.g.
+    /// Mobile Warp Disruptor), independent of the category-level
+    /// restriction above -- via
+    /// `mapSolarSystemDisallowedAnchorableGroups`.
+    pub disallowed_anchor_groups: Vec<u32>,
     /// The factor that we need to adjust the coordinates
     pub factor: i64,
 }
@@ -490,6 +502,8 @@ impl SolarSystem {
             connections: Vec::new(),
             real_coords: MapPoint::default(),
             projected_coords: MapPoint::default(),
+            disallowed_anchor_categories: Vec::new(),
+            disallowed_anchor_groups: Vec::new(),
             factor,
         }
     }

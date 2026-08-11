@@ -105,6 +105,7 @@ erDiagram
         int trigStatusID FK
         int joveObservatory
         int specialOreAnom
+        int factionId FK
     }
     mapSolarSystemDisallowedAnchorableCategories {
         int solarSystemId PK, FK
@@ -229,6 +230,7 @@ erDiagram
     npcStations ||--o{ npcCorporations : "stationId"
     npcCorporations ||--o{ factions : "militiaCorporationId"
     mapSolarSystems ||--o{ factions : ""
+    factions ||--o{ mapSolarSystems : "factionId"
     npcCorporations ||--|{ npcCorporationAllowedRaces : ""
     races ||--|{ npcCorporationAllowedRaces : ""
     npcCorporations ||--|{ npcCorporationDivisionAssignments : ""

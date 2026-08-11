@@ -705,8 +705,15 @@ impl<'a> SdeManager<'a> {
     /// real 3D position (`real_coords`, from its own
     /// `centerX`/`Y`/`Z`) and its 2D map position (`projected_coords`,
     /// from `position2DX`/`Y`, falling back to `(0.0, 0.0)` if the
-    /// system has none) plus its stargate `connections`, populated by a
-    /// second query over `mapSystemConnections`. Unlike
+    /// system has none) plus its stargate `connections`,
+    /// `disallowed_anchor_categories`, and `disallowed_anchor_groups`,
+    /// each populated by its own second query (over
+    /// `mapSystemConnections`/`mapSolarSystemDisallowedAnchorableCategories`/
+    /// `...Groups` respectively). The latter two are currently always
+    /// empty in practice -- no `parse_*` function populates those
+    /// tables yet (see [TODO.md](https://github.com/rafaga/sde/blob/main/TODO.md))
+    /// -- but querying them here means read support doesn't need
+    /// revisiting once write support exists. Unlike
     /// [`Self::get_systempoints`]/[`Self::get_connections`], systems
     /// without a 2D projection are kept (with that fallback position)
     /// rather than excluded -- this method feeds general system data,
@@ -793,6 +800,33 @@ impl<'a> SdeManager<'a> {
                 point.connections.push(system_a);
             });
         }
+
+        let query = String::from(
+            "SELECT solarSystemId, categoryId FROM mapSolarSystemDisallowedAnchorableCategories;",
+        );
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let system_id = row.get::<usize, u32>(0)?;
+            let category_id = row.get::<usize, u32>(1)?;
+            result.entry(system_id).and_modify(|point| {
+                point.disallowed_anchor_categories.push(category_id);
+            });
+        }
+
+        let query = String::from(
+            "SELECT solarSystemId, groupId FROM mapSolarSystemDisallowedAnchorableGroups;",
+        );
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let system_id = row.get::<usize, u32>(0)?;
+            let group_id = row.get::<usize, u32>(1)?;
+            result.entry(system_id).and_modify(|point| {
+                point.disallowed_anchor_groups.push(group_id);
+            });
+        }
+
         Ok(result)
     }
 
