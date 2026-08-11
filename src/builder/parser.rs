@@ -1052,8 +1052,9 @@ impl Parser {
             factionId) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         )?;
-        let mut insert_subtype = connection
-            .prepare("INSERT INTO mapSolarSystemSubType (solarSystemId, subType) VALUES (?1, ?2)")?;
+        let mut insert_subtype = connection.prepare(
+            "INSERT INTO mapSolarSystemSubType (solarSystemId, subType) VALUES (?1, ?2)",
+        )?;
         let mut insert_disallowed_category = connection.prepare(
             "INSERT INTO mapSolarSystemDisallowedAnchorableCategories (solarSystemId, categoryId) \
             VALUES (?1, ?2)",

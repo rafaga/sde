@@ -224,7 +224,10 @@ pub fn setup_special_anomalies(connection: &Connection) -> Result<(), BuilderErr
 /// together (unlike the `mapSystemGates.destinationGateId` case
 /// documented in `parser::parse_stargates`). If the `mapAbstractSystems`
 /// + SVG flow is added, this is worth reconsidering.
-pub fn update_tables(connection: &Connection, config: &CommunityConfig) -> Result<(), BuilderError> {
+pub fn update_tables(
+    connection: &Connection,
+    config: &CommunityConfig,
+) -> Result<(), BuilderError> {
     create_abstract_map(connection)?;
     if config.with_icebelts {
         create_icebelts(connection)?;
@@ -823,8 +826,10 @@ mod tests {
     }
 
     fn temp_sde_dir(name: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("sde-community-process-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "sde-community-process-{name}-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
