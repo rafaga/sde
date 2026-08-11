@@ -1,11 +1,11 @@
 # Entity-Relationship Diagram
 
 Generated from `src/builder/schema.sql` (30 tables, the static schema
-that's always present), plus the tables/columns `builder::dotlan` adds
+that's always present), plus the tables/columns `builder::community` adds
 at runtime rather than declaring statically (see the note below the
 diagram). Attribute lists are trimmed to primary/foreign keys plus one
 identifying name field per table, for readability — see `schema.sql`
-and `builder/dotlan.rs` for the full column list, types, and
+and `builder/community.rs` for the full column list, types, and
 constraints.
 
 `npcStations`/`stationOperations`/`stationServices` (plus their two
@@ -183,7 +183,7 @@ erDiagram
     }
 
     %% -- Everything below this line is dynamic DDL, added at runtime by
-    %% -- builder::dotlan (not part of schema.sql) -- see the note below.
+    %% -- builder::community (not part of schema.sql) -- see the note below.
     mapAbstractSystems {
         int solarSystemId PK, FK
         int regionId PK, FK
@@ -280,7 +280,7 @@ Everything above the `%%` comment inside the diagram comes from
 `schema.sql` and is always present. `mapAbstractSystems`,
 `mapTriglavianStatus`, and the four extra `mapSolarSystems` columns
 (`iceBelt`, `trigStatusID`, `joveObservatory`, `specialOreAnom`) are
-different: they don't exist in `schema.sql` at all. `builder::dotlan`
+different: they don't exist in `schema.sql` at all. `builder::community`
 adds each of them at runtime (`CREATE TABLE`/`ALTER TABLE`), and this
 whole layer is opt-in: none of it runs at all unless
 `ParserConfig.with_third_party` is set (`sde-builder build
@@ -289,7 +289,7 @@ database containing canonical SDE data only, since none of this comes
 from CCP's official export. When it does run, `mapAbstractSystems` is
 added unconditionally (no sub-flag of its own beyond
 `with_third_party`); the other four are each gated by their own
-`DotlanConfig` flag on top of that -- a database built with a given
+`CommunityConfig` flag on top of that -- a database built with a given
 flag off simply doesn't have that table/column, rather than having it
 sit there empty. This -- plus the `with_third_party` gate -- is why
 they're kept out of the static schema in the first place: this data

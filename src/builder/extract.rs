@@ -34,7 +34,7 @@ pub fn unzip(zip_path: &Path, destination: &Path) -> Result<(), BuilderError> {
 /// from the same `sde_dir` the same way, and canonicalizing `maps_dir`
 /// upfront would fail if that folder doesn't exist yet (a perfectly
 /// valid case -- e.g. the first time the builder runs, before
-/// `dotlan::process()` has downloaded any map).
+/// `community::process()` has downloaded any map).
 pub fn clean_except_maps(sde_dir: &Path) -> Result<(), BuilderError> {
     if !sde_dir.exists() {
         return Ok(());

@@ -7,7 +7,7 @@
 //! The `sde` (CLI) and `sde-gui` binaries enable this feature and call
 //! into this module's functions.
 
-pub mod dotlan;
+pub mod community;
 pub mod extract;
 pub mod http;
 pub mod manifest;
@@ -18,9 +18,9 @@ pub mod sde_index;
 // `schema` (STRICT DDL): see builder::schema::create_schema().
 // `parser` (data writing): see builder::parser's docstring for the
 // full list of tables it covers.
-// `dotlan` (community data external to the SDE): dynamic DDL, static
+// `community` (community data external to the SDE): dynamic DDL, static
 // list population, SVG parsing, and the download orchestrator with
-// retries. See builder::dotlan's docstring for the detail.
+// retries. See builder::community's docstring for the detail.
 // `sde_index` (build number check + conditional SDE download): see
 // builder::sde_index's docstring.
 // `extract` (SDE zip decompression, preserving maps/): see
@@ -29,7 +29,7 @@ pub mod sde_index;
 // The top-level orchestrator that ties all of this together lives in
 // src/bin/cli.rs's `main()`: sde_index::update_as_needed() ->
 // extract::prepare_sde_directory() -> parser::Parser::build_database()
-// (which itself runs parse_data(), then dotlan::process() only if
+// (which itself runs parse_data(), then community::process() only if
 // `--with-third-party` was passed).
 
 /// Build process errors. Deliberately without `thiserror`: same

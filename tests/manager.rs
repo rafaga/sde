@@ -33,12 +33,12 @@ impl Fixture {
     /// Same schema as [`Self::new`], but without `mapAbstractSystems`
     /// at all -- simulates a database built without
     /// `--with-third-party` (`ParserConfig.with_third_party = false`),
-    /// where `builder::dotlan::process()` never ran, so that table was
+    /// where `builder::community::process()` never ran, so that table was
     /// never created. Used to confirm
     /// `get_abstract_systems`/`get_abstract_connections` fail
     /// gracefully (a plain `Err`) rather than panicking when it's
     /// absent.
-    fn new_without_dotlan(test_name: &str) -> Self {
+    fn new_without_community(test_name: &str) -> Self {
         Self::build(test_name, false)
     }
 
@@ -592,13 +592,13 @@ fn abstract_connections_filtered_by_region_requires_both_ends_inside() {
 }
 
 #[test]
-fn abstract_systems_fails_gracefully_without_dotlan_table() {
+fn abstract_systems_fails_gracefully_without_community_table() {
     // Regression test: a database built without --with-third-party
     // (ParserConfig.with_third_party = false) never gets
-    // mapAbstractSystems created at all, since builder::dotlan::process()
+    // mapAbstractSystems created at all, since builder::community::process()
     // never runs. get_abstract_systems() must fail gracefully (a plain
     // Err) rather than panicking when that table is absent.
-    let fixture = Fixture::new_without_dotlan("abstract_systems_missing");
+    let fixture = Fixture::new_without_community("abstract_systems_missing");
     let manager = fixture.manager();
     let error = manager.get_abstract_systems(vec![]).unwrap_err();
     assert!(
@@ -608,9 +608,9 @@ fn abstract_systems_fails_gracefully_without_dotlan_table() {
 }
 
 #[test]
-fn abstract_connections_fails_gracefully_without_dotlan_table() {
+fn abstract_connections_fails_gracefully_without_community_table() {
     // Same regression as above, for get_abstract_connections().
-    let fixture = Fixture::new_without_dotlan("abstract_connections_missing");
+    let fixture = Fixture::new_without_community("abstract_connections_missing");
     let manager = fixture.manager();
     let error = manager.get_abstract_connections(vec![]).unwrap_err();
     assert!(

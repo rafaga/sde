@@ -79,7 +79,7 @@
 //!   `config.force_isometric_position_2d` is on.
 
 use crate::builder::BuilderError;
-use crate::builder::dotlan::{self, DotlanConfig};
+use crate::builder::community::{self, CommunityConfig};
 use reqwest::Client;
 use rusqlite::Connection;
 use serde_json::Value;
@@ -130,11 +130,11 @@ pub struct ParserConfig {
     /// otherwise it will be silent. Default `false`.
     pub verbose: bool,
     /// If `true`, [`Parser::build_database`] also fetches and layers in
-    /// `builder::dotlan`'s community-maintained data on top of the
+    /// community-maintained data (`builder::community`) on top of the
     /// canonical SDE (ice belts, Jove Observatories, Triglavian
     /// invasion status, special ore anomalies, and
     /// `mapAbstractSystems` itself -- the one part of that layer that
-    /// isn't gated by its own `DotlanConfig` flag). Default `false`:
+    /// isn't gated by its own `CommunityConfig` flag). Default `false`:
     /// none of this comes from CCP's official export, so a database
     /// built with the default config contains canonical SDE data only.
     /// Has no effect on [`Parser::parse_data`] directly -- only
@@ -1897,7 +1897,7 @@ impl Parser {
 
     /// Runs the full database build: the canonical SDE parse
     /// ([`Self::parse_data`]), plus -- gated behind `config.with_third_party`,
-    /// off by default -- `builder::dotlan`'s community-maintained layer on
+    /// off by default -- community-maintained data (`builder::community`) on
     /// top of it. Schema creation is the caller's responsibility, same as
     /// [`Self::parse_data`] already requires (both expect the schema to exist
     /// already).
@@ -1907,10 +1907,10 @@ impl Parser {
     /// canonical-vs-third-party behavior the CLI does, driven by the same
     /// [`ParserConfig`] -- centralizing that decision here instead of
     /// leaving it to every caller (CLI included) to reimplement the same
-    /// `if config.with_third_party { dotlan::process(...) }` check.
+    /// `if config.with_third_party { community::process(...) }` check.
     ///
     /// `client`/`maps_url_base` are the same two pieces of information
-    /// [`dotlan::process`] itself needs -- passed through unchanged, not
+    /// [`community::process`] itself needs -- passed through unchanged, not
     /// duplicated as separate config fields, so a caller that isn't using
     /// `with_third_party` doesn't need to supply a real `maps_url_base` at
     /// all (any string works; it's never read).
@@ -1923,18 +1923,18 @@ impl Parser {
         let summary = self.parse_data(connection)?;
 
         if self.config.with_third_party {
-            let dotlan_config = DotlanConfig {
+            let community_config = CommunityConfig {
                 with_icebelts: true,
                 with_triglavian_status: true,
                 with_jove_observatories: true,
                 with_special_ore: true,
             };
-            dotlan::process(
+            community::process(
                 connection,
                 client,
                 &self.sde_directory,
                 maps_url_base,
-                &dotlan_config,
+                &community_config,
             )
             .await?;
         }

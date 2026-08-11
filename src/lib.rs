@@ -419,7 +419,7 @@ impl<'a> SdeManager<'a> {
     }
 
     /// Same shape and purpose as [`Self::get_systempoints`], but for the
-    /// abstract map (`mapAbstractSystems`, from `builder::dotlan`'s
+    /// abstract map (`mapAbstractSystems`, from `builder::community`'s
     /// community-maintained, third-party layer -- see
     /// `ParserConfig.with_third_party`) instead of the canonical one:
     /// every abstract system, optionally filtered to just the given

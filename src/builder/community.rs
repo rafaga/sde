@@ -1,22 +1,27 @@
-//! Community data from dotlan: tables/columns that are NOT part of
-//! CCP's official SDE, but come from external sources instead (dotlan's
-//! SVG maps, and lists maintained by hand by the community, like Jove
-//! Observatory systems or Triglavian invasion status).
+//! Community data: tables/columns that are NOT part of CCP's official
+//! SDE, but come from external sources instead (dotlan's SVG maps, and
+//! lists maintained by hand by the community, like Jove Observatory
+//! systems or Triglavian invasion status).
 //!
 //! Unlike `builder::schema` (the static `STRICT` DDL that reconstructs
 //! the canonical SDE), this module creates its tables/columns at
 //! **runtime** (`CREATE TABLE`/`ALTER TABLE`), gated by
-//! [`DotlanConfig`] -- an explicit decision: folding this into the
+//! [`CommunityConfig`] -- an explicit decision: folding this into the
 //! static schema would go beyond the crate's primary goal (reconstruct
 //! the SDE as-is, not enrich it). A database built with, say,
 //! `with_icebelts: false` simply doesn't have the `iceBelt` column at
 //! all -- it's not that it exists empty.
 //!
-//! `mapAbstractSystems` is the only unconditional exception: it's
-//! consumed by `SdeManager::get_abstract_systems()`/`get_abstract_connections()`
-//! on the read side, so if this module (or [`update_tables`]) never ran
-//! against the database, those two queries will fail with "no such
-//! table".
+//! `mapAbstractSystems` is the only exception among this module's own
+//! tables/columns that has no matching [`CommunityConfig`] flag of its
+//! own: if this whole module runs at all (gated by
+//! `ParserConfig.with_third_party`, outside this module -- see
+//! [`process`]), `mapAbstractSystems` always gets created, with no
+//! `with_abstract_systems` flag to turn it off independently. It's
+//! consumed by
+//! `SdeManager::get_abstract_systems()`/`get_abstract_connections()`
+//! on the read side, so if this module never ran against the database
+//! at all, those two queries will fail with "no such table".
 //!
 //! ## Current scope
 //!
@@ -52,14 +57,14 @@ const JOVE_OBSERVATORY_SYSTEMS: &str = include_str!("jove_observatories.txt");
 /// Config for dotlan's community data. `with_jove_observatories` is the
 /// only one of the four flags that starts out `true`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DotlanConfig {
+pub struct CommunityConfig {
     pub with_icebelts: bool,
     pub with_triglavian_status: bool,
     pub with_jove_observatories: bool,
     pub with_special_ore: bool,
 }
 
-impl Default for DotlanConfig {
+impl Default for CommunityConfig {
     fn default() -> Self {
         Self {
             with_icebelts: false,
@@ -74,7 +79,7 @@ impl Default for DotlanConfig {
 /// (not yet implemented in this module) would insert the "abstract" 2D
 /// coordinates dotlan computes for its own map layout -- unrelated to
 /// `mapSolarSystems.position2DX/Y`, which come from the official SDE.
-/// Always created, without gating on any [`DotlanConfig`] flag.
+/// Always created, without gating on any [`CommunityConfig`] flag.
 ///
 /// `x`/`y` are `REAL`, not `INTEGER`: the coordinates of a `<use
 /// x="..." y="...">` SVG element are almost certainly fractional, and
@@ -210,7 +215,7 @@ pub fn setup_special_anomalies(connection: &Connection) -> Result<(), BuilderErr
 
 /// Creates (and populates, where applicable) every community-data
 /// table/column enabled by `config`. `mapAbstractSystems` always runs;
-/// the rest respect each [`DotlanConfig`] flag.
+/// the rest respect each [`CommunityConfig`] flag.
 ///
 /// Note: unlike [`crate::builder::parser::Parser::parse_data`], this function
 /// does NOT wrap the calls in an explicit transaction -- each
@@ -219,7 +224,7 @@ pub fn setup_special_anomalies(connection: &Connection) -> Result<(), BuilderErr
 /// together (unlike the `mapSystemGates.destinationGateId` case
 /// documented in `parser::parse_stargates`). If the `mapAbstractSystems`
 /// + SVG flow is added, this is worth reconsidering.
-pub fn update_tables(connection: &Connection, config: &DotlanConfig) -> Result<(), BuilderError> {
+pub fn update_tables(connection: &Connection, config: &CommunityConfig) -> Result<(), BuilderError> {
     create_abstract_map(connection)?;
     if config.with_icebelts {
         create_icebelts(connection)?;
@@ -282,11 +287,11 @@ pub fn update_tables(connection: &Connection, config: &DotlanConfig) -> Result<(
 pub fn extract_map_data(
     connection: &Connection,
     map_path: &Path,
-    config: &DotlanConfig,
+    config: &CommunityConfig,
 ) -> Result<bool, BuilderError> {
     if !map_path.exists() {
         eprintln!(
-            "dotlan: {} doesn't exist, skipping parsing",
+            "community: {} doesn't exist, skipping parsing",
             map_path.display()
         );
         return Ok(false);
@@ -296,7 +301,7 @@ pub fn extract_map_data(
     let doc = match roxmltree::Document::parse(&content) {
         Ok(doc) => doc,
         Err(err) => {
-            eprintln!("dotlan: error parsing {} - {err}", map_path.display());
+            eprintln!("community: error parsing {} - {err}", map_path.display());
             return Ok(false);
         }
     };
@@ -313,7 +318,7 @@ pub fn extract_map_data(
         match raw_id.get(3..).and_then(|s| s.parse::<i64>().ok()) {
             Some(id) => icebelt_ids.push(id),
             None => eprintln!(
-                "dotlan: unexpected icebelt id '{raw_id}' in {}, skipping",
+                "community: unexpected icebelt id '{raw_id}' in {}, skipping",
                 map_path.display()
             ),
         }
@@ -358,7 +363,7 @@ pub fn extract_map_data(
             .zip(raw_y.parse::<f64>().ok());
         let Some(((id, x), y)) = parsed else {
             eprintln!(
-                "dotlan: unexpected <use id='{raw_id}' x='{raw_x}' y='{raw_y}'> in {}, skipping",
+                "community: unexpected <use id='{raw_id}' x='{raw_x}' y='{raw_y}'> in {}, skipping",
                 map_path.display()
             );
             continue;
@@ -410,7 +415,7 @@ pub async fn process(
     client: &Client,
     sde_directory: &Path,
     map_url_base: &str,
-    config: &DotlanConfig,
+    config: &CommunityConfig,
 ) -> Result<(), BuilderError> {
     update_tables(connection, config)?;
     let regions = get_all_regions(connection)?;
@@ -435,7 +440,7 @@ pub async fn process(
             if needs_download {
                 match http::download(client, &map_url, &map_path, |_| {}).await {
                     Ok(size) if size > 100 => {
-                        println!("dotlan: map downloaded for {region_name}");
+                        println!("community: map downloaded for {region_name}");
                         if let Some(fp) = &remote_fingerprint {
                             manifest.insert(region_name.clone(), fp.clone());
                             manifest_changed = true;
@@ -443,24 +448,24 @@ pub async fn process(
                     }
                     Ok(_) => {
                         let _ = std::fs::remove_file(&map_path);
-                        eprintln!("dotlan: invalid data received for {region_name}");
+                        eprintln!("community: invalid data received for {region_name}");
                     }
                     Err(err) => {
                         let _ = std::fs::remove_file(&map_path);
-                        eprintln!("dotlan: error downloading the map for {region_name}: {err}");
+                        eprintln!("community: error downloading the map for {region_name}: {err}");
                     }
                 }
             } else {
-                println!("dotlan: {region_name} unchanged, skipping download.");
+                println!("community: {region_name} unchanged, skipping download.");
             }
 
-            println!("dotlan: parsing data for {region_name}");
+            println!("community: parsing data for {region_name}");
             if extract_map_data(connection, &map_path, config)? {
                 break;
             }
             needs_download = true;
             let _ = std::fs::remove_file(&map_path);
-            eprintln!("dotlan: invalid data for {region_name}, retrying download ({attempt}).");
+            eprintln!("community: invalid data for {region_name}, retrying download ({attempt}).");
         }
     }
 
@@ -560,7 +565,7 @@ mod tests {
     /// fixtures.
     fn write_temp_svg(test_name: &str, file_name: &str, content: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "sde-dotlan-test-{test_name}-{}-{}",
+            "sde-community-test-{test_name}-{}-{}",
             std::process::id(),
             file_name.len() // cheap disperser to avoid collisions between tests
         ));
@@ -584,8 +589,8 @@ mod tests {
         setup(&connection);
         create_abstract_map(&connection).unwrap();
 
-        let missing = std::env::temp_dir().join("sde-dotlan-test-no-existe.svg");
-        let config = DotlanConfig::default();
+        let missing = std::env::temp_dir().join("sde-community-test-no-existe.svg");
+        let config = CommunityConfig::default();
         let result = extract_map_data(&connection, &missing, &config).unwrap();
         assert!(!result);
     }
@@ -597,7 +602,7 @@ mod tests {
         create_abstract_map(&connection).unwrap();
 
         let path = write_temp_svg("malformed", "The_Forge.svg", "<svg><rect></svg>");
-        let config = DotlanConfig::default();
+        let config = CommunityConfig::default();
         let result = extract_map_data(&connection, &path, &config).unwrap();
         assert!(!result);
     }
@@ -609,7 +614,7 @@ mod tests {
         create_abstract_map(&connection).unwrap();
 
         let path = write_temp_svg("abstract_systems", "The_Forge.svg", SAMPLE_SVG);
-        let config = DotlanConfig::default();
+        let config = CommunityConfig::default();
         let ok = extract_map_data(&connection, &path, &config).unwrap();
         assert!(ok);
 
@@ -640,7 +645,7 @@ mod tests {
         create_abstract_map(&connection).unwrap();
         create_icebelts(&connection).unwrap();
         // with_icebelts=false (default): the rect gets parsed but NOT written.
-        let config = DotlanConfig::default();
+        let config = CommunityConfig::default();
         extract_map_data(&connection, &path, &config).unwrap();
         let ice_belt: i64 = connection
             .query_row(
@@ -655,7 +660,7 @@ mod tests {
         setup(&connection_enabled);
         create_abstract_map(&connection_enabled).unwrap();
         create_icebelts(&connection_enabled).unwrap();
-        let config_enabled = DotlanConfig {
+        let config_enabled = CommunityConfig {
             with_icebelts: true,
             ..config
         };
@@ -683,7 +688,7 @@ mod tests {
             "</svg>",
         );
         let path = write_temp_svg("incomplete_use", "The_Forge.svg", svg);
-        let config = DotlanConfig::default();
+        let config = CommunityConfig::default();
         let ok = extract_map_data(&connection, &path, &config).unwrap();
         assert!(ok, "un <use> incompleto se omite, no aborta el parseo");
 
@@ -744,9 +749,9 @@ mod tests {
         create_icebelts(&connection).unwrap();
 
         let path = write_temp_svg("real_excerpt", "Derelik.svg", svg);
-        let config = DotlanConfig {
+        let config = CommunityConfig {
             with_icebelts: true,
-            ..DotlanConfig::default()
+            ..CommunityConfig::default()
         };
         let ok = extract_map_data(&connection, &path, &config).unwrap();
         assert!(ok);
@@ -819,7 +824,7 @@ mod tests {
 
     fn temp_sde_dir(name: &str) -> std::path::PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("sde-dotlan-process-{name}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("sde-community-process-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -850,7 +855,7 @@ mod tests {
         let client = http::build_client().unwrap();
         let sde_dir = temp_sde_dir("new_region");
         let map_url_base = format!("{}/", server.uri());
-        let config = DotlanConfig::default();
+        let config = CommunityConfig::default();
 
         process(&connection, &client, &sde_dir, &map_url_base, &config)
             .await
@@ -905,7 +910,7 @@ mod tests {
         manifest::save(&maps_dir, &manifest).unwrap();
 
         let map_url_base = format!("{}/", server.uri());
-        let config = DotlanConfig::default();
+        let config = CommunityConfig::default();
         process(&connection, &client, &sde_dir, &map_url_base, &config)
             .await
             .unwrap();
@@ -946,7 +951,7 @@ mod tests {
         let client = http::build_client().unwrap();
         let sde_dir = temp_sde_dir("retry");
         let map_url_base = format!("{}/", server.uri());
-        let config = DotlanConfig::default();
+        let config = CommunityConfig::default();
 
         process(&connection, &client, &sde_dir, &map_url_base, &config)
             .await
@@ -1178,7 +1183,7 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         setup(&connection);
 
-        let config = DotlanConfig {
+        let config = CommunityConfig {
             with_icebelts: false,
             with_triglavian_status: false,
             with_jove_observatories: false,
@@ -1222,7 +1227,7 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         setup(&connection);
 
-        let config = DotlanConfig {
+        let config = CommunityConfig {
             with_icebelts: true,
             with_triglavian_status: true,
             with_jove_observatories: true,

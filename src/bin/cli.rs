@@ -40,7 +40,7 @@ enum Command {
         /// Also fetch and layer in community-maintained data on top of
         /// the canonical SDE (ice belts, Jove Observatories, Triglavian
         /// invasion status, special ore anomalies -- everything
-        /// `builder::dotlan` provides, including `mapAbstractSystems`,
+        /// `builder::community` provides, including `mapAbstractSystems`,
         /// the one part of it that isn't gated by its own flag). Off by
         /// default: none of this comes from CCP's official export, so
         /// a plain `build` produces a database that's canonical SDE
@@ -59,7 +59,7 @@ enum Command {
 /// database, cleans `sde/` (preserving `maps/`), decompresses the new
 /// zip, and parses it.
 ///
-/// The whole rebuild (delete + clean + unzip + parse + dotlan) only
+/// The whole rebuild (delete + clean + unzip + parse + community) only
 /// runs when `update_as_needed()` reports a change, the database
 /// doesn't exist yet, or `--force` was passed -- deliberately, to
 /// avoid wasted work (a full unzip + reparse of the whole SDE) on runs
@@ -67,7 +67,7 @@ enum Command {
 ///
 /// # This binary only turns flags into a `ParserConfig`
 ///
-/// Whether to include `builder::dotlan`'s community-maintained,
+/// Whether to include `builder::community`'s community-maintained,
 /// third-party data (see `--with-third-party` above) -- and everything
 /// else about how the database gets built -- is decided by
 /// [`parser::Parser::build_database`], not by this function. That's

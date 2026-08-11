@@ -101,7 +101,7 @@ implemented, only the map-related ones
 (`mapRegions`/`mapConstellations`/`mapSolarSystems`/`mapStargates`(via
 its derived table)/`mapPlanets`/`mapMoons`) have *any* read coverage,
 and none of them have it complete except the dynamic table
-`mapAbstractSystems` (from `builder::dotlan`, not from an SDE file).
+`mapAbstractSystems` (from `builder::community`, not from an SDE file).
 Everything else -- item taxonomy, races, factions, corporations, stars,
 stations -- gets written but can't be queried from `SdeManager` today.
 
@@ -117,7 +117,7 @@ stations -- gets written but can't be queried from `SdeManager` today.
 - Two real corporations (Doomheim, InterBus) have a `stationId` that
   doesn't resolve to any real station -- it's cleared to `NULL`
   automatically when building the database, not an error.
-- `builder::dotlan`'s community-maintained layer (ice belts, Jove
+- `builder::community`'s community-maintained layer (ice belts, Jove
   Observatories, Triglavian invasion status, special ore anomalies,
   and `mapAbstractSystems` itself) is entirely optional, off by
   default -- gated behind `ParserConfig.with_third_party` /
