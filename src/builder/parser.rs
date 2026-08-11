@@ -6,7 +6,7 @@
 //! `parse_*` function that receives the already-open connection (with
 //! the schema already created by [`super::schema::create_schema`]) and
 //! the directory where the SDE's flat files live (`categories.jsonl`,
-//! `types.jsonl`, etc.) -- with the exception of [`parse_connections`],
+//! `types.jsonl`, etc.) -- with the exception of [`Parser::parse_connections`],
 //! which doesn't read any file (it derives its data from
 //! `mapSystemGates`, already inserted by an earlier phase).
 //!
@@ -32,37 +32,37 @@
 //! and `_parse_constellations` in Python.
 //!
 //! Phase 4 adds `mapSolarSystems`, with the k-space/w-space/abyssal/void
-//! scope filter ([`ParserConfig::system_in_scope`]) and the isometric projection
+//! scope filter (`ParserConfig::system_in_scope`) and the isometric projection
 //! ([`isometric_projection_2d`]). Equivalent to `_parse_solar_systems()`
 //! in Python.
 //!
-//! Phase 5 adds `mapSystemGates` ([`parse_stargates`], gated by
+//! Phase 5 adds `mapSystemGates` ([`Parser::parse_stargates`], gated by
 //! `config.with_gates`), equivalent to `_parse_stargates()` in Python --
 //! see its docstring for an important note on why this particular phase
 //! needs to run inside an explicit transaction (it's not just an
 //! atomicity concern, unlike the rest of the pipeline).
 //!
-//! Phase 6 adds `mapStars` ([`parse_stars`]), equivalent to
+//! Phase 6 adds `mapStars` ([`Parser::parse_stars`]), equivalent to
 //! `_parse_stars()` in Python. `mapStars.jsonl`'s exact shape was
 //! confirmed against a real data sample (not just against the Python
 //! code, which at this point carried a note from the author themselves
-//! warning that the shape hadn't been verified) -- see [`parse_stars`]'s
+//! warning that the shape hadn't been verified) -- see [`Parser::parse_stars`]'s
 //! docstring for the detail.
 //!
-//! Phase 7 adds `mapPlanets` ([`parse_planets`]), equivalent to
+//! Phase 7 adds `mapPlanets` ([`Parser::parse_planets`]), equivalent to
 //! `_parse_planets()` in Python -- same situation as `mapStars`, shape
 //! confirmed against a real sample of 68407 records (see
-//! [`parse_planets`]'s docstring).
+//! [`Parser::parse_planets`]'s docstring).
 //!
-//! Phase 8 adds `mapMoons` ([`parse_moons`], gated by
+//! Phase 8 adds `mapMoons` ([`Parser::parse_moons`], gated by
 //! `config.with_moons`), equivalent to `_parse_moons()` in Python.
 //! Unlike `mapStars`/`mapPlanets`, there was NO real sample available
 //! to verify against here (the real file weighs over 200 MiB) -- the
 //! port relies solely on the Python code, whose docstring DOES confirm
-//! the field list. See [`parse_moons`]'s docstring for the detail of
+//! the field list. See [`Parser::parse_moons`]'s docstring for the detail of
 //! what remains an inference (not a verification) in this phase.
 //!
-//! Phase 9 adds `mapSystemConnections` ([`parse_connections`]),
+//! Phase 9 adds `mapSystemConnections` ([`Parser::parse_connections`]),
 //! equivalent to `parse_connections()` in Python -- the simplest of
 //! all: a single SQL statement that derives the connections directly
 //! from `mapSystemGates`, without reading any SDE file. With this,
@@ -102,7 +102,7 @@
 //!   rollback on closing without a commit). This file's individual
 //!   `parse_*` functions, called on their own, do NOT wrap their
 //!   inserts in an explicit transaction (autocommit per INSERT, SQLite's
-//!   default mode) -- only [`parse_data`], the orchestrator, wraps all 6
+//!   default mode) -- only [`Parser::parse_data`], the orchestrator, wraps all 6
 //!   phases in a single real transaction (`Connection::transaction()`),
 //!   with the same "all or nothing" behavior as Python. If
 //!   `parse_categories()` (or another individual function) is called
@@ -112,7 +112,7 @@
 //! - `_parse_factions()` iterates `faction.get('memberRaces', [])`
 //!   without validating its elements -- if one weren't an integer,
 //!   Python would just pass it to `cur.execute()` as-is and fail (or
-//!   not) depending on the driver. Here, [`parse_factions`] validates
+//!   not) depending on the driver. Here, [`Parser::parse_factions`] validates
 //!   each element and returns [`BuilderError::Data`] on the first one
 //!   that isn't an integer, since it would violate
 //!   `factionRace.raceId INTEGER NOT NULL` on insert anyway -- failing
@@ -121,7 +121,7 @@
 //! - `_parse_regions()` reads `region.get('nebulaID')` as optional, but
 //!   `mapRegions.nebula` is `INTEGER NOT NULL` -- if it were missing,
 //!   Python would fail the same way on insert (NOT NULL constraint).
-//!   Here, [`parse_regions`] treats it as required (same criterion as
+//!   Here, [`Parser::parse_regions`] treats it as required (same criterion as
 //!   `name` in phase 1): it fails with [`BuilderError::Data`] and a
 //!   clear message instead of letting SQLite reject it further down.
 //! - `_parse_regions()`/`_parse_constellations()` also build
@@ -135,7 +135,7 @@
 //!   element['_key']`. Python distinguishes "the key is present" (with
 //!   `in`) from "the value is valid"; if `constellationID` were present
 //!   but `null` or some other type, Python would still use it (and
-//!   probably fail further down on insert). [`parse_constellations`]
+//!   probably fail further down on insert). [`Parser::parse_constellations`]
 //!   instead falls back to `_key` in both cases (absent or
 //!   present-but-not-an-integer) -- more tolerant, same result with
 //!   well-formed data.
@@ -216,23 +216,23 @@ pub struct ParserConfig {
     /// `SdeConfig.map_abyssal` in Python.
     pub map_abyssal: bool,
     /// Include "void" systems. Default `false`, same as
-    /// `SdeConfig.map_void` in Python. See [`ParserConfig::system_in_scope`] for a
+    /// `SdeConfig.map_void` in Python. See `ParserConfig::system_in_scope` for a
     /// note on why, today, `map_wspace`/`map_abyssal`/`map_void` all
     /// end up gating on the same check.
     pub map_void: bool,
-    /// If `false`, [`parse_data`] skips the stargates phase
-    /// ([`parse_stargates`]) entirely -- doesn't call it at all, not
+    /// If `false`, [`Parser::parse_data`] skips the stargates phase
+    /// ([`Parser::parse_stargates`]) entirely -- doesn't call it at all, not
     /// just filter its results. Default `true`, same as
     /// `SdeConfig.with_gates` in Python.
     pub with_gates: bool,
-    /// If `false`, [`parse_data`] skips the moons phase
-    /// ([`parse_moons`]) entirely -- doesn't call it at all. Default
+    /// If `false`, [`Parser::parse_data`] skips the moons phase
+    /// ([`Parser::parse_moons`]) entirely -- doesn't call it at all. Default
     /// `true`, same as `SdeConfig.with_moons` in Python.
     pub with_moons: bool,
-    /// if true, [`parse_data`] present elements bieng parsed in stdout as they are processed,
+    /// if true, [`Parser::parse_data`] present elements bieng parsed in stdout as they are processed,
     /// otherwise it will be silent. Default `false`.
     pub verbose: bool,
-    /// If `true`, [`build_database`] also fetches and layers in
+    /// If `true`, [`Parser::build_database`] also fetches and layers in
     /// `builder::dotlan`'s community-maintained data on top of the
     /// canonical SDE (ice belts, Jove Observatories, Triglavian
     /// invasion status, special ore anomalies, and
@@ -240,8 +240,8 @@ pub struct ParserConfig {
     /// isn't gated by its own `DotlanConfig` flag). Default `false`:
     /// none of this comes from CCP's official export, so a database
     /// built with the default config contains canonical SDE data only.
-    /// Has no effect on [`parse_data`] directly -- only
-    /// [`build_database`], which calls both, consults it.
+    /// Has no effect on [`Parser::parse_data`] directly -- only
+    /// [`Parser::build_database`], which calls both, consults it.
     pub with_third_party: bool,
 }
 
@@ -339,21 +339,21 @@ pub fn isometric_projection_2d(x: f64, y: f64, z: f64, axis: ProjectedAxis) -> (
     }
 }
 
-/// State shared between [`parse_groups`] and [`parse_types`], equivalent
+/// State shared between [`Parser::parse_groups`] and [`Parser::parse_types`], equivalent
 /// to `SdeParser._stars` (`DataBrigde`) in Python.
 #[derive(Debug, Default)]
 pub struct StarTypeState {
     /// `groupId` of the group named exactly `"Sun"`, once
-    /// [`parse_groups`] finds it.
+    /// [`Parser::parse_groups`] finds it.
     pub sun_group_id: Option<i64>,
     /// `typeId` (from `invTypes`) -> `starTypeId` (from `typeStar`) for
-    /// each star type inserted by [`parse_types`]. Used by
-    /// [`parse_stars`] to resolve each star's `starTypeId`.
+    /// each star type inserted by [`Parser::parse_types`]. Used by
+    /// [`Parser::parse_stars`] to resolve each star's `starTypeId`.
     pub star_type_ids: std::collections::HashMap<i64, i64>,
 }
 
-/// Solar system ids that passed the [`ParserConfig::system_in_scope`] filter,
-/// populated by [`parse_solar_systems`]. Equivalent to
+/// Solar system ids that passed the `ParserConfig::system_in_scope` filter,
+/// populated by [`Parser::parse_solar_systems`]. Equivalent to
 /// `self._systems_in_scope` in Python, which `_parse_stargates`,
 /// `_parse_stars`, `_parse_planets` and `_parse_moons` use to filter
 /// their own records by `solarSystemID`.
@@ -533,7 +533,7 @@ impl Parser {
     /// Extracts `record[outer][inner]` as a required `i64`. Equivalent to
     /// the nested access `record[outer][inner]` in Python (both levels are
     /// `dict[key]`, not `.get()`) -- used for `destination.stargateID`/
-    /// `destination.solarSystemID` in [`parse_stargates`].
+    /// `destination.solarSystemID` in [`Self::parse_stargates`].
     fn required_nested_i64(
         &self,
         record: &Value,
@@ -570,7 +570,7 @@ impl Parser {
         })
     }
 
-    /// Same as [`optional_i64_with_nested_fallback`], but for boolean
+    /// Same as `optional_i64_with_nested_fallback`, but for boolean
     /// fields (e.g. `locked`).
     fn optional_bool_with_nested_fallback(
         &self,
@@ -585,7 +585,7 @@ impl Parser {
         })
     }
 
-    /// Same as [`optional_i64_with_nested_fallback`], but for floating-point
+    /// Same as `optional_i64_with_nested_fallback`, but for floating-point
     /// fields -- used for `mapPlanets.radius` (a `REAL` column, unlike
     /// `mapStars.radius`, which is `INTEGER`).
     fn optional_f64_with_nested_fallback(
@@ -611,14 +611,14 @@ impl Parser {
     /// level is missing (or isn't numeric). Equivalent to the pattern
     /// `outer_val = record.get(outer); outer_val.get(inner) if outer_val
     /// else None` in Python -- used for `position2D.x`/`.y`, which, unlike
-    /// `position` (see [`required_position`]), is optional at both levels.
+    /// `position` (see `required_position`), is optional at both levels.
     fn optional_nested_f64(&self, record: &Value, outer: &str, inner: &str) -> Option<f64> {
         record.get(outer)?.get(inner).and_then(Value::as_f64)
     }
 
     /// Populates `invTypes` from `<sde_directory>/types.jsonl`, and along
     /// the way `typeStar` for any type belonging to the "Sun" group (detected
-    /// by [`parse_groups`] via `state.sun_group_id`). Returns the number of
+    /// by [`Self::parse_groups`] via `state.sun_group_id`). Returns the number of
     /// rows inserted into `invTypes`. Equivalent to `_parse_types()` in
     /// Python -- see "Known deviations" in the module's docstring for how
     /// the dead `process` code and malformed star names are handled.
@@ -705,7 +705,7 @@ impl Parser {
 
     /// Populates `invGroups` from `<sde_directory>/groups.jsonl`. Along the
     /// way, detects the group named exactly `"Sun"` and saves its id in
-    /// `state.sun_group_id` -- [`parse_types`] needs it to recognize star
+    /// `state.sun_group_id` -- [`Self::parse_types`] needs it to recognize star
     /// types. Returns the number of rows inserted. Equivalent to
     /// `_parse_groups()` in Python.
     pub fn parse_groups(
@@ -807,7 +807,7 @@ impl Parser {
     /// `npcCorporationDivisionAssignments`, `npcCorporationTrades`, and
     /// `npcCorporationInvestors` from
     /// `<sde_directory>/npcCorporations.jsonl`. Requires `races` and
-    /// [`parse_npc_corporation_divisions`] to already be populated.
+    /// [`Self::parse_npc_corporation_divisions`] to already be populated.
     /// `enemyId`/`friendId`/`investors` are self-referencing, and
     /// `factionId`/`solarSystemId`/`stationId` reference tables parsed in
     /// later phases -- all `DEFERRABLE`, resolved at `parse_data()`'s final
@@ -1124,7 +1124,7 @@ impl Parser {
 
     /// Populates `mapSolarSystems` from
     /// `<sde_directory>/mapSolarSystems.jsonl`, filtering by
-    /// [`ParserConfig::system_in_scope`] and accumulating the ids that pass the filter
+    /// `ParserConfig::system_in_scope` and accumulating the ids that pass the filter
     /// into `state.systems_in_scope`. Requires `mapConstellations` to
     /// already be populated (FK `mapSolarSystems.constellationId ->
     /// mapConstellations.constellationId`). Returns the number of rows
@@ -1249,7 +1249,7 @@ impl Parser {
     /// Populates `mapSystemGates` from `<sde_directory>/mapStargates.jsonl`
     /// (the file is named `mapStargates`, even though the destination table
     /// is `mapSystemGates` -- that's how the SDE itself names it). Filters
-    /// by `state.systems_in_scope` (populated by [`parse_solar_systems`]): a
+    /// by `state.systems_in_scope` (populated by [`Self::parse_solar_systems`]): a
     /// gate whose `solarSystemID` isn't in that set is skipped -- same
     /// criterion as `gate['solarSystemID'] not in self._systems_in_scope`
     /// in Python. Requires `mapSolarSystems`/`invTypes` to already be
@@ -1279,7 +1279,7 @@ impl Parser {
     /// until the final `COMMIT`, by which point both gates already exist.
     ///
     /// In practice this means calling this function on its own (outside of
-    /// [`parse_data`], without going through `Connection::transaction()`)
+    /// [`Self::parse_data`], without going through `Connection::transaction()`)
     /// doesn't just lose the "all or nothing" atomicity guarantee already
     /// documented for the rest of the pipeline (see "Transactions" in the
     /// module's docstring) -- here it can make the insertion of perfectly
@@ -1335,8 +1335,8 @@ impl Parser {
     // ---------------------------------------------------------------------
 
     /// Populates `mapStars` from `<sde_directory>/mapStars.jsonl`, filtering
-    /// by `state.systems_in_scope` (populated by [`parse_solar_systems`]).
-    /// Requires [`parse_types`] to have already run -- it needs
+    /// by `state.systems_in_scope` (populated by [`Self::parse_solar_systems`]).
+    /// Requires [`Self::parse_types`] to have already run -- it needs
     /// `star_state.star_type_ids`, the `typeId -> starTypeId` mapping --
     /// and `mapSolarSystems`/`typeStar` to already be populated (FKs).
     /// Returns the number of rows inserted. Equivalent to `_parse_stars()`
@@ -1348,8 +1348,8 @@ impl Parser {
     /// `statistics.radius`), `statistics` is always present, and `locked`
     /// **never** shows up -- neither at the top level nor inside
     /// `statistics` -- so in practice that column always comes out
-    /// `NULL`. The nested fallback (see [`optional_i64_with_nested_fallback`]/
-    /// [`optional_bool_with_nested_fallback`]) is kept anyway, faithfully
+    /// `NULL`. The nested fallback (see `optional_i64_with_nested_fallback`/
+    /// `optional_bool_with_nested_fallback`) is kept anyway, faithfully
     /// ported from Python, in case some other SDE version does carry it.
     ///
     /// # Deviation from Python: `starTypeId` not found
@@ -1422,7 +1422,7 @@ impl Parser {
 
     /// Populates `mapPlanets` from `<sde_directory>/mapPlanets.jsonl`,
     /// filtering by `state.systems_in_scope` (populated by
-    /// [`parse_solar_systems`]). Requires `mapSolarSystems`/`invTypes` to
+    /// [`Self::parse_solar_systems`]). Requires `mapSolarSystems`/`invTypes` to
     /// already be populated (FKs). Returns the number of rows inserted.
     /// Equivalent to `_parse_planets()` in Python.
     ///
@@ -1431,7 +1431,7 @@ impl Parser {
     /// - `celestialIndex`, `position`, `typeID` and `solarSystemID` are
     ///   present in 100% of records -- unlike Python (which reads
     ///   `celestialIndex` with `.get()`, optional), here they're treated
-    ///   as required ([`required_i64`]/[`required_position`]), same
+    ///   as required (`required_i64`/`required_position`), same
     ///   criterion used throughout this file for `NOT NULL` columns
     ///   (`mapPlanets.planetaryIndex` is one) when the real source
     ///   confirms the data is always there: fail early with a clear
@@ -1439,7 +1439,7 @@ impl Parser {
     /// - `radius` is **always** at the top level (never needs the nested
     ///   fallback to `statistics.radius`) -- but unlike `mapStars.radius`
     ///   (an `INTEGER` column), `mapPlanets.radius` is `REAL`, so it's
-    ///   read with [`optional_f64_with_nested_fallback`], not the `i64`
+    ///   read with `optional_f64_with_nested_fallback`, not the `i64`
     ///   variant.
     /// - `fragmented` **never** shows up, neither at the top level nor
     ///   nested (0 out of 68407) -- in practice this column always comes
@@ -1501,7 +1501,7 @@ impl Parser {
     // ---------------------------------------------------------------------
 
     /// Populates `mapMoons` from `<sde_directory>/mapMoons.jsonl`, filtering
-    /// by `state.systems_in_scope` (populated by [`parse_solar_systems`]).
+    /// by `state.systems_in_scope` (populated by [`Self::parse_solar_systems`]).
     /// Requires `mapSolarSystems` to already be populated (FK). Returns the
     /// number of rows inserted. Equivalent to `_parse_moons()` in Python.
     ///
@@ -1518,15 +1518,15 @@ impl Parser {
     /// never at the top level, nested under `statistics` in 99.6% of
     /// records -- but genuinely absent from both places in the remaining
     /// 0.4% (1364 of 344457), confirming the nested fallback (see
-    /// [`optional_bool_with_nested_fallback`]) is exercised by real data,
+    /// `optional_bool_with_nested_fallback`) is exercised by real data,
     /// not just a theoretical possibility.
     ///
     /// `moonIndex` (`orbitIndex` in the JSON) is treated as required
-    /// ([`required_i64`]) -- confirmed present in every one of the 344457
+    /// (`required_i64`) -- confirmed present in every one of the 344457
     /// real records checked, same criterion as `planetaryIndex` in the
     /// previous phase.
     ///
-    /// `typeId` is also treated as required ([`required_i64`]), matching
+    /// `typeId` is also treated as required (`required_i64`), matching
     /// Python's `moon['typeID']` (bracket) access and confirmed present in
     /// every real record checked -- even though the column itself is
     /// nullable in the schema (`typeId INTEGER REFERENCES
@@ -1595,13 +1595,13 @@ impl Parser {
     /// pair of solar systems it connects. Unlike every other function in
     /// this file, this one does NOT read any SDE file -- the whole logic
     /// is a single SQL statement over data already inserted by
-    /// [`parse_stargates`], which is why it doesn't take `sde_directory`.
+    /// [`Self::parse_stargates`], which is why it doesn't take `sde_directory`.
     /// Returns the number of rows inserted. Equivalent to
     /// `parse_connections()` in Python (yes, no leading underscore -- it's
     /// the only public `_parse_*`/`parse_*` in the prototype).
     ///
     /// Requires `mapSystemGates` to already be populated. If
-    /// `config.with_gates` was `false` (so [`parse_stargates`] never ran)
+    /// `config.with_gates` was `false` (so [`Self::parse_stargates`] never ran)
     /// or there simply were no gates to import, this query finds no rows to
     /// join and inserts nothing -- not an error, it returns `0`.
     ///
@@ -1642,7 +1642,7 @@ impl Parser {
     /// 100% of records). No equivalent in the Python prototype -- this
     /// entity, along with `stationOperations`/`npcStations` below, was
     /// added directly against the real SDE export, not ported from
-    /// `sde_parser.py` (see [`parse_npc_stations`]'s docstring for why
+    /// `sde_parser.py` (see [`Self::parse_npc_stations`]'s docstring for why
     /// `staStation`/`staCorporations`, which *were* in both the schema and
     /// the Python prototype, are gone).
     pub fn parse_station_services(&self, connection: &Connection) -> Result<usize, BuilderError> {
@@ -1666,7 +1666,7 @@ impl Parser {
     /// Populates `stationOperations`, `stationOperationServices`, and
     /// `stationOperationTypes` from
     /// `<sde_directory>/stationOperations.jsonl` (68 records). Requires
-    /// [`parse_station_services`]/[`crate::builder::parser::parse_types`]
+    /// [`Self::parse_station_services`]/[`crate::builder::parser::Parser::parse_types`]
     /// (phase 1, for `invTypes`) to have already run -- the two junction
     /// tables reference `stationServices`/`invTypes`.
     ///
@@ -1674,9 +1674,9 @@ impl Parser {
     /// `border`, `corridor`, `fringe`, `hub`, `manufacturingFactor`,
     /// `operationName`, `ratio`, `researchFactor`, `services` are present
     /// in 100% of records -- treated as required
-    /// ([`required_i64`]/[`required_f64`]/[`ParserConfig::required_localized`]).
+    /// (`required_i64`/`required_f64`/`ParserConfig::required_localized`).
     /// `description` is present in 55/68 (80.9%) -- optional
-    /// ([`ParserConfig::localized`], not [`ParserConfig::required_localized`]). `stationTypes` is
+    /// (`ParserConfig::localized`, not `ParserConfig::required_localized`). `stationTypes` is
     /// present in 47/68 (69.1%) -- also optional, only inserted into
     /// `stationOperationTypes` when the record actually carries it.
     ///
@@ -1752,7 +1752,7 @@ impl Parser {
     /// Populates `npcStations` from `<sde_directory>/npcStations.jsonl`
     /// (5210 records). Requires `mapMoons`/`mapPlanets` (phases 7/8),
     /// `mapSolarSystems` (phase 4), `npcCorporations` (phase 2), `invTypes`
-    /// (phase 1), and [`parse_station_operations`] to have already run --
+    /// (phase 1), and [`Self::parse_station_operations`] to have already run --
     /// every foreign key on this table points somewhere.
     ///
     /// # Why this exists instead of `staStation`/`staCorporations`
@@ -1785,7 +1785,7 @@ impl Parser {
     ///
     /// `celestialIndex` (present in 5209/5210, 99.98%) and `orbitIndex`
     /// (present in 3986/5210, 76.5% -- exactly the stations that orbit a
-    /// moon) are both treated as optional ([`optional_i64`]), matching
+    /// moon) are both treated as optional (`optional_i64`), matching
     /// their real, confirmed absence rate -- not just a defensive
     /// assumption.
     pub fn parse_npc_stations(&self, connection: &Connection) -> Result<usize, BuilderError> {
@@ -1893,7 +1893,7 @@ impl Parser {
     /// (gated by `config.with_moons`) and connections -- **full parity**
     /// with Python's `parse_data()`. Phase 10 (`stationServices`,
     /// `stationOperations` + its two junction tables, `npcStations`) has
-    /// no Python equivalent -- see [`parse_npc_stations`]'s docstring for
+    /// no Python equivalent -- see [`Self::parse_npc_stations`]'s docstring for
     /// why. It runs last and unconditionally (no config flag gates it, same
     /// as most phases besides gates/moons), but its `orbitMoonId`
     /// resolution depends on `parse_moons`/`parse_planets` having already
@@ -2061,10 +2061,10 @@ impl Parser {
     }
 
     /// Runs the full database build: the canonical SDE parse
-    /// ([`parse_data`]), plus -- gated behind `config.with_third_party`,
+    /// ([`Self::parse_data`]), plus -- gated behind `config.with_third_party`,
     /// off by default -- `builder::dotlan`'s community-maintained layer on
     /// top of it. Schema creation is the caller's responsibility, same as
-    /// [`parse_data`] already requires (both expect the schema to exist
+    /// [`Self::parse_data`] already requires (both expect the schema to exist
     /// already).
     ///
     /// Exists so that a library consumer calling this crate directly (not
@@ -2112,13 +2112,13 @@ impl Parser {
 // Orquestador
 // ---------------------------------------------------------------------
 
-/// Number of rows inserted by each phase of [`parse_data`].
+/// Number of rows inserted by each phase of [`Parser::parse_data`].
 ///
 /// `star_types` counts `typeStar`'s rows (not its own phase: they're
-/// generated by [`parse_types`] when it detects "Sun"-group types).
+/// generated by [`Parser::parse_types`] when it detects "Sun"-group types).
 /// `station_operation_services`/`station_operation_types` count rows
 /// in those two junction tables (not their own phase either: they're
-/// generated by [`parse_station_operations`]).
+/// generated by [`Parser::parse_station_operations`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ParseSummary {
     pub categories: usize,
@@ -3395,7 +3395,6 @@ mod tests {
             )
             .unwrap();
         let config = ParserConfig::default();
-        let parser = Parser::new(&dir.path, config);
         let mut star_state = StarTypeState::default();
         let types_parser = Parser::new(&types_dir.path, config.clone());
         types_parser
@@ -3598,7 +3597,6 @@ mod tests {
         let mut scope = SystemScopeState::default();
         scope.systems_in_scope.insert(30000001);
         let config = ParserConfig::default();
-        let parser = Parser::new(&dir.path, config);
         (connection, scope, config)
     }
 
@@ -3782,7 +3780,6 @@ mod tests {
         let mut scope = SystemScopeState::default();
         scope.systems_in_scope.insert(30000001);
         let config = ParserConfig::default();
-        let parser = Parser::new(&dir.path, config);
         (connection, scope, config)
     }
 
@@ -3985,7 +3982,10 @@ mod tests {
         }
 
         let config = ParserConfig::default();
-        let parser = Parser::new(&dir.path, config);
+        // No TempSdeDir here -- parse_connections() derives everything
+        // from mapSystemGates (already in `connection`), never reads
+        // self.sde_directory, so the path is never actually used.
+        let parser = Parser::new(Path::new("."), config);
         let count = parser.parse_connections(&connection).unwrap();
         assert_eq!(count, 1);
 
@@ -4006,7 +4006,8 @@ mod tests {
         crate::builder::schema::create_schema(&connection).unwrap();
 
         let config = ParserConfig::default();
-        let parser = Parser::new(&dir.path, config);
+        // Same as above: no file ever read, path is just a placeholder.
+        let parser = Parser::new(Path::new("."), config);
         let count = parser.parse_connections(&connection).unwrap();
         assert_eq!(count, 0);
 
@@ -4119,7 +4120,7 @@ mod tests {
         let config = ParserConfig::default();
         let parser = Parser::new(&dir.path, config);
 
-        let summary = parse_data(&mut connection, &dir.path, &config).unwrap();
+        let summary = parser.parse_data(&mut connection).unwrap();
         assert_eq!(
             summary,
             ParseSummary {
@@ -4243,8 +4244,9 @@ mod tests {
         let mut connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let error = parse_data(&mut connection, &dir.path, &config).unwrap_err();
+        let error = parser.parse_data(&mut connection).unwrap_err();
         let message = error.to_string();
         assert!(
             message.contains("npcCorporations"),
@@ -4327,10 +4329,11 @@ mod tests {
         let mut connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
         // Doesn't fail -- the known Doomheim/InterBus-style case is
         // cleared to NULL automatically, not reported as an error.
-        let summary = parse_data(&mut connection, &dir.path, &config).unwrap();
+        let summary = parser.parse_data(&mut connection).unwrap();
         assert_eq!(summary.npc_corporations, 1);
 
         let station_id: Option<i64> = connection
@@ -4388,8 +4391,9 @@ mod tests {
         let mut connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
         let config = ParserConfig::default();
+        let parser = Parser::new(&dir.path, config);
 
-        let result = parse_data(&mut connection, &dir.path, &config);
+        let result = parser.parse_data(&mut connection);
         assert!(result.is_err());
 
         // Nothing should have been left persisted, not even the phases

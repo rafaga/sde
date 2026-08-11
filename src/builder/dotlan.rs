@@ -183,7 +183,7 @@ pub fn setup_triglavian_status(connection: &Connection) -> Result<(), BuilderErr
 }
 
 /// Adds `mapSolarSystems.joveObservatory` (with its index) and marks
-/// the 1029 systems from [`JOVE_OBSERVATORY_SYSTEMS`]. Equivalent to
+/// the 1029 systems from `JOVE_OBSERVATORY_SYSTEMS`. Equivalent to
 /// `create_jove_observatories()` in Python.
 pub fn setup_jove_observatories(connection: &Connection) -> Result<(), BuilderError> {
     connection.execute_batch(
@@ -232,7 +232,7 @@ pub fn setup_special_anomalies(connection: &Connection) -> Result<(), BuilderErr
 /// the rest respect each [`DotlanConfig`] flag. Equivalent to
 /// `_update_tables()` in Python.
 ///
-/// Note: unlike [`crate::builder::parser::parse_data`], this function
+/// Note: unlike [`crate::builder::parser::Parser::parse_data`], this function
 /// does NOT wrap the calls in an explicit transaction -- each
 /// `CREATE TABLE`/`ALTER TABLE` is an independent DDL operation and
 /// there's no circular FK between them that depends on seeing them all
@@ -418,7 +418,7 @@ fn get_all_regions(connection: &Connection) -> Result<Vec<(i64, String)>, Builde
 }
 
 /// Downloads (with manifest-based caching) and parses the SVG map for
-/// every "real" SDE region ([`get_all_regions`]), with up to 3 attempts
+/// every "real" SDE region (`get_all_regions`), with up to 3 attempts
 /// per region if parsing fails. Runs [`update_tables`] first -- same
 /// order as Python, where `_update_tables()` is `process()`'s first
 /// step, without exception. Equivalent to `process()` in Python.

@@ -43,9 +43,9 @@ pub struct SdeManager<'a> {
 impl<'a> SdeManager<'a> {
     /// Creates a new `SdeManager` pointing at the SQLite database at
     /// `path` (not opened yet -- each method opens its own connection
-    /// via [`Self::get_standart_connection`] when it actually needs
+    /// via `Self::get_standart_connection` when it actually needs
     /// one). `factor` is the coordinate-scaling divisor/multiplier used
-    /// throughout (see [`Self::scale_coords`]); it's also passed to
+    /// throughout (see `Self::scale_coords`); it's also passed to
     /// [`objects::Universe::new`] to build the initial, empty
     /// `universe`. `invert_coordinates` starts `true`.
     pub fn new(path: &Path, factor: i64) -> SdeManager<'_> {
@@ -860,8 +860,8 @@ impl<'a> SdeManager<'a> {
 
     /// Every planet, optionally narrowed to just the given
     /// `solar_systems` (an id allowlist; empty means no filter). Unlike
-    /// [`Self::get_region`]/[`Self::get_constellation`]/
-    /// [`Self::get_solarsystem`], this returns a flat `Vec`, not a
+    /// [`Self::get_region`]/`Self::get_constellation`/
+    /// `Self::get_solarsystem`, this returns a flat `Vec`, not a
     /// `HashMap` keyed by id -- [`Self::get_universe`] keys it into one
     /// itself when populating `universe.planets`.
     pub fn get_planet(&self, solar_systems: Vec<u32>) -> Result<Vec<Planet>, Error> {
