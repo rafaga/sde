@@ -30,7 +30,7 @@ See [ERD.md](ERD.md) for the diagram of the tables already implemented.
 | `stationServices.jsonl` | NPC stations | `stationServices` | ✅ | ❌ |
 | `mapRegions.jsonl` | Universe / map | `mapRegions` | ✅ | 🟡 |
 | `mapConstellations.jsonl` | Universe / map | `mapConstellations` | ✅ | 🟡 |
-| `mapSolarSystems.jsonl` | Universe / map | `mapSolarSystems`, `factionSolarSystem`, `mapSolarSystemDisallowedAnchorableCategories`, `mapSolarSystemDisallowedAnchorableGroups` | 🟡 | 🟡 |
+| `mapSolarSystems.jsonl` | Universe / map | `mapSolarSystems`, `factionSolarSystem`, `mapSolarSystemDisallowedAnchorableCategories`, `mapSolarSystemDisallowedAnchorableGroups`, `mapSolarSystemSubType` | 🟡 | 🟡 |
 | `mapStargates.jsonl` | Universe / map | `mapSystemGates`, `mapSystemConnections` | ✅ | 🟡 |
 | `mapStars.jsonl` | Universe / map | `mapStars` | ✅ | ❌ |
 | `mapPlanets.jsonl` | Universe / map | `mapPlanets` | ✅ | 🟡 |

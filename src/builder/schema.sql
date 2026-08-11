@@ -262,12 +262,10 @@ CREATE TABLE mapSolarSystems (
   -- true, never two at once (2715/1931/787 records respectively, plus
   -- 3057 with none) -- a single TEXT column, not three booleans.
   type          TEXT CHECK (type IN ('hub', 'corridor', 'fringe')),
-  international INTEGER CHECK (international IN (0,1)),
   luminosity REAL,
   radius REAL NOT NULL,
   centerX REAL NOT NULL, centerY REAL NOT NULL, centerZ REAL NOT NULL,
   position2DX REAL, position2DY REAL,
-  regional INTEGER CHECK (regional IN (0,1)),
   security REAL NOT NULL CHECK (security BETWEEN -1.0 AND 1.0),
   securityClass TEXT,
   -- Present in 692 of a real 8490-record sample (August 2026): mostly
@@ -291,6 +289,21 @@ CREATE TABLE mapSolarSystems (
 ) STRICT;
 CREATE INDEX idx_mapSolarSystems_constellationId ON mapSolarSystems(constellationId);
 CREATE INDEX idx_mapSolarSystems_factionId ON mapSolarSystems(factionId);
+
+-- `border`/`regional`/`international` are NOT mutually exclusive, unlike
+-- `hub`/`corridor`/`fringe` above: confirmed against the full real
+-- 8490-record sample (August 2026) that 104 systems carry two or all
+-- three simultaneously (72 border+hub+international+regional, 32
+-- border+corridor+international+regional). A single column can't
+-- represent that without silently dropping one of the values, so this
+-- is a join table instead -- each applicable subType gets its own row.
+CREATE TABLE mapSolarSystemSubType (
+  solarSystemId INTEGER NOT NULL REFERENCES mapSolarSystems(solarSystemId)
+                  ON UPDATE CASCADE ON DELETE CASCADE,
+  subType TEXT NOT NULL CHECK (subType IN ('border', 'regional', 'international')),
+  CONSTRAINT pkey PRIMARY KEY (solarSystemId, subType) ON CONFLICT FAIL
+) STRICT, WITHOUT ROWID;
+CREATE INDEX idx_mapSolarSystemSubType_subType ON mapSolarSystemSubType (subType);
 
 CREATE TABLE factionSolarSystem (
   solarSystemId INTEGER NOT NULL REFERENCES mapSolarSystems(solarSystemId)

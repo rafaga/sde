@@ -1151,6 +1151,14 @@ impl Parser {
     /// and, since patch 0062, also persisted as `wormholeClassId` -- it
     /// used to be read and discarded, the last `mapSolarSystems.jsonl`
     /// field that wasn't captured anywhere.
+    ///
+    /// `hub`/`corridor`/`fringe` collapse into the single `type` column
+    /// (confirmed mutually exclusive against real data). `border`/
+    /// `regional`/`international` do NOT get the same treatment -- they
+    /// genuinely overlap (104 real systems carry two or all three at
+    /// once), so each one that's present gets its own row in
+    /// `mapSolarSystemSubType` instead of collapsing into a column that
+    /// would have to silently drop one of the values.
     pub fn parse_solar_systems(
         &self,
         connection: &Connection,
@@ -1158,11 +1166,13 @@ impl Parser {
     ) -> Result<usize, BuilderError> {
         let mut insert_system = connection.prepare(
             "INSERT INTO mapSolarSystems (solarSystemId, solarSystemName, constellationId, \
-            type, international, luminosity, radius, centerX, centerY, centerZ, \
-            regional, security, securityClass, position2DX, position2DY, wormholeClassId, \
+            type, luminosity, radius, centerX, centerY, centerZ, \
+            security, securityClass, position2DX, position2DY, wormholeClassId, \
             factionId) \
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         )?;
+        let mut insert_subtype = connection
+            .prepare("INSERT INTO mapSolarSystemSubType (solarSystemId, subType) VALUES (?1, ?2)")?;
 
         let mut count = 0usize;
         for record in iter_jsonl_records(&self.sde_directory, "mapSolarSystems")? {
@@ -1190,12 +1200,10 @@ impl Parser {
             } else {
                 None
             };
-            let international = self.optional_bool(&record, "international");
             let luminosity = self.optional_f64(&record, "luminosity");
             let radius = self.required_f64(&record, "radius")?;
             let (center_x, center_y, center_z) = self.required_position(&record)?;
 
-            let regional = self.optional_bool(&record, "regional");
             let security = self.required_f64(&record, "securityStatus")?;
             let security_class = self.optional_str(&record, "securityClass");
             let faction_id = self.optional_i64(&record, "factionID");
@@ -1220,13 +1228,11 @@ impl Parser {
                 name,
                 constellation_id,
                 system_type,
-                international,
                 luminosity,
                 radius,
                 center_x,
                 center_y,
                 center_z,
-                regional,
                 security,
                 security_class,
                 position_2d_x,
@@ -1234,6 +1240,18 @@ impl Parser {
                 wormhole_class_id,
                 faction_id,
             ])?;
+
+            // Unlike hub/corridor/fringe, border/regional/international
+            // are NOT mutually exclusive (confirmed: 104 real systems
+            // carry two or all three at once) -- each one that's true
+            // gets its own row in mapSolarSystemSubType, instead of
+            // collapsing into a single column the way `type` does.
+            for subtype in ["border", "regional", "international"] {
+                if self.optional_bool(&record, subtype) == Some(true) {
+                    insert_subtype.execute(rusqlite::params![system_id, subtype])?;
+                }
+            }
+
             count += 1;
         }
         if self.config.verbose {

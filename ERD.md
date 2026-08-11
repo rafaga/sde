@@ -1,6 +1,6 @@
 # Entity-Relationship Diagram
 
-Generated from `src/builder/schema.sql` (29 tables, the static schema
+Generated from `src/builder/schema.sql` (30 tables, the static schema
 that's always present), plus the tables/columns `builder::dotlan` adds
 at runtime rather than declaring statically (see the note below the
 diagram). Attribute lists are trimmed to primary/foreign keys plus one
@@ -115,6 +115,10 @@ erDiagram
         int solarSystemId PK, FK
         int groupId PK, FK
     }
+    mapSolarSystemSubType {
+        int solarSystemId PK, FK
+        string subType PK
+    }
     factionSolarSystem {
         int solarSystemId PK, FK
         int factionId PK, FK
@@ -203,6 +207,7 @@ erDiagram
     invCategories ||--|{ mapSolarSystemDisallowedAnchorableCategories : ""
     mapSolarSystems ||--|{ mapSolarSystemDisallowedAnchorableGroups : ""
     invGroups ||--|{ mapSolarSystemDisallowedAnchorableGroups : ""
+    mapSolarSystems ||--|{ mapSolarSystemSubType : ""
     factions ||--|{ factionSolarSystem : ""
     mapSolarSystems ||--|{ mapSystemGates : "origin"
     mapSolarSystems ||--|{ mapSystemGates : "destination"
@@ -256,8 +261,9 @@ erDiagram
 - `factionRace`, `factionSolarSystem`, `stationOperationServices`,
   `npcCorporationAllowedRaces`, `npcCorporationDivisionAssignments`,
   `npcCorporationTrades`, `npcCorporationInvestors`,
-  `mapSolarSystemDisallowedAnchorableCategories`, and
-  `mapSolarSystemDisallowedAnchorableGroups` are pure join tables
+  `mapSolarSystemDisallowedAnchorableCategories`,
+  `mapSolarSystemDisallowedAnchorableGroups`, and
+  `mapSolarSystemSubType` are pure join tables
   (composite primary key, no columns of their own).
   `stationOperationTypes` is almost the same, plus a plain `sizeKey`
   integer that isn't itself a foreign key.
