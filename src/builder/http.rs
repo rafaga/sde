@@ -2,10 +2,8 @@
 //! dotlan map changed (`fingerprint`) and to download the SDE and SVG
 //! files (`download`).
 //!
-//! Equivalent to `MiscUtils.head`/`download_file` and to
-//! `_remote_map_fingerprint` in the Python prototype, but async and able
-//! to run many checks in parallel (`fingerprint_many`) instead of one at
-//! a time.
+//! Async, and able to run many checks in parallel (`fingerprint_many`)
+//! instead of one at a time.
 
 use crate::builder::BuilderError;
 use crate::builder::manifest::MapFingerprint;
@@ -45,8 +43,7 @@ fn header_string(headers: &HeaderMap, name: HeaderName) -> Option<String> {
 /// Does a `HEAD` request to `url` and builds its fingerprint
 /// (ETag/Last-Modified/Content-Length). Returns `None` if it couldn't be
 /// verified -- no network, timeout, or a non-2xx status -- so a
-/// one-off network hiccup doesn't block the build (same behavior we
-/// already validated in the Python version).
+/// one-off network hiccup doesn't block the build.
 pub async fn fingerprint(client: &Client, url: &str) -> Option<MapFingerprint> {
     let response = match client.head(url).send().await {
         Ok(resp) => resp,

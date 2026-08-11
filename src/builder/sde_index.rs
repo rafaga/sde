@@ -1,7 +1,6 @@
 //! Checking the most recent SDE build number published by CCP
 //! (`developers.eveonline.com`), and conditionally downloading the
-//! corresponding zip. Equivalent to `update_as_needed()` in
-//! `database_builder.py`.
+//! corresponding zip.
 //!
 //! Just like [`super::http`], this module doesn't write anything to the
 //! database -- it only handles files on disk (`latest.jsonl`, the
@@ -30,15 +29,12 @@ use std::path::Path;
 /// The parsing remains deliberately tolerant beyond this confirmed case:
 /// any line that isn't valid JSON, or that's missing the expected field,
 /// is simply skipped instead of aborting the whole file -- in case it
-/// ever carries more than one line, or the format changes -- same
-/// defensive spirit as Python, which uses `.get()` with `None` all over
-/// this instead of direct indexing.
+/// ever carries more than one line, or the format changes.
 ///
 /// `buildNumber` is returned as a `String` regardless of whether it was
-/// a number or already text in the original JSON -- just like Python,
-/// which compares builds with `str(current) == str(latest)` instead of
-/// arithmetic (the build number is an opaque identifier, not something
-/// meant to be operated on numerically).
+/// a number or already text in the original JSON, since the build
+/// number is an opaque identifier meant to be compared as text, not
+/// something meant to be operated on numerically.
 fn find_sde_build_number(jsonl: &str) -> Option<String> {
     for line in jsonl.lines() {
         let line = line.trim();
@@ -64,8 +60,7 @@ fn find_sde_build_number(jsonl: &str) -> Option<String> {
 /// (`{sde_url_base}latest.jsonl`) and downloads
 /// `eve-online-static-data-{build}-{variant}.zip` to
 /// `<data_dir>/sde-{variant}.zip` only if it's newer than the one saved
-/// locally in `<data_dir>/sde-{variant}.build`. Equivalent to
-/// `update_as_needed()` in Python.
+/// locally in `<data_dir>/sde-{variant}.build`.
 ///
 /// `sde_url_base` must end in `/` (e.g.
 /// `"https://developers.eveonline.com/static-data/tranquility/"`).
@@ -76,20 +71,16 @@ fn find_sde_build_number(jsonl: &str) -> Option<String> {
 /// Returns `Ok(true)` if a new version was downloaded, `Ok(false)` if it
 /// was already up to date -- or if the remote build couldn't be
 /// determined (no network, `latest.jsonl` missing the expected record,
-/// etc.): same behavior as Python, which also returns `False` in that
-/// case instead of propagating an exception, so a one-off problem
-/// checking the version doesn't block the whole build.
+/// etc.): a one-off problem checking the version doesn't block the
+/// whole build.
 ///
-/// # Deliberate improvement over Python: download to temp + rename
+/// # Downloads to temp, then renames
 ///
-/// Python deletes the old zip *before* attempting to download the new
-/// one (`if zip_file.exists(): zip_file.unlink()`, only then
-/// `download_control(zip_url)`) -- if the download fails partway
-/// through, that run ends up with neither the old zip NOR the new one.
-/// Here it downloads first to a temporary file
+/// This function downloads to a temporary file
 /// (`sde-{variant}.zip.tmp`) and only replaces `sde-{variant}.zip` (via
 /// `rename`, atomic on the same filesystem) once the download finished
-/// successfully -- if it fails, the previous zip stays intact.
+/// successfully -- if it fails, the previous zip stays intact instead
+/// of being deleted upfront and left missing.
 pub async fn update_as_needed(
     client: &Client,
     data_dir: &Path,

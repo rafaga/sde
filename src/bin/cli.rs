@@ -1,6 +1,4 @@
-//! CLI orchestrator for (re)building `sde.db`. Equivalent to the
-//! top-level script body of `database_builder.py` -- see `main()`'s
-//! docstring for the one deliberate behavioral difference. Requires the
+//! CLI orchestrator for (re)building `sde.db`. Requires the
 //! `builder` feature.
 
 use anyhow::Context;
@@ -32,7 +30,7 @@ enum Command {
         /// Rebuild even if the local database is already up to date.
         #[arg(long)]
         force: bool,
-        /// Suppress the per-phase progress output the parser prints by
+        /// Suppress the progress output the parser prints by
         /// default.
         #[arg(short, long)]
         quiet: bool,
@@ -56,27 +54,16 @@ enum Command {
 }
 
 /// (Re)builds the database from scratch whenever a new SDE build is
-/// available. Equivalent to `database_builder.py`'s top-level script
-/// body: `update_as_needed()` -> delete the old database -> clean
-/// `sde/` (preserving `maps/`) -> decompress the new zip ->
-/// `SdeParser`/`ExternalParser`.
+/// available: checks for an update, and if one exists (or the database
+/// doesn't exist yet, or `--force` was passed), deletes the old
+/// database, cleans `sde/` (preserving `maps/`), decompresses the new
+/// zip, and parses it.
 ///
-/// # Deliberate fix: rebuild is gated on `changed`, not unconditional
-///
-/// Python's script deletes the database and cleans `sde/` (except
-/// `maps/`) on *every* run, regardless of `update_as_needed()`'s return
-/// value -- its own log message ("removing current sde database,
-/// because a change was detected") only makes sense if that deletion
-/// were conditional on `change`, but the code right above it never
-/// actually checks it. The `if not OUT_FILENAME.exists()` guard that
-/// follows is then always true (the file was just force-deleted), so
-/// the parser re-runs on every single invocation, even when nothing
-/// changed -- wasted work (a full unzip + reparse of the whole SDE) for
-/// no benefit, and a log message that's factually wrong on the runs
-/// where nothing actually changed. Here, the whole rebuild (delete +
-/// clean + unzip + parse + dotlan) only runs when `update_as_needed()`
-/// reports a change, the database doesn't exist yet, or `--force` was
-/// passed.
+/// The whole rebuild (delete + clean + unzip + parse + dotlan) only
+/// runs when `update_as_needed()` reports a change, the database
+/// doesn't exist yet, or `--force` was passed -- deliberately, to
+/// avoid wasted work (a full unzip + reparse of the whole SDE) on runs
+/// where nothing actually changed.
 ///
 /// # This binary only turns flags into a `ParserConfig`
 ///
@@ -129,12 +116,9 @@ async fn main() -> anyhow::Result<()> {
     let mut connection = rusqlite::Connection::open(&output).context("creating the database")?;
     schema::create_schema(&connection).context("creating the schema")?;
 
-    // Matches database_builder.py's SdeParser.configuration overrides.
-    // `force_isometric_position_2d: true` because the old projX/Y/Z
-    // system (what this script's settings originally targeted) always
-    // computed the projection locally -- there was no "trust CCP's own
-    // position2D" concept in Python at all, so setting this to `true`
-    // is the faithful equivalent, not a new behavior.
+    // `force_isometric_position_2d: true`: this CLI always uses a
+    // locally-computed isometric projection for `position2DX`/`Y`,
+    // rather than trusting CCP's own precomputed `position2D` value.
     let parser_config = ParserConfig {
         language: "en".to_string(),
         force_isometric_position_2d: true,

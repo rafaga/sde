@@ -12,7 +12,7 @@ use std::ops::{Add, Div, DivAssign, Mul, MulAssign, Sub};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProjectedAxis {
     X,
-    /// Default -- matches `SdeConfig.projected_axis = 1` in Python.
+    /// Default.
     #[default]
     Y,
     Z,

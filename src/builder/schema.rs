@@ -1,37 +1,23 @@
 //! Creation of `sde.db`'s STRICT schema.
 //!
-//! Equivalent to `SdeParser.create_table_structure()` in the Python
-//! prototype (`sde_parser.py`), which opens `schema_corregido_strict.sql`
-//! from disk and runs it against the connection with
-//! `cur.executescript(query)`.
-//!
-//! Here the DDL is embedded into the binary at compile time with
+//! The DDL is embedded into the binary at compile time with
 //! `include_str!` instead of being read from the filesystem at runtime:
 //! `sde`'s builder doesn't depend on an external `.sql` file existing at
 //! a given relative path (fragile if the binary runs from a different
 //! working directory), and the DDL stays versioned alongside the code
 //! that consumes it.
 //!
-//! `schema.sql` is a 1:1 copy of `schema_corregido_strict.sql` from the
-//! `databaseCreator` project (the schema's original source of truth);
-//! if that file changes, this copy needs to be updated by hand.
-//!
 //! Note on "final write to sqlite": this module only covers creating the
-//! empty schema (DDL). Populating it with real SDE data (the equivalent
-//! of `sde_parser.py`'s ~15 `_parse_*` methods: categories, groups,
-//! types, races, factions, regions, constellations, solar systems with
-//! isometric/dimetric projection, stargates, stars, planets, moons and
-//! connections) is a considerably bigger piece of work and lives outside
-//! this module -- see `builder::mod` for the rest of the builder's
-//! pieces.
+//! empty schema (DDL). Populating it with real SDE data (categories,
+//! groups, types, races, factions, regions, constellations, solar
+//! systems with isometric/dimetric projection, stargates, stars,
+//! planets, moons and connections) is a considerably bigger piece of
+//! work and lives outside this module -- see `builder::mod` for the rest
+//! of the builder's pieces.
 
 use rusqlite::Connection;
 
 /// The complete STRICT DDL (tables, indexes, FKs) for `sde.db`.
-///
-/// Kept manually in sync with `schema_corregido_strict.sql` from the
-/// `databaseCreator` project -- see that file for the change history and
-/// notes on the September 2025 SDE rework.
 pub const SCHEMA_DDL: &str = include_str!("schema.sql");
 
 /// Creates the full STRICT schema on `connection`, running

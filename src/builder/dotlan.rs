@@ -12,26 +12,21 @@
 //! `with_icebelts: false` simply doesn't have the `iceBelt` column at
 //! all -- it's not that it exists empty.
 //!
-//! `mapAbstractSystems` is the only unconditional exception (same as in
-//! Python, where `create_abstract_map()` always runs, no flag): it's
+//! `mapAbstractSystems` is the only unconditional exception: it's
 //! consumed by `SdeManager::get_abstract_systems()`/`get_abstract_connections()`
 //! on the read side, so if this module (or [`update_tables`]) never ran
 //! against the database, those two queries will fail with "no such
 //! table".
 //!
-//! Equivalent to `ExternalParser`/`ExternalConfig` in the Python
-//! prototype (`external_parser.py`).
-//!
 //! ## Current scope
 //!
 //! Covers `update_tables()` in full: [`create_abstract_map`],
 //! [`create_icebelts`], [`setup_triglavian_status`],
-//! [`setup_jove_observatories`], [`setup_special_anomalies`], and now
-//! also [`extract_map_data`] (parsing an already-downloaded SVG,
-//! equivalent to `_extract_map_data()` in Python). Missing: the
+//! [`setup_jove_observatories`], [`setup_special_anomalies`], and
+//! [`extract_map_data`] (parsing an already-downloaded SVG). Missing: the
 //! orchestrator that downloads maps region by region and retries on
 //! error (`process()`), which will reuse [`super::http`]/
-//! [`super::manifest`], already ported -- left for a later phase.
+//! [`super::manifest`].
 
 use crate::builder::manifest::{self, Manifest};
 use crate::builder::{BuilderError, http};
@@ -40,25 +35,22 @@ use rusqlite::Connection;
 use std::path::Path;
 
 /// SVG XML namespace -- dotlan's maps use
-/// `{http://www.w3.org/2000/svg}rect`/`use` in their original Python
-/// XPath; `roxmltree` expresses the same thing via the tuple form
-/// `(namespace, local_name)` of [`roxmltree::Node::has_tag_name`].
+/// `{http://www.w3.org/2000/svg}rect`/`use`; `roxmltree` expresses the
+/// same thing via the tuple form `(namespace, local_name)` of
+/// [`roxmltree::Node::has_tag_name`].
 const SVG_NS: &str = "http://www.w3.org/2000/svg";
 
 /// List of systems with a Jove Observatory, one per line. Extracted
-/// programmatically (not hand-transcribed) from the three lists
-/// concatenated in the original Python's `create_jove_observatories()`
-/// -- 1032 names in the source, with 3 exact duplicates (`Eygfe`,
-/// `MJYW-3`, `Odinesyn`) that were already duplicated there too; here
-/// they're deduplicated (1029 unique names, same practical result: an
-/// `UPDATE ... WHERE x IN (...)` doesn't change behavior because of a
-/// repeated entry, so there's no loss of fidelity, just less redundant
-/// text).
+/// programmatically (not hand-transcribed) from three source lists --
+/// 1032 names in the source, with 3 exact duplicates (`Eygfe`,
+/// `MJYW-3`, `Odinesyn`); here they're deduplicated (1029 unique names,
+/// same practical result: an `UPDATE ... WHERE x IN (...)` doesn't
+/// change behavior because of a repeated entry, so there's no loss of
+/// fidelity, just less redundant text).
 const JOVE_OBSERVATORY_SYSTEMS: &str = include_str!("jove_observatories.txt");
 
-/// Config for dotlan's community data -- equivalent to `ExternalConfig`
-/// in Python, same defaults (including `with_jove_observatories: true`,
-/// the only flag among the four that starts out `true`).
+/// Config for dotlan's community data. `with_jove_observatories` is the
+/// only one of the four flags that starts out `true`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DotlanConfig {
     pub with_icebelts: bool,
@@ -79,19 +71,16 @@ impl Default for DotlanConfig {
 }
 
 /// Creates `mapAbstractSystems`, the table where dotlan's SVG parsing
-/// (still to be ported) inserts the "abstract" 2D coordinates dotlan
-/// computes for its own map layout -- unrelated to
+/// (not yet implemented in this module) would insert the "abstract" 2D
+/// coordinates dotlan computes for its own map layout -- unrelated to
 /// `mapSolarSystems.position2DX/Y`, which come from the official SDE.
-/// Always created, without gating on any [`DotlanConfig`] flag -- same
-/// behavior as `create_abstract_map()` in Python.
+/// Always created, without gating on any [`DotlanConfig`] flag.
 ///
-/// `x`/`y` are `REAL`, not `INTEGER` as in Python's original DDL:
-/// Python's original table isn't `STRICT` (classic SQLite accepts a
-/// fractional value in an "INT" column anyway, via type affinity), but
-/// this one is -- and the coordinates of a `<use x="..." y="...">` SVG
-/// element are almost certainly fractional. `REAL` also already
-/// matches what `SdeManager::get_abstract_systems()` expects on the
-/// read side (`row.get::<usize, f32>(...)`), and what `tests/manager.rs`'s
+/// `x`/`y` are `REAL`, not `INTEGER`: the coordinates of a `<use
+/// x="..." y="...">` SVG element are almost certainly fractional, and
+/// this table is `STRICT`. `REAL` also already matches what
+/// `SdeManager::get_abstract_systems()` expects on the read side
+/// (`row.get::<usize, f32>(...)`), and what `tests/manager.rs`'s
 /// fixture already uses.
 pub fn create_abstract_map(connection: &Connection) -> Result<(), BuilderError> {
     connection.execute_batch(
@@ -112,8 +101,7 @@ pub fn create_abstract_map(connection: &Connection) -> Result<(), BuilderError> 
 /// Adds the `iceBelt` column (and its index) to `mapSolarSystems` --
 /// **structure only**, doesn't populate it. Actual population depends
 /// on parsing each regional SVG (`<rect class="i" id="...">`), so it
-/// lives alongside that parsing (a later phase), not here. Equivalent
-/// to `create_icebelts()` in Python.
+/// lives alongside that parsing, not here.
 pub fn create_icebelts(connection: &Connection) -> Result<(), BuilderError> {
     connection.execute_batch(
         "ALTER TABLE mapSolarSystems ADD COLUMN iceBelt \
@@ -126,22 +114,18 @@ pub fn create_icebelts(connection: &Connection) -> Result<(), BuilderError> {
 /// Creates `mapTriglavianStatus` (with its 5 fixed rows), adds
 /// `mapSolarSystems.trigStatusID`, and marks the systems for each of
 /// the 4 non-`None` statuses -- structure and data together, in a
-/// single function, same as `create_triglavian()` in Python (which
-/// also doesn't separate the two: the triglavian data is 192 fixed ids
-/// written directly in the code, not something derived from a separate
-/// external source like the SVG).
+/// single function: the triglavian data is 192 fixed ids written
+/// directly in the code, not something derived from a separate
+/// external source like the SVG.
 ///
-/// # Necessary deviation from Python: no `DEFAULT 0` on the column
+/// # Why the column has no `DEFAULT` value
 ///
-/// Python declares the column as
-/// `trigStatusID INTEGER DEFAULT 0 REFERENCES mapTriglavianStatus(...)`.
-/// Verified against real sqlite3: that combination -- a non-null
-/// `DEFAULT` + `REFERENCES` -- **SQLite rejects it** in an `ALTER TABLE
-/// ADD COLUMN` (`Cannot add a REFERENCES column with non-NULL default
-/// value`), regardless of whether `NOT NULL` is also declared. Since
-/// `with_triglavian_status` starts out `false` in Python itself, this
-/// branch was almost certainly never actually run against a real
-/// database -- the bug never surfaced.
+/// `trigStatusID INTEGER DEFAULT 0 REFERENCES mapTriglavianStatus(...)`
+/// might look like the natural way to declare this column, but SQLite
+/// rejects that combination -- a non-null `DEFAULT` + `REFERENCES` --
+/// in an `ALTER TABLE ADD COLUMN` (`Cannot add a REFERENCES column with
+/// non-NULL default value`), regardless of whether `NOT NULL` is also
+/// declared (verified against real sqlite3).
 ///
 /// The column here is left without an explicit `DEFAULT` (nullable,
 /// implicit `NULL`) -- SQLite does allow that combination with
@@ -183,8 +167,7 @@ pub fn setup_triglavian_status(connection: &Connection) -> Result<(), BuilderErr
 }
 
 /// Adds `mapSolarSystems.joveObservatory` (with its index) and marks
-/// the 1029 systems from `JOVE_OBSERVATORY_SYSTEMS`. Equivalent to
-/// `create_jove_observatories()` in Python.
+/// the 1029 systems from `JOVE_OBSERVATORY_SYSTEMS`.
 pub fn setup_jove_observatories(connection: &Connection) -> Result<(), BuilderError> {
     connection.execute_batch(
         "ALTER TABLE mapSolarSystems ADD COLUMN joveObservatory \
@@ -205,12 +188,10 @@ pub fn setup_jove_observatories(connection: &Connection) -> Result<(), BuilderEr
 }
 
 /// Adds `mapSolarSystems.specialOreAnom` and marks systems whose star
-/// has spectral type "A0" (`typeStar.name`). Equivalent to
-/// `create_special_anomalies()` in Python -- with an explicit `ts.name`
-/// instead of the original's unqualified `name` (only apparently
-/// ambiguous: `mapStars` has no `name` column, so it already resolved
-/// to `typeStar.name` either way; it's made explicit here for clarity,
-/// without changing the result).
+/// has spectral type "A0" (`typeStar.name`). Uses an explicit
+/// `ts.name` rather than an unqualified `name` -- `mapStars` has no
+/// `name` column of its own, so it's unambiguous either way, but
+/// qualifying it is clearer.
 pub fn setup_special_anomalies(connection: &Connection) -> Result<(), BuilderError> {
     connection.execute_batch(
         "ALTER TABLE mapSolarSystems ADD COLUMN specialOreAnom \
@@ -229,8 +210,7 @@ pub fn setup_special_anomalies(connection: &Connection) -> Result<(), BuilderErr
 
 /// Creates (and populates, where applicable) every community-data
 /// table/column enabled by `config`. `mapAbstractSystems` always runs;
-/// the rest respect each [`DotlanConfig`] flag. Equivalent to
-/// `_update_tables()` in Python.
+/// the rest respect each [`DotlanConfig`] flag.
 ///
 /// Note: unlike [`crate::builder::parser::Parser::parse_data`], this function
 /// does NOT wrap the calls in an explicit transaction -- each
@@ -238,7 +218,7 @@ pub fn setup_special_anomalies(connection: &Connection) -> Result<(), BuilderErr
 /// there's no circular FK between them that depends on seeing them all
 /// together (unlike the `mapSystemGates.destinationGateId` case
 /// documented in `parser::parse_stargates`). If the `mapAbstractSystems`
-/// + SVG flow is added in a later phase, this is worth reconsidering.
+/// + SVG flow is added, this is worth reconsidering.
 pub fn update_tables(connection: &Connection, config: &DotlanConfig) -> Result<(), BuilderError> {
     create_abstract_map(connection)?;
     if config.with_icebelts {
@@ -258,27 +238,22 @@ pub fn update_tables(connection: &Connection, config: &DotlanConfig) -> Result<(
 
 /// Parses an already-downloaded dotlan SVG map (`map_path`), extracting
 /// the ids of systems with an icebelt and the "abstract" coordinates of
-/// each system for `mapAbstractSystems`. Equivalent to
-/// `_extract_map_data()` in Python.
+/// each system for `mapAbstractSystems`.
 ///
 /// Returns `Ok(false)` -- not `Err` -- both if the file doesn't exist
-/// and if the XML doesn't parse: same behavior as Python, where both
-/// cases make the orchestrator (`process()`, still to be ported) retry
-/// the download instead of aborting the whole build. A genuine `Err`
+/// and if the XML doesn't parse: this lets an orchestrator (not yet
+/// implemented) retry the download instead of aborting the whole build. A genuine `Err`
 /// here can only come from a real SQLite error -- for example, if the
 /// region name derived from the file doesn't match any row in
 /// `mapRegions`, which violates `mapAbstractSystems.regionId`'s
-/// `NOT NULL` (same behavior as Python's subquery `INSERT`: the
-/// subquery `(SELECT regionId FROM mapRegions WHERE regionName=...)`
+/// `NOT NULL` (the subquery
+/// `(SELECT regionId FROM mapRegions WHERE regionName=...)`
 /// returns `NULL` if there's no match, and the `INSERT` fails).
 ///
 /// The region name is derived from the file name, not received
 /// separately: `The_Forge.svg` -> `"The Forge"` (underscores to
-/// spaces) -- same as Python, except [`Path::file_stem`] is used
-/// (strips everything after the LAST dot) instead of Python's
-/// `split('.')[0]` (strips everything after the FIRST dot); for a
-/// typical file name like this one, with no dots in the middle, both
-/// give the same result.
+/// spaces), using [`Path::file_stem`] (strips everything after the
+/// LAST dot).
 ///
 /// # `id` format: confirmed against a real dotlan map
 ///
@@ -290,23 +265,20 @@ pub fn update_tables(connection: &Connection, config: &DotlanConfig) -> Result<(
 /// guard is necessary, not over-defensive). `<use>` elements (abstract
 /// systems) use the `sys` prefix -- all 125 `<use>` entries in the file
 /// carried complete `id`/`x`/`y`, none missing. Both prefixes are 3
-/// characters, matching Python's `tag_id[3::]` -- the code doesn't
-/// depend on the prefix's TEXT (never compares it), it just discards 3
-/// fixed bytes, so it works the same for `ice`/`sys` or any other
-/// 3-character ASCII prefix that might show up in other regions.
+/// characters -- the code doesn't depend on the prefix's TEXT (never
+/// compares it), it just discards 3 fixed bytes, so it works the same
+/// for `ice`/`sys` or any other 3-character ASCII prefix that might
+/// show up in other regions.
 ///
 /// If some other regional map carried a different format anyway, this
 /// function doesn't break: any `id`/`x`/`y` that doesn't parse as a
 /// number is simply skipped (with a warning on stderr), row by row,
 /// without aborting the rest of the parsing.
 ///
-/// Unlike Python (which passes the `id` as a plain string, relying on
-/// SQLite's classic type coercion -- its `mapAbstractSystems` isn't
-/// `STRICT`), here all three values (`solarSystemId`, `x`, `y`) are
-/// explicitly parsed to `i64`/`f64` before binding them: this isn't a
-/// style preference, it's a real requirement of this crate's `STRICT`
-/// tables, which don't accept the implicit text-to-number coercion
-/// classic SQLite does.
+/// All three values (`solarSystemId`, `x`, `y`) are explicitly parsed
+/// to `i64`/`f64` before binding them: this is a real requirement of
+/// this crate's `STRICT` tables, which don't accept the implicit
+/// text-to-number coercion classic SQLite does.
 pub fn extract_map_data(
     connection: &Connection,
     map_path: &Path,
@@ -398,14 +370,8 @@ pub fn extract_map_data(
 }
 
 /// Fetches `(regionId, regionName)` for every "real" SDE region
-/// (excludes w-space/abyssal, with `regionId >= 11000000`). Equivalent
-/// to
-/// `get_all_regions()` in Python -- except that here a SQL error
-/// propagates as an `Err` instead of being printed and returning
-/// `None`: Python catches `DatabaseError` right there and continues
-/// with `rows = None` (which would then break `process()` some other
-/// way when iterating over `None`), so there's no useful behavior to
-/// replicate on that error path.
+/// (excludes w-space/abyssal, with `regionId >= 11000000`). A SQL
+/// error propagates as an `Err`.
 fn get_all_regions(connection: &Connection) -> Result<Vec<(i64, String)>, BuilderError> {
     let mut statement =
         connection.prepare("SELECT regionId, regionName FROM mapRegions WHERE regionId < ?1")?;
@@ -419,35 +385,26 @@ fn get_all_regions(connection: &Connection) -> Result<Vec<(i64, String)>, Builde
 
 /// Downloads (with manifest-based caching) and parses the SVG map for
 /// every "real" SDE region (`get_all_regions`), with up to 3 attempts
-/// per region if parsing fails. Runs [`update_tables`] first -- same
-/// order as Python, where `_update_tables()` is `process()`'s first
-/// step, without exception. Equivalent to `process()` in Python.
+/// per region if parsing fails. Runs [`update_tables`] first.
 ///
 /// `map_url_base` must end in `/` (e.g.
 /// `"https://evemaps.dotlan.net/svg/"`) -- it's concatenated directly
-/// with `<RegionName with underscores>.svg`, same as Python
-/// (`self.map_url + region_name.replace(' ', '_') + ".svg"`, without
-/// normalizing the trailing slash).
+/// with `<RegionName with underscores>.svg`, without normalizing the
+/// trailing slash.
 ///
 /// `sde_directory` is the builder's root working directory; the maps
 /// and the manifest ([`manifest`]) live in `<sde_directory>/maps/`.
 ///
-/// # Behavioral differences from Python
+/// # Error handling
 ///
 /// - If the download itself fails (network error, non-2xx HTTP
 ///   status) -- not just "the file came back corrupted" -- it's
-///   treated the same as invalid data: logged and retried, same as
-///   Python's `file_size is None` case (which its
-///   `MiscUtils.download_file` essentially covers too).
+///   treated the same as invalid data: logged and retried.
 /// - Deleting the file after a failed attempt uses
 ///   `let _ = std::fs::remove_file(...)`, ignoring the result --
-///   Python first checks `.exists()` and then does `.unlink()` (which
-///   could propagate a permission error uncaught); here it's
-///   simplified to a silent attempt, acceptable given that, worst
-///   case, an invalid file that couldn't be removed just ends up
-///   getting overwritten on the next successful attempt anyway.
-/// - `urlparse(map_url)` in Python does nothing observable (the result
-///   is unused) -- not ported, it's dead code in the original.
+///   acceptable given that, worst case, an invalid file that couldn't
+///   be removed just ends up getting overwritten on the next
+///   successful attempt anyway.
 pub async fn process(
     connection: &Connection,
     client: &Client,

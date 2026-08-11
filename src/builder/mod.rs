@@ -15,24 +15,22 @@ pub mod parser;
 pub mod schema;
 pub mod sde_index;
 
-// `schema` (STRICT DDL) is already ported -- see builder::schema::create_schema().
-// `parser` (data writing) is fully ported -- 14 functions, full parity
-// with Python's parse_data(). See builder::parser's docstring for the
-// phase-by-phase detail.
-// `dotlan` (community data external to the SDE) is fully ported --
-// dynamic DDL, static list population, SVG parsing (validated against a
-// real dotlan map) and the download orchestrator with retries. See
-// builder::dotlan's docstring for the detail.
-// `sde_index` (build number check + conditional SDE download) is
-// already ported -- see builder::sde_index's docstring.
-// `extract` (SDE zip decompression, preserving maps/) is already
-// ported -- see builder::extract's docstring.
+// `schema` (STRICT DDL): see builder::schema::create_schema().
+// `parser` (data writing): see builder::parser's docstring for the
+// full list of tables it covers.
+// `dotlan` (community data external to the SDE): dynamic DDL, static
+// list population, SVG parsing, and the download orchestrator with
+// retries. See builder::dotlan's docstring for the detail.
+// `sde_index` (build number check + conditional SDE download): see
+// builder::sde_index's docstring.
+// `extract` (SDE zip decompression, preserving maps/): see
+// builder::extract's docstring.
 //
-// The only thing missing is the top-level orchestrator that ties all of
-// this together (today a stub in src/bin/cli.rs):
-// sde_index::update_as_needed() -> extract::prepare_sde_directory() ->
-// parser::parse_data() -> dotlan::process(), in that order -- the same
-// one database_builder.py follows.
+// The top-level orchestrator that ties all of this together lives in
+// src/bin/cli.rs's `main()`: sde_index::update_as_needed() ->
+// extract::prepare_sde_directory() -> parser::Parser::build_database()
+// (which itself runs parse_data(), then dotlan::process() only if
+// `--with-third-party` was passed).
 
 /// Build process errors. Deliberately without `thiserror`: same
 /// "no abstraction" pattern `SdeManager` already uses (propagates the

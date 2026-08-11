@@ -1,22 +1,16 @@
 //! Decompression of the SDE zip into the builder's working directory,
 //! preserving `maps/` (dotlan's SVGs, which come from a different
 //! source and shouldn't be lost nor re-downloaded on every build).
-//! Equivalent to the `MiscUtils.zip_decompress()` part + the
-//! `sde_path` cleanup that `database_builder.py` does before invoking
-//! the parser.
 //!
-//! Unlike Python (which uses `zipfile.ZipFile(...).extractall()`),
-//! `ZipArchive::extract()` is used here, which already ships in the
-//! `zip` crate itself (version 8.x) -- no auxiliary crate like
-//! `zip-extensions` was needed.
+//! `ZipArchive::extract()`, which already ships in the `zip` crate
+//! itself (version 8.x), is used here -- no auxiliary crate like
+//! `zip-extensions` is needed.
 
 use crate::builder::BuilderError;
 use std::path::Path;
 
 /// Decompresses `zip_path` into `destination` (creates it if it doesn't
-/// exist). Overwrites existing files -- same behavior as
-/// `zipfile.ZipFile.extractall()` in Python. Equivalent to
-/// `MiscUtils.zip_decompress()`, except that here a corrupt/invalid zip
+/// exist). Overwrites existing files. A corrupt/invalid zip
 /// propagates as an `Err` (via `BuilderError::Zip`) instead of returning
 /// `false` -- consistent with the rest of this module (`extract_map_data`
 /// is the only function that distinguishes "recoverable failure, retry
@@ -33,18 +27,14 @@ pub fn unzip(zip_path: &Path, destination: &Path) -> Result<(), BuilderError> {
 
 /// Empties `sde_dir` (if it already exists) while preserving
 /// `<sde_dir>/maps/` as-is. Does nothing if `sde_dir` doesn't exist yet
-/// -- there's nothing to clean up. Equivalent to the
-/// `for item in sde_path.iterdir(): ...` loop in
-/// `database_builder.py`.
+/// -- there's nothing to clean up.
 ///
-/// Unlike Python (which compares `item.resolve() ==
-/// maps_path.resolve()`, canonicalizing both paths), here they're
-/// compared directly without canonicalizing: that's enough because both
-/// the `read_dir` entry and `maps_dir` are built from the same
-/// `sde_dir` the same way, and canonicalizing `maps_dir` upfront would
-/// fail if that folder doesn't exist yet (a perfectly valid case --
-/// e.g. the first time the builder runs, before `dotlan::process()` has
-/// downloaded any map).
+/// The `read_dir` entry and `maps_dir` are compared directly, without
+/// canonicalizing either path: that's enough because both are built
+/// from the same `sde_dir` the same way, and canonicalizing `maps_dir`
+/// upfront would fail if that folder doesn't exist yet (a perfectly
+/// valid case -- e.g. the first time the builder runs, before
+/// `dotlan::process()` has downloaded any map).
 pub fn clean_except_maps(sde_dir: &Path) -> Result<(), BuilderError> {
     if !sde_dir.exists() {
         return Ok(());
@@ -66,8 +56,7 @@ pub fn clean_except_maps(sde_dir: &Path) -> Result<(), BuilderError> {
 
 /// Cleans `sde_dir` while preserving `maps/` and decompresses
 /// `zip_path` into it -- a direct composition of [`clean_except_maps`]
-/// followed by [`unzip`], in that order, the same order
-/// `database_builder.py` uses.
+/// followed by [`unzip`], in that order.
 pub fn prepare_sde_directory(zip_path: &Path, sde_dir: &Path) -> Result<(), BuilderError> {
     clean_except_maps(sde_dir)?;
     unzip(zip_path, sde_dir)?;

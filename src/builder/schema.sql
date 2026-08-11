@@ -102,8 +102,8 @@ CREATE TABLE npcCorporations (
                                   ON UPDATE CASCADE ON DELETE SET NULL
                                   DEFERRABLE INITIALLY DEFERRED,
   -- solarSystemId/stationId: DEFERRABLE for the same reason --
-  -- mapSolarSystems (phase 4) and npcStations (phase 10) are both
-  -- parsed after npcCorporations (phase 2).
+  -- mapSolarSystems and npcStations are both
+  -- parsed after npcCorporations.
   solarSystemId                INTEGER REFERENCES mapSolarSystems(solarSystemId)
                                   ON UPDATE CASCADE ON DELETE SET NULL
                                   DEFERRABLE INITIALLY DEFERRED,
@@ -208,8 +208,8 @@ CREATE TABLE factions (
   -- records.
   militiaCorporationId  INTEGER REFERENCES npcCorporations(corporationId)
                            ON UPDATE CASCADE ON DELETE SET NULL,
-  -- DEFERRABLE: mapSolarSystems isn't parsed until phase 4, after
-  -- factions (phase 2) -- same reasoning as npcCorporations.solarSystemId.
+  -- DEFERRABLE: mapSolarSystems isn't parsed until after
+  -- factions -- same reasoning as npcCorporations.solarSystemId.
   -- Present in 100% of real records (the faction's home system).
   solarSystemId          INTEGER REFERENCES mapSolarSystems(solarSystemId)
                            ON UPDATE CASCADE ON DELETE SET NULL
@@ -450,11 +450,8 @@ CREATE INDEX idx_mapMoons_planetId ON mapMoons(planetId);
 -- records), stationOperations.jsonl (68 records), and
 -- stationServices.jsonl (27 records), August 2026.
 --
--- Replaces the old staStation/staCorporations declarations: neither was
--- ever populated, by this port or by the original Python prototype
--- (_parse_station() never existed in sde_parser.py) -- confirmed a
--- schema/parser mismatch inherited from the reference implementation,
--- not a gap introduced here. The real SDE export uses different table
+-- Replaces the old staStation/staCorporations declarations: neither is
+-- in this schema at all. The real SDE export uses different table
 -- names (npcStations, not staStation) and a materially different, richer
 -- shape, so this isn't a rename -- it's a fresh design against the
 -- actual data.

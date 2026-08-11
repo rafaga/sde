@@ -65,8 +65,7 @@ impl<'a> SdeManager<'a> {
     /// `[f32; 2]`. `invert` is a parameter (not always
     /// `self.invert_coordinates`) because not every function calling
     /// this helper inverts: `get_systempoints`/`get_connections` do,
-    /// `get_abstract_systems`/`get_abstract_connections` don't (that was
-    /// also the case in the previous code, before this migration).
+    /// `get_abstract_systems`/`get_abstract_connections` don't.
     ///
     /// Used by [`Self::get_systempoints`]/[`Self::get_abstract_systems`]
     /// (which build [`objects::MapPoint`], `coords: [f64; 3]`) and
@@ -349,7 +348,7 @@ impl<'a> SdeManager<'a> {
         // projX/Y/Z no longer exist (see the note in get_systempoints());
         // this function returns a genuinely 3D MapPoint (unlike
         // get_systempoints()/get_connections(), which only need 2
-        // components), so it's migrated to centerX/Y/Z -- the system's
+        // components), so it reads centerX/Y/Z -- the system's
         // real 3D coordinates, always `NOT NULL` in the schema, without
         // the null-handling complexity position2DX/Y has.
         let mut query = String::from("SELECT mss.centerX, mss.centerY, mss.centerZ ");
@@ -428,9 +427,7 @@ impl<'a> SdeManager<'a> {
     /// every other filtered getter here), indexed in a
     /// [`kdtree::KdTree`] with each point's stargate connections
     /// attached. Unlike [`Self::get_systempoints`], coordinates are
-    /// never inverted here regardless of `self.invert_coordinates` --
-    /// that was already the case before this migration, not a new
-    /// inconsistency.
+    /// never inverted here regardless of `self.invert_coordinates`.
     ///
     /// `mapAbstractSystems` doesn't exist at all in a database built
     /// without `--with-third-party` (or, equivalently,
@@ -488,9 +485,8 @@ impl<'a> SdeManager<'a> {
                         .map_err(Self::kdtree_error)?;
                 }
                 current_index = id;
-                // get_abstract_systems doesn't invert coordinates -- that
-                // was also the case before this migration (unlike
-                // get_systempoints/get_connections, which do).
+                // get_abstract_systems doesn't invert coordinates, unlike
+                // get_systempoints/get_connections, which do.
                 let [x, y] = self.scale_coords(
                     [row.get::<usize, f64>(1)?, row.get::<usize, f64>(2)?],
                     false,
