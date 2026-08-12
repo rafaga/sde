@@ -1,4 +1,3 @@
-use kdtree::KdTree;
 use rstar::{AABB, PointDistance, RTreeObject};
 use std::collections::HashMap;
 use std::ops::{Add, Div, DivAssign, Mul, MulAssign, Sub};
@@ -25,18 +24,19 @@ pub enum ProjectedAxis {
 ///
 /// # Why `f64`, not `i64` or `f32`
 ///
-/// `kdtree`'s `KdTree<A, T, U>` requires `A: num_traits::Float` --
-/// verified against a real compiler that `i64` does not qualify (only
-/// `f32`/`f64` do), so the old `i64`-based `SdePoint` couldn't stay as
-/// the KdTree's coordinate type as-is. Between `f32` and `f64`: checked
-/// against real `mapRegions.jsonl`/`mapSolarSystems.jsonl` samples
-/// (August 2026), real coordinates reach ~1.0x10^19 in magnitude --
-/// `f32`'s ~7 decimal digits of precision can't represent single-meter
-/// resolution anywhere near that scale, while `f64`'s ~16 digits keeps
-/// the error in the tens-to-thousands-of-meters range even at the
-/// largest distances found -- negligible at interstellar scale, but
-/// worth being precise about (see the next section for why `f64` isn't
-/// perfectly exact here either).
+/// Checked against real `mapRegions.jsonl`/`mapSolarSystems.jsonl`
+/// samples (August 2026): real coordinates reach ~1.0x10^19 in
+/// magnitude -- `f32`'s ~7 decimal digits of precision can't represent
+/// single-meter resolution anywhere near that scale, while `f64`'s ~16
+/// digits keeps the error in the tens-to-thousands-of-meters range
+/// even at the largest distances found -- negligible at interstellar
+/// scale, but worth being precise about (see the next section for why
+/// `f64` isn't perfectly exact here either). `i64` doesn't fit either:
+/// `centerX`/`centerY`/`centerZ`/`position2DX`/`position2DY` are all
+/// `REAL` columns in `schema.sql`, so reading them as `f64` is a direct
+/// match with no conversion, while `i64` would need a lossy
+/// truncation on every read for data that's genuinely fractional to
+/// begin with.
 ///
 /// # `i64 -> f64` isn't bit-perfect above 2^53 -- confirmed to matter for real data
 ///
@@ -337,37 +337,6 @@ impl PointDistance for SdeSegment {
     }
 }
 
-/// Converts a `KdTree<f64, SdePoint, [f64; 3]>` into a list of
-/// references to its points, **without cloning** -- for anyone who
-/// prefers to iterate/consume it as a plain list instead of using
-/// `kdtree`'s native spatial queries (`nearest`, `within`,
-/// `iter_nearest`, etc.). Doesn't require the tree to come from this
-/// crate specifically -- useful with any `KdTree<f64, SdePoint, [f64; 3]>`,
-/// including one a caller built themselves (e.g. from
-/// [`crate::SdeManager::get_systems`]/`get_abstract_systems`'s
-/// `HashMap` values, for anyone who does want the spatial-query
-/// capabilities a `KdTree` provides).
-///
-/// Internally uses `bounding_box` with bounds at `f64::MIN`/`f64::MAX`
-/// (the full representable finite range) to fetch the tree's entire
-/// content in one go -- this is the exact usage `kdtree`'s own
-/// documentation recommends for "range queries where you only need the
-/// references, without ordering guarantees". Important:
-/// `f64::INFINITY`/`f64::NEG_INFINITY` do NOT work here -- `kdtree`
-/// explicitly rejects them as non-finite bounds
-/// (`ErrorKind::NonFiniteCoordinate`); verified against the crate's
-/// actual source code, not just its documentation.
-///
-/// Can't fail in practice (3 fixed dimensions, always-finite bounds),
-/// so `expect` is used instead of propagating a `Result` that would
-/// never be `Err` with this usage -- if it ever were, that's a sign of
-/// a real bug that should abort loudly, not get silently swallowed into
-/// an empty list.
-pub fn map_points_to_vec(tree: &KdTree<f64, SdePoint, [f64; 3]>) -> Vec<&SdePoint> {
-    tree.bounding_box(&[f64::MIN, f64::MIN, f64::MIN], &[f64::MAX, f64::MAX, f64::MAX])
-        .expect("bounding_box with f64::MIN/f64::MAX bounds should never fail (3 fixed dimensions, always-finite bounds)")
-}
-
 /// Converts an `rstar::RTree<SdeSegment>` into a list of references to
 /// its segments, **without cloning** -- for anyone who prefers to
 /// iterate/consume it as a plain list instead of using `rstar`'s native
@@ -379,9 +348,9 @@ pub fn map_points_to_vec(tree: &KdTree<f64, SdePoint, [f64; 3]>) -> Vec<&SdePoin
 /// `HashMap` values, for anyone who does want the spatial-query
 /// capabilities an `RTree` provides).
 ///
-/// Simpler than [`map_points_to_vec`]'s `KdTree` equivalent: `RTree`
-/// already exposes a plain `iter()` over every element, with no
-/// bounding-box workaround needed.
+/// `RTree` already exposes a plain `iter()` over every element, so this
+/// is a direct wrapper -- no extra work needed to get a plain list out
+/// of it.
 pub fn map_segments_to_vec(tree: &rstar::RTree<SdeSegment>) -> Vec<&SdeSegment> {
     tree.iter().collect()
 }
@@ -417,6 +386,7 @@ impl EveRegionArea {
     }
 }
 
+/// Abstraction for a Moon. It store data relevant to this entity
 #[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct Moon {
     /// Moon Identifier
