@@ -19,9 +19,9 @@ pub enum ProjectedAxis {
 }
 
 /// A point in EVE's universe: real 3D SDE coordinates (`centerX/Y/Z`)
-/// and 2D map-query results (`get_systempoints`/`get_abstract_systems`,
-/// KdTree-indexed) used to be two separate types (`SdePoint`, 3D `i64`,
-/// and `SdePoint`, 2D `f32`). They're merged here into one.
+/// and 2D map-query results (`get_systems`/`get_abstract_systems`)
+/// used to be two separate types (`SdePoint`, 3D `i64`, and `SdePoint`,
+/// 2D `f32`). They're merged here into one.
 ///
 /// # Why `f64`, not `i64` or `f32`
 ///
@@ -95,7 +95,7 @@ pub struct SdePoint {
     /// `None` for a bare coordinate (bounding-box corners, real/projected
     /// system positions inside `SolarSystem`/`Constellation`/`Region`) --
     /// `Some` for a query result with an actual entity behind it
-    /// (`get_systempoints`/`get_abstract_systems`).
+    /// (`get_systems`/`get_abstract_systems`).
     pub id: Option<usize>,
     pub name: Option<String>,
     /// `(solarSystemId, solarSystemId)` pairs for this point's
@@ -181,7 +181,7 @@ impl From<SdePoint> for [f64; 3] {
     }
 }
 
-impl DivAssign<i64> for SdePoint {
+/*impl DivAssign<i64> for SdePoint {
     fn div_assign(&mut self, rhs: i64) {
         self.coords[0] /= rhs as f64;
         self.coords[1] /= rhs as f64;
@@ -194,6 +194,22 @@ impl MulAssign<i64> for SdePoint {
         self.coords[0] *= rhs as f64;
         self.coords[1] *= rhs as f64;
         self.coords[2] *= rhs as f64;
+    }
+}*/
+
+impl DivAssign<f64> for SdePoint {
+    fn div_assign(&mut self, rhs: f64) {
+        self.coords[0] /= rhs;
+        self.coords[1] /= rhs;
+        self.coords[2] /= rhs;
+    }
+}
+
+impl MulAssign<f64> for SdePoint {
+    fn mul_assign(&mut self, rhs: f64) {
+        self.coords[0] *= rhs;
+        self.coords[1] *= rhs;
+        self.coords[2] *= rhs;
     }
 }
 
@@ -265,13 +281,16 @@ impl Sub<&SdePoint> for SdePoint {
 /// edge on the abstract map). A type owned by `sde`, replaces the
 /// `SdeSegment` that used to come from `egui-map`.
 ///
-/// Implements `rstar`'s [`RTreeObject`]/[`PointDistance`], so
-/// [`crate::SdeManager::get_connections`]/`get_abstract_connections`
-/// return an `rstar::RTree<SdeSegment>` instead of a plain `Vec` --
-/// the actual reason to keep these around is spatial queries ("which
-/// connections fall within this area of the map", "which connection is
-/// closest to where the user clicked"), which a linear scan doesn't
-/// answer efficiently but an R-tree does by design.
+/// Implements `rstar`'s [`RTreeObject`]/[`PointDistance`] -- not
+/// because [`crate::SdeManager::get_connections`]/`get_abstract_connections`
+/// build an `rstar::RTree` internally (they return a plain
+/// `HashMap<(usize, usize), SdeSegment>`, keyed by `id`, the same
+/// shape every other getter here uses), but so that anyone who wants
+/// spatial queries ("which connections fall within this area of the
+/// map", "which connection is closest to where the user clicked") can
+/// build one directly from the map's values
+/// (`rstar::RTree::bulk_load(map.into_values().collect())`) without
+/// this crate forcing that cost on callers who don't need it.
 ///
 /// `id` is the pair of system ids it connects -- no longer an arbitrary
 /// `Rc<str>` like in the old `egui-map` integration. This `(usize,
@@ -322,8 +341,12 @@ impl PointDistance for SdeSegment {
 /// references to its points, **without cloning** -- for anyone who
 /// prefers to iterate/consume it as a plain list instead of using
 /// `kdtree`'s native spatial queries (`nearest`, `within`,
-/// `iter_nearest`, etc., all available directly on the tree returned by
-/// [`crate::SdeManager::get_systempoints`]/`get_abstract_systems`).
+/// `iter_nearest`, etc.). Doesn't require the tree to come from this
+/// crate specifically -- useful with any `KdTree<f64, SdePoint, [f64; 3]>`,
+/// including one a caller built themselves (e.g. from
+/// [`crate::SdeManager::get_systems`]/`get_abstract_systems`'s
+/// `HashMap` values, for anyone who does want the spatial-query
+/// capabilities a `KdTree` provides).
 ///
 /// Internally uses `bounding_box` with bounds at `f64::MIN`/`f64::MAX`
 /// (the full representable finite range) to fetch the tree's entire
@@ -349,9 +372,12 @@ pub fn map_points_to_vec(tree: &KdTree<f64, SdePoint, [f64; 3]>) -> Vec<&SdePoin
 /// its segments, **without cloning** -- for anyone who prefers to
 /// iterate/consume it as a plain list instead of using `rstar`'s native
 /// spatial queries (`locate_in_envelope_intersecting`,
-/// `nearest_neighbor`, etc., all available directly on the tree
-/// returned by [`crate::SdeManager::get_connections`]/
-/// `get_abstract_connections`).
+/// `nearest_neighbor`, etc.). Doesn't require the tree to come from
+/// this crate specifically -- useful with any `RTree<SdeSegment>`,
+/// including one a caller built themselves (e.g. from
+/// [`crate::SdeManager::get_connections`]/`get_abstract_connections`'s
+/// `HashMap` values, for anyone who does want the spatial-query
+/// capabilities an `RTree` provides).
 ///
 /// Simpler than [`map_points_to_vec`]'s `KdTree` equivalent: `RTree`
 /// already exposes a plain `iter()` over every element, with no
@@ -487,12 +513,12 @@ pub struct SolarSystem {
     /// `mapSolarSystemDisallowedAnchorableGroups`.
     pub disallowed_anchor_groups: Vec<u32>,
     /// The factor that we need to adjust the coordinates
-    pub factor: i64,
+    pub factor: f64,
 }
 
 impl SolarSystem {
     /// Creates a new Solar System Strcut. ALl the values are initialized. Needs to be filled
-    pub fn new(factor: i64) -> Self {
+    pub fn new(factor: f64) -> Self {
         SolarSystem {
             id: 0,
             name: String::new(),
@@ -511,7 +537,7 @@ impl SolarSystem {
 
 impl Default for SolarSystem {
     fn default() -> Self {
-        Self::new(1)
+        Self::new(1.0)
     }
 }
 
@@ -607,12 +633,12 @@ pub struct Universe {
     /// Moon objects you can access the data with their Identfiers
     pub moons: HashMap<u32, Moon>,
     /// Factor used to correct coordinates
-    pub factor: i64,
+    pub factor: f64,
 }
 
 impl Universe {
     /// Creates a new Universe Strcut. ALl the values are initialized. Needs to be filled
-    pub fn new(factor: i64) -> Universe {
+    pub fn new(factor: f64) -> Universe {
         Universe {
             regions: HashMap::new(),
             constellations: HashMap::new(),
@@ -626,7 +652,7 @@ impl Universe {
 
 impl Default for Universe {
     fn default() -> Self {
-        Self::new(1)
+        Self::new(1.0)
     }
 }
 
@@ -749,7 +775,7 @@ mod tests {
     fn sdepoint_mul_assign_i64() {
         // Matches SdeManager::get_system_coords()'s `coord *= self.factor.abs()`.
         let mut point = SdePoint::new(1.0, 2.0, 3.0);
-        point *= 3i64;
+        point *= 3.0;
         assert_eq!(point, SdePoint::new(3.0, 6.0, 9.0));
     }
 
@@ -757,7 +783,7 @@ mod tests {
     fn sdepoint_div_assign_i64() {
         // Matches SdeManager::get_system_coords()'s `coord /= self.factor`.
         let mut point = SdePoint::new(24.0, 48.0, 96.0);
-        point /= 2i64;
+        point /= 2.0;
         assert_eq!(point, SdePoint::new(12.0, 24.0, 48.0));
     }
 
@@ -816,7 +842,7 @@ mod tests {
 
     #[test]
     fn solarsystem_new_initializes_with_factor() {
-        let system = SolarSystem::new(1000);
+        let system = SolarSystem::new(1000.0);
         assert_eq!(system.id, 0);
         assert_eq!(system.name, String::new());
         assert_eq!(system.region, 0);
@@ -825,12 +851,12 @@ mod tests {
         assert!(system.connections.is_empty());
         assert_eq!(system.real_coords, SdePoint::default());
         assert_eq!(system.projected_coords, SdePoint::default());
-        assert_eq!(system.factor, 1000);
+        assert_eq!(system.factor, 1000.0);
     }
 
     #[test]
     fn solarsystem_default_factor_is_one() {
-        assert_eq!(SolarSystem::default().factor, 1);
+        assert_eq!(SolarSystem::default().factor, 1.0);
     }
 
     // ---------------------------------------------------------------------
@@ -860,17 +886,17 @@ mod tests {
 
     #[test]
     fn universe_new_initializes_with_factor() {
-        let universe = Universe::new(42);
+        let universe = Universe::new(42.0);
         assert!(universe.regions.is_empty());
         assert!(universe.constellations.is_empty());
         assert!(universe.solar_systems.is_empty());
         assert!(universe.planets.is_empty());
         assert!(universe.moons.is_empty());
-        assert_eq!(universe.factor, 42);
+        assert_eq!(universe.factor, 42.0);
     }
 
     #[test]
     fn universe_default_factor_is_one() {
-        assert_eq!(Universe::default().factor, 1);
+        assert_eq!(Universe::default().factor, 1.0);
     }
 }
