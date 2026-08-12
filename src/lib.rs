@@ -7,7 +7,7 @@
 //!
 //!
 use crate::objects::{
-    Constellation, SdePoint, SdeSegment, Moon, Planet, Region, SolarSystem, Universe,
+    Constellation, Moon, Planet, Region, SdePoint, SdeSegment, SolarSystem, Universe,
 };
 use kdtree::KdTree;
 use objects::EveRegionArea;
