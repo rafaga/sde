@@ -48,9 +48,9 @@ use sde::SdeManager;
 use std::path::Path;
 
 let sde = SdeManager::new(Path::new("sde.db"), 1_000_000);
-let points = sde.get_systempoints()?; // KdTree<f64, MapPoint, [f64; 3]>
+let points = sde.get_systempoints()?; // KdTree<f64, SdePoint, [f64; 3]>
 let regions = sde.get_region_coordinates()?;
-let connections = sde.get_connections()?; // RTree<MapSegment>, for spatial queries
+let connections = sde.get_connections()?; // RTree<SdeSegment>, for spatial queries
 ```
 
 ## Building `sde.db`

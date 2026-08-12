@@ -11,7 +11,7 @@
 
 use rusqlite::Connection;
 use sde::SdeManager;
-use sde::objects::{MapPoint, map_points_to_vec};
+use sde::objects::{SdePoint, map_points_to_vec};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -411,7 +411,7 @@ fn system_coords_applies_factor_and_inversion() {
     let manager = fixture.manager();
 
     let coords = manager.get_system_coords(30000001).unwrap();
-    assert_eq!(coords, Some(MapPoint::new(-10.0, -20.0, -30.0)));
+    assert_eq!(coords, Some(SdePoint::new(-10.0, -20.0, -30.0)));
 }
 
 #[test]
@@ -644,14 +644,14 @@ fn region_coordinates_returns_bounding_box_per_region() {
     // (-1000,-3000); coordinate inversion (swap + negate) maps this
     // symmetric bounding box back onto itself. Z is always 0 -- the
     // bounding box has been 2D since the migration from projX/Y/Z to position2DX/Y.
-    assert_eq!(alpha.max, MapPoint::new(1000.0, 3000.0, 0.0));
-    assert_eq!(alpha.min, MapPoint::new(-1000.0, -3000.0, 0.0));
+    assert_eq!(alpha.max, SdePoint::new(1000.0, 3000.0, 0.0));
+    assert_eq!(alpha.min, SdePoint::new(-1000.0, -3000.0, 0.0));
 
     let beta = &areas[1];
     assert_eq!(beta.region_id, 10000002);
     assert_eq!(beta.name, "Region Beta");
     // Region Beta's fixture systems are position2D (5000,5000) and
     // (9000,9000); after inversion new_max = -old_min, new_min = -old_max.
-    assert_eq!(beta.max, MapPoint::new(-5000.0, -5000.0, 0.0));
-    assert_eq!(beta.min, MapPoint::new(-9000.0, -9000.0, 0.0));
+    assert_eq!(beta.max, SdePoint::new(-5000.0, -5000.0, 0.0));
+    assert_eq!(beta.min, SdePoint::new(-9000.0, -9000.0, 0.0));
 }

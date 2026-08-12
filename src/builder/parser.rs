@@ -209,9 +209,9 @@ impl ParserConfig {
     }
 }
 
-/// Axis choice used by [`crate::objects::MapPoint::to_2d`] and
+/// Axis choice used by [`crate::objects::SdePoint::to_2d`] and
 /// [`isometric_projection_2d`] -- moved to `crate::objects` (core, not
-/// gated by the `builder` feature) since `MapPoint` needs it too, on
+/// gated by the `builder` feature) since `SdePoint` needs it too, on
 /// the read side. Re-exported here so existing `parser::ProjectedAxis`
 /// references throughout this module keep working unchanged.
 pub use crate::objects::ProjectedAxis;
@@ -1437,7 +1437,7 @@ impl Parser {
     ///
     /// Real moon `position` magnitude checked too: up to ~1.8x10^13 in the
     /// sample (about 0.2% of 2^53) -- far below the `i64 -> f64` precision
-    /// boundary discussed in [`crate::objects::MapPoint`]'s docstring.
+    /// boundary discussed in [`crate::objects::SdePoint`]'s docstring.
     /// Moon positions are system-scale (similar to `mapPlanets`'s
     /// ~3x10^13), not galactic-scale like `mapRegions`/`mapSolarSystems`'s
     /// ~10^19 -- no precision concern here, for this data or for any

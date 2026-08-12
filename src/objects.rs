@@ -4,9 +4,9 @@ use std::collections::HashMap;
 use std::ops::{Add, Div, DivAssign, Mul, MulAssign, Sub};
 
 /// Axis choice for a 3D-to-2D projection -- shared between
-/// [`MapPoint::to_2d`] (explicit, caller-chosen axis) and
+/// [`SdePoint::to_2d`] (explicit, caller-chosen axis) and
 /// `builder::parser::isometric_projection_2d` (the isometric map
-/// projection). Lives here, not in `builder`, since `MapPoint` needs it
+/// projection). Lives here, not in `builder`, since `SdePoint` needs it
 /// on the read side too, and `objects.rs` isn't gated by the `builder`
 /// feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -21,7 +21,7 @@ pub enum ProjectedAxis {
 /// A point in EVE's universe: real 3D SDE coordinates (`centerX/Y/Z`)
 /// and 2D map-query results (`get_systempoints`/`get_abstract_systems`,
 /// KdTree-indexed) used to be two separate types (`SdePoint`, 3D `i64`,
-/// and `MapPoint`, 2D `f32`). They're merged here into one.
+/// and `SdePoint`, 2D `f32`). They're merged here into one.
 ///
 /// # Why `f64`, not `i64` or `f32`
 ///
@@ -55,8 +55,8 @@ pub enum ProjectedAxis {
 /// performs that conversion for real coordinate data anymore**: the two
 /// call sites that used to (`SdeManager::get_system_coords`,
 /// `SdeManager::get_solarsystem`) were rewritten to read `f64` directly
-/// from SQLite and build a `MapPoint` without an `i64` intermediate.
-/// `From<[i64; 3]>`/`From<MapPoint> for [i64; 3]` are kept as public API
+/// from SQLite and build a `SdePoint` without an `i64` intermediate.
+/// `From<[i64; 3]>`/`From<SdePoint> for [i64; 3]` are kept as public API
 /// for external consumers that still need them (confirmed in use, see
 /// below) -- anyone converting real, large-magnitude coordinates
 /// through them should keep this precision note in mind.
@@ -71,7 +71,7 @@ pub enum ProjectedAxis {
 /// `get_system_coords(...).try_into().unwrap()` on real, essentially-never-zero
 /// EVE coordinates -- reproduced against a real compiler that this
 /// panics in practice, every time, regardless of this merge. The old
-/// pivot-based `TryInto<[f32;2]>` is replaced here by [`MapPoint::to_2d`],
+/// pivot-based `TryInto<[f32;2]>` is replaced here by [`SdePoint::to_2d`],
 /// which takes an explicit [`ProjectedAxis`] instead of guessing one
 /// from a component that's essentially never exactly zero for real data.
 /// `telescope` needs updating either way to fix this bug; this merge
@@ -82,7 +82,7 @@ pub enum ProjectedAxis {
 /// (`SdeManager::get_system_coords`'s `factor`/`invert_coordinates`
 /// scaling, which needs `i64`-typed scalars) and externally (`telescope`
 /// reads `.x`/`.y`/`.z`-equivalent components directly, via
-/// [`MapPoint::x`]/[`MapPoint::y`]/[`MapPoint::z`] after this merge, not
+/// [`SdePoint::x`]/[`SdePoint::y`]/[`SdePoint::z`] after this merge, not
 /// through the arithmetic operators). The old `SdePoint` additionally
 /// implemented `Mul`/`Div`/`MulAssign`/`DivAssign` for `isize`/`u64`/`i32`/`f32`
 /// scalars and a value-returning `Mul<isize>`/`Div<isize>` -- none of
@@ -90,7 +90,7 @@ pub enum ProjectedAxis {
 /// carried over. If some caller does need one of these, they're
 /// straightforward to add back.
 #[derive(Debug, Clone, PartialEq)]
-pub struct MapPoint {
+pub struct SdePoint {
     pub coords: [f64; 3],
     /// `None` for a bare coordinate (bounding-box corners, real/projected
     /// system positions inside `SolarSystem`/`Constellation`/`Region`) --
@@ -100,12 +100,12 @@ pub struct MapPoint {
     pub name: Option<String>,
     /// `(solarSystemId, solarSystemId)` pairs for this point's
     /// connections to others -- each entry corresponds to the `id` of a
-    /// [`MapSegment`] returned by [`crate::SdeManager::get_connections`]
+    /// [`SdeSegment`] returned by [`crate::SdeManager::get_connections`]
     /// (or `get_abstract_connections`). Empty for a bare coordinate.
     pub connections: Vec<(usize, usize)>,
 }
 
-impl MapPoint {
+impl SdePoint {
     /// Creates a bare coordinate (`id`/`name` `None`, no connections) --
     /// equivalent to the old `SdePoint::new(x, y, z)`.
     pub fn new(x: f64, y: f64, z: f64) -> Self {
@@ -141,32 +141,32 @@ impl MapPoint {
     }
 }
 
-impl Default for MapPoint {
+impl Default for SdePoint {
     fn default() -> Self {
         Self::new(0.0, 0.0, 0.0)
     }
 }
 
-impl From<[i64; 3]> for MapPoint {
+impl From<[i64; 3]> for SdePoint {
     fn from(value: [i64; 3]) -> Self {
         Self::new(value[0] as f64, value[1] as f64, value[2] as f64)
     }
 }
 
-impl From<[f32; 3]> for MapPoint {
+impl From<[f32; 3]> for SdePoint {
     fn from(value: [f32; 3]) -> Self {
         Self::new(value[0] as f64, value[1] as f64, value[2] as f64)
     }
 }
 
-impl From<[f64; 3]> for MapPoint {
+impl From<[f64; 3]> for SdePoint {
     fn from(value: [f64; 3]) -> Self {
         Self::new(value[0], value[1], value[2])
     }
 }
 
-impl From<MapPoint> for [i64; 3] {
-    fn from(val: MapPoint) -> Self {
+impl From<SdePoint> for [i64; 3] {
+    fn from(val: SdePoint) -> Self {
         [
             val.coords[0].round() as i64,
             val.coords[1].round() as i64,
@@ -175,13 +175,13 @@ impl From<MapPoint> for [i64; 3] {
     }
 }
 
-impl From<MapPoint> for [f64; 3] {
-    fn from(val: MapPoint) -> Self {
+impl From<SdePoint> for [f64; 3] {
+    fn from(val: SdePoint) -> Self {
         val.coords
     }
 }
 
-impl DivAssign<i64> for MapPoint {
+impl DivAssign<i64> for SdePoint {
     fn div_assign(&mut self, rhs: i64) {
         self.coords[0] /= rhs as f64;
         self.coords[1] /= rhs as f64;
@@ -189,7 +189,7 @@ impl DivAssign<i64> for MapPoint {
     }
 }
 
-impl MulAssign<i64> for MapPoint {
+impl MulAssign<i64> for SdePoint {
     fn mul_assign(&mut self, rhs: i64) {
         self.coords[0] *= rhs as f64;
         self.coords[1] *= rhs as f64;
@@ -197,7 +197,7 @@ impl MulAssign<i64> for MapPoint {
     }
 }
 
-impl Mul<f64> for MapPoint {
+impl Mul<f64> for SdePoint {
     type Output = Self;
     fn mul(mut self, rhs: f64) -> Self::Output {
         self.coords[0] *= rhs;
@@ -207,7 +207,7 @@ impl Mul<f64> for MapPoint {
     }
 }
 
-impl Div<f64> for MapPoint {
+impl Div<f64> for SdePoint {
     type Output = Self;
     fn div(mut self, rhs: f64) -> Self::Output {
         self.coords[0] /= rhs;
@@ -217,10 +217,10 @@ impl Div<f64> for MapPoint {
     }
 }
 
-impl Add<MapPoint> for MapPoint {
-    type Output = MapPoint;
-    fn add(self, rhs: MapPoint) -> Self::Output {
-        MapPoint::new(
+impl Add<SdePoint> for SdePoint {
+    type Output = SdePoint;
+    fn add(self, rhs: SdePoint) -> Self::Output {
+        SdePoint::new(
             self.coords[0] + rhs.coords[0],
             self.coords[1] + rhs.coords[1],
             self.coords[2] + rhs.coords[2],
@@ -228,10 +228,10 @@ impl Add<MapPoint> for MapPoint {
     }
 }
 
-impl Sub<MapPoint> for MapPoint {
-    type Output = MapPoint;
-    fn sub(self, rhs: MapPoint) -> Self::Output {
-        MapPoint::new(
+impl Sub<SdePoint> for SdePoint {
+    type Output = SdePoint;
+    fn sub(self, rhs: SdePoint) -> Self::Output {
+        SdePoint::new(
             self.coords[0] - rhs.coords[0],
             self.coords[1] - rhs.coords[1],
             self.coords[2] - rhs.coords[2],
@@ -239,10 +239,10 @@ impl Sub<MapPoint> for MapPoint {
     }
 }
 
-impl Add<&MapPoint> for MapPoint {
-    type Output = MapPoint;
-    fn add(self, rhs: &MapPoint) -> Self::Output {
-        MapPoint::new(
+impl Add<&SdePoint> for SdePoint {
+    type Output = SdePoint;
+    fn add(self, rhs: &SdePoint) -> Self::Output {
+        SdePoint::new(
             self.coords[0] + rhs.coords[0],
             self.coords[1] + rhs.coords[1],
             self.coords[2] + rhs.coords[2],
@@ -250,10 +250,10 @@ impl Add<&MapPoint> for MapPoint {
     }
 }
 
-impl Sub<&MapPoint> for MapPoint {
-    type Output = MapPoint;
-    fn sub(self, rhs: &MapPoint) -> Self::Output {
-        MapPoint::new(
+impl Sub<&SdePoint> for SdePoint {
+    type Output = SdePoint;
+    fn sub(self, rhs: &SdePoint) -> Self::Output {
+        SdePoint::new(
             self.coords[0] - rhs.coords[0],
             self.coords[1] - rhs.coords[1],
             self.coords[2] - rhs.coords[2],
@@ -263,11 +263,11 @@ impl Sub<&MapPoint> for MapPoint {
 
 /// Line segment between two solar systems (a stargate connection, or an
 /// edge on the abstract map). A type owned by `sde`, replaces the
-/// `MapSegment` that used to come from `egui-map`.
+/// `SdeSegment` that used to come from `egui-map`.
 ///
 /// Implements `rstar`'s [`RTreeObject`]/[`PointDistance`], so
 /// [`crate::SdeManager::get_connections`]/`get_abstract_connections`
-/// return an `rstar::RTree<MapSegment>` instead of a plain `Vec` --
+/// return an `rstar::RTree<SdeSegment>` instead of a plain `Vec` --
 /// the actual reason to keep these around is spatial queries ("which
 /// connections fall within this area of the map", "which connection is
 /// closest to where the user clicked"), which a linear scan doesn't
@@ -275,12 +275,12 @@ impl Sub<&MapPoint> for MapPoint {
 ///
 /// `id` is the pair of system ids it connects -- no longer an arbitrary
 /// `Rc<str>` like in the old `egui-map` integration. This `(usize,
-/// usize)` is exactly the shape `egui_map::MapSegment.id` would need
+/// usize)` is exactly the shape `egui_map::SdeSegment.id` would need
 /// after the targeted change already designed for that crate (`Rc<str>`
 /// -> tuple) -- the only piece of `egui-map` that needs touching to
 /// interoperate, without redesigning anything else there.
 ///
-/// `point1`/`point2` are `[f64; 2]`, matching [`MapPoint`]'s coordinate
+/// `point1`/`point2` are `[f64; 2]`, matching [`SdePoint`]'s coordinate
 /// type -- both represent the same kind of value (a system's 2D
 /// position), so there's no reason for one to be `f64` and the other
 /// `f32`. This is a change from the type's initial version, which kept
@@ -288,22 +288,22 @@ impl Sub<&MapPoint> for MapPoint {
 /// conversion; that 1:1 match no longer holds -- an `egui-map` consumer
 /// building a `RawPoint` from this now needs an explicit narrowing
 /// (`point1[0] as f32`, etc.), same as it already would from
-/// `MapPoint`.
+/// `SdePoint`.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MapSegment {
+pub struct SdeSegment {
     pub id: (usize, usize),
     pub point1: [f64; 2],
     pub point2: [f64; 2],
 }
 
-impl RTreeObject for MapSegment {
+impl RTreeObject for SdeSegment {
     type Envelope = AABB<[f64; 2]>;
     fn envelope(&self) -> Self::Envelope {
         AABB::from_corners(self.point1, self.point2)
     }
 }
 
-impl PointDistance for MapSegment {
+impl PointDistance for SdeSegment {
     /// Squared distance from `point` to the closest point *on the
     /// segment* (not just its bounding box) -- delegates to
     /// `rstar::primitives::Line`'s own implementation (clamped
@@ -318,7 +318,7 @@ impl PointDistance for MapSegment {
     }
 }
 
-/// Converts a `KdTree<f64, MapPoint, [f64; 3]>` into a list of
+/// Converts a `KdTree<f64, SdePoint, [f64; 3]>` into a list of
 /// references to its points, **without cloning** -- for anyone who
 /// prefers to iterate/consume it as a plain list instead of using
 /// `kdtree`'s native spatial queries (`nearest`, `within`,
@@ -340,12 +340,12 @@ impl PointDistance for MapSegment {
 /// never be `Err` with this usage -- if it ever were, that's a sign of
 /// a real bug that should abort loudly, not get silently swallowed into
 /// an empty list.
-pub fn map_points_to_vec(tree: &KdTree<f64, MapPoint, [f64; 3]>) -> Vec<&MapPoint> {
+pub fn map_points_to_vec(tree: &KdTree<f64, SdePoint, [f64; 3]>) -> Vec<&SdePoint> {
     tree.bounding_box(&[f64::MIN, f64::MIN, f64::MIN], &[f64::MAX, f64::MAX, f64::MAX])
         .expect("bounding_box with f64::MIN/f64::MAX bounds should never fail (3 fixed dimensions, always-finite bounds)")
 }
 
-/// Converts an `rstar::RTree<MapSegment>` into a list of references to
+/// Converts an `rstar::RTree<SdeSegment>` into a list of references to
 /// its segments, **without cloning** -- for anyone who prefers to
 /// iterate/consume it as a plain list instead of using `rstar`'s native
 /// spatial queries (`locate_in_envelope_intersecting`,
@@ -356,12 +356,12 @@ pub fn map_points_to_vec(tree: &KdTree<f64, MapPoint, [f64; 3]>) -> Vec<&MapPoin
 /// Simpler than [`map_points_to_vec`]'s `KdTree` equivalent: `RTree`
 /// already exposes a plain `iter()` over every element, with no
 /// bounding-box workaround needed.
-pub fn map_segments_to_vec(tree: &rstar::RTree<MapSegment>) -> Vec<&MapSegment> {
+pub fn map_segments_to_vec(tree: &rstar::RTree<SdeSegment>) -> Vec<&SdeSegment> {
     tree.iter().collect()
 }
 
 /// Note: no longer derives `Hash`/`Eq` (only `PartialEq`) since `min`/`max`
-/// became `MapPoint`, which contains `[f64; 3]` -- `f64` doesn't
+/// became `SdePoint`, which contains `[f64; 3]` -- `f64` doesn't
 /// implement `Eq`/`Hash` (NaN isn't equal to itself). Nothing in this
 /// crate used `EveRegionArea` as a `HashMap`/`HashSet` key or otherwise
 /// relied on those two traits (confirmed: it's only ever returned inside
@@ -370,8 +370,8 @@ pub fn map_segments_to_vec(tree: &rstar::RTree<MapSegment>) -> Vec<&MapSegment> 
 pub struct EveRegionArea {
     pub region_id: i64,
     pub name: String,
-    pub min: MapPoint,
-    pub max: MapPoint,
+    pub min: SdePoint,
+    pub max: SdePoint,
 }
 
 impl Default for EveRegionArea {
@@ -385,8 +385,8 @@ impl EveRegionArea {
         EveRegionArea {
             region_id: 0,
             name: String::new(),
-            min: MapPoint::default(),
-            max: MapPoint::default(),
+            min: SdePoint::default(),
+            max: SdePoint::default(),
         }
     }
 }
@@ -453,7 +453,7 @@ impl Default for Planet {
 ///
 /// Note: no longer derives `Hash`/`Eq` (only `PartialEq`) -- same reason
 /// as [`EveRegionArea`]: `real_coords`/`projected_coords` became
-/// `MapPoint`, which contains `[f64; 3]`. Confirmed safe: `SolarSystem`
+/// `SdePoint`, which contains `[f64; 3]`. Confirmed safe: `SolarSystem`
 /// is only ever a `HashMap` *value* (`HashMap<u32, SolarSystem>`), never
 /// a key.
 #[derive(PartialEq, Clone, Debug)]
@@ -471,9 +471,9 @@ pub struct SolarSystem {
     /// Vector with Solar system identifiers where this Solar system has connections via Stargates
     pub connections: Vec<u32>,
     /// Solar System 3D Coordinates
-    pub real_coords: MapPoint,
+    pub real_coords: SdePoint,
     /// Solar System 2D Coordinates with the propourse of representing the system in abstraction map.
-    pub projected_coords: MapPoint,
+    pub projected_coords: SdePoint,
     /// Item categories entirely disallowed from being anchored here
     /// (e.g. Structure, Deployable) -- via
     /// `mapSolarSystemDisallowedAnchorableCategories`. Confirmed
@@ -500,8 +500,8 @@ impl SolarSystem {
             constellation: 0,
             planets: Vec::new(),
             connections: Vec::new(),
-            real_coords: MapPoint::default(),
-            projected_coords: MapPoint::default(),
+            real_coords: SdePoint::default(),
+            projected_coords: SdePoint::default(),
             disallowed_anchor_categories: Vec::new(),
             disallowed_anchor_groups: Vec::new(),
             factor,
@@ -530,7 +530,7 @@ pub struct Constellation {
     /// Solar System vector with Identifer numbers included in the constellation
     pub solar_systems: Vec<u32>,
     /// Solar System 2D Coordinates with the propourse of representing the system in abstraction map.
-    pub projected_coords: MapPoint,
+    pub projected_coords: SdePoint,
 }
 
 impl Constellation {
@@ -541,7 +541,7 @@ impl Constellation {
             name: String::new(),
             region: 0,
             solar_systems: Vec::new(),
-            projected_coords: MapPoint::default(),
+            projected_coords: SdePoint::default(),
         }
     }
 }
@@ -565,7 +565,7 @@ pub struct Region {
     /// Vector with Region's Constellationm Identifiers
     pub constellations: Vec<u32>,
     /// Region 2D Coordinates with the propourse of representing the system in abstraction map.
-    pub projected_coords: MapPoint,
+    pub projected_coords: SdePoint,
 }
 
 impl Region {
@@ -575,7 +575,7 @@ impl Region {
             id: 0,
             name: String::new(),
             constellations: Vec::new(),
-            projected_coords: MapPoint::default(),
+            projected_coords: SdePoint::default(),
         }
     }
 }
@@ -635,12 +635,12 @@ mod tests {
     use super::*;
 
     // ---------------------------------------------------------------------
-    // MapPoint
+    // SdePoint
     // ---------------------------------------------------------------------
 
     #[test]
-    fn mappoint_new_sets_coordinates() {
-        let point = MapPoint::new(10.0, -20.0, 30.0);
+    fn sdepoint_new_sets_coordinates() {
+        let point = SdePoint::new(10.0, -20.0, 30.0);
         assert_eq!(point.x(), 10.0);
         assert_eq!(point.y(), -20.0);
         assert_eq!(point.z(), 30.0);
@@ -650,70 +650,70 @@ mod tests {
     }
 
     #[test]
-    fn mappoint_default_is_origin() {
-        let point = MapPoint::default();
+    fn sdepoint_default_is_origin() {
+        let point = SdePoint::default();
         assert_eq!(point.coords, [0.0, 0.0, 0.0]);
-        assert_eq!(point, MapPoint::new(0.0, 0.0, 0.0));
+        assert_eq!(point, SdePoint::new(0.0, 0.0, 0.0));
     }
 
     #[test]
-    fn mappoint_from_i64_array() {
-        let point = MapPoint::from([1i64, 2, 3]);
-        assert_eq!(point, MapPoint::new(1.0, 2.0, 3.0));
+    fn sdepoint_from_i64_array() {
+        let point = SdePoint::from([1i64, 2, 3]);
+        assert_eq!(point, SdePoint::new(1.0, 2.0, 3.0));
     }
 
     #[test]
-    fn mappoint_from_f32_array() {
-        let point = MapPoint::from([1.4f32, 1.5, -1.5]);
-        assert_eq!(point, MapPoint::new(1.4f32 as f64, 1.5, -1.5));
+    fn sdepoint_from_f32_array() {
+        let point = SdePoint::from([1.4f32, 1.5, -1.5]);
+        assert_eq!(point, SdePoint::new(1.4f32 as f64, 1.5, -1.5));
     }
 
     #[test]
-    fn mappoint_from_f64_array() {
-        let point = MapPoint::from([1.4, 1.5, -1.5]);
-        assert_eq!(point, MapPoint::new(1.4, 1.5, -1.5));
+    fn sdepoint_from_f64_array() {
+        let point = SdePoint::from([1.4, 1.5, -1.5]);
+        assert_eq!(point, SdePoint::new(1.4, 1.5, -1.5));
     }
 
     #[test]
-    fn mappoint_into_i64_array_rounds() {
+    fn sdepoint_into_i64_array_rounds() {
         // f64 -> i64 rounds (half away from zero), unlike the f64 array
         // conversion below, which is lossless.
-        let values: [i64; 3] = MapPoint::new(7.4, 7.5, -7.5).into();
+        let values: [i64; 3] = SdePoint::new(7.4, 7.5, -7.5).into();
         assert_eq!(values, [7, 8, -8]);
     }
 
     #[test]
-    fn mappoint_into_f64_array() {
-        let values: [f64; 3] = MapPoint::new(7.0, 8.0, 9.0).into();
+    fn sdepoint_into_f64_array() {
+        let values: [f64; 3] = SdePoint::new(7.0, 8.0, 9.0).into();
         assert_eq!(values, [7.0, 8.0, 9.0]);
     }
 
     #[test]
-    fn mappoint_to_2d_drops_x() {
-        let point = MapPoint::new(10.0, 20.0, 30.0);
+    fn sdepoint_to_2d_drops_x() {
+        let point = SdePoint::new(10.0, 20.0, 30.0);
         assert_eq!(point.to_2d(ProjectedAxis::X), [20.0, 30.0]);
     }
 
     #[test]
-    fn mappoint_to_2d_drops_y() {
-        let point = MapPoint::new(10.0, 20.0, 30.0);
+    fn sdepoint_to_2d_drops_y() {
+        let point = SdePoint::new(10.0, 20.0, 30.0);
         assert_eq!(point.to_2d(ProjectedAxis::Y), [10.0, 30.0]);
     }
 
     #[test]
-    fn mappoint_to_2d_drops_z() {
-        let point = MapPoint::new(10.0, 20.0, 30.0);
+    fn sdepoint_to_2d_drops_z() {
+        let point = SdePoint::new(10.0, 20.0, 30.0);
         assert_eq!(point.to_2d(ProjectedAxis::Z), [10.0, 20.0]);
     }
 
     #[test]
-    fn mappoint_to_2d_never_fails_even_at_the_pivot_values_that_used_to_panic() {
+    fn sdepoint_to_2d_never_fails_even_at_the_pivot_values_that_used_to_panic() {
         // The point that reproduced telescope's real panic (see the
         // struct's docstring): no component is exactly zero, so the old
         // pivot-based TryInto<[f32;2]> would return Err on all three
         // branches, and telescope's `.unwrap()` would panic. `to_2d`
         // can't fail -- it doesn't guess, the caller picks the axis.
-        let point = MapPoint::new(
+        let point = SdePoint::new(
             1_003_094_336_444_825.0,
             -2_005_029_375_317_114.0,
             3_001_839_229_715_087.0,
@@ -722,55 +722,55 @@ mod tests {
     }
 
     #[test]
-    fn mappoint_add_owned() {
-        let sum = MapPoint::new(1.0, 2.0, 3.0) + MapPoint::new(10.0, 20.0, 30.0);
-        assert_eq!(sum, MapPoint::new(11.0, 22.0, 33.0));
+    fn sdepoint_add_owned() {
+        let sum = SdePoint::new(1.0, 2.0, 3.0) + SdePoint::new(10.0, 20.0, 30.0);
+        assert_eq!(sum, SdePoint::new(11.0, 22.0, 33.0));
     }
 
     #[test]
-    fn mappoint_add_reference() {
-        let sum = MapPoint::new(1.0, 2.0, 3.0) + &MapPoint::new(-1.0, -2.0, -3.0);
-        assert_eq!(sum, MapPoint::new(0.0, 0.0, 0.0));
+    fn sdepoint_add_reference() {
+        let sum = SdePoint::new(1.0, 2.0, 3.0) + &SdePoint::new(-1.0, -2.0, -3.0);
+        assert_eq!(sum, SdePoint::new(0.0, 0.0, 0.0));
     }
 
     #[test]
-    fn mappoint_sub_owned() {
-        let diff = MapPoint::new(10.0, 20.0, 30.0) - MapPoint::new(1.0, 2.0, 3.0);
-        assert_eq!(diff, MapPoint::new(9.0, 18.0, 27.0));
+    fn sdepoint_sub_owned() {
+        let diff = SdePoint::new(10.0, 20.0, 30.0) - SdePoint::new(1.0, 2.0, 3.0);
+        assert_eq!(diff, SdePoint::new(9.0, 18.0, 27.0));
     }
 
     #[test]
-    fn mappoint_sub_reference() {
-        let diff = MapPoint::new(10.0, 20.0, 30.0) - &MapPoint::new(10.0, 20.0, 30.0);
-        assert_eq!(diff, MapPoint::new(0.0, 0.0, 0.0));
+    fn sdepoint_sub_reference() {
+        let diff = SdePoint::new(10.0, 20.0, 30.0) - &SdePoint::new(10.0, 20.0, 30.0);
+        assert_eq!(diff, SdePoint::new(0.0, 0.0, 0.0));
     }
 
     #[test]
-    fn mappoint_mul_assign_i64() {
+    fn sdepoint_mul_assign_i64() {
         // Matches SdeManager::get_system_coords()'s `coord *= self.factor.abs()`.
-        let mut point = MapPoint::new(1.0, 2.0, 3.0);
+        let mut point = SdePoint::new(1.0, 2.0, 3.0);
         point *= 3i64;
-        assert_eq!(point, MapPoint::new(3.0, 6.0, 9.0));
+        assert_eq!(point, SdePoint::new(3.0, 6.0, 9.0));
     }
 
     #[test]
-    fn mappoint_div_assign_i64() {
+    fn sdepoint_div_assign_i64() {
         // Matches SdeManager::get_system_coords()'s `coord /= self.factor`.
-        let mut point = MapPoint::new(24.0, 48.0, 96.0);
+        let mut point = SdePoint::new(24.0, 48.0, 96.0);
         point /= 2i64;
-        assert_eq!(point, MapPoint::new(12.0, 24.0, 48.0));
+        assert_eq!(point, SdePoint::new(12.0, 24.0, 48.0));
     }
 
     #[test]
-    fn mappoint_mul_f64() {
-        let product = MapPoint::new(1.0, -2.0, 3.0) * 2.5;
-        assert_eq!(product, MapPoint::new(2.5, -5.0, 7.5));
+    fn sdepoint_mul_f64() {
+        let product = SdePoint::new(1.0, -2.0, 3.0) * 2.5;
+        assert_eq!(product, SdePoint::new(2.5, -5.0, 7.5));
     }
 
     #[test]
-    fn mappoint_div_f64() {
-        let quotient = MapPoint::new(10.0, -20.0, 30.0) / 4.0;
-        assert_eq!(quotient, MapPoint::new(2.5, -5.0, 7.5));
+    fn sdepoint_div_f64() {
+        let quotient = SdePoint::new(10.0, -20.0, 30.0) / 4.0;
+        assert_eq!(quotient, SdePoint::new(2.5, -5.0, 7.5));
     }
 
     // ---------------------------------------------------------------------
@@ -782,8 +782,8 @@ mod tests {
         let area = EveRegionArea::new();
         assert_eq!(area.region_id, 0);
         assert_eq!(area.name, String::new());
-        assert_eq!(area.min, MapPoint::default());
-        assert_eq!(area.max, MapPoint::default());
+        assert_eq!(area.min, SdePoint::default());
+        assert_eq!(area.max, SdePoint::default());
         assert_eq!(area, EveRegionArea::default());
     }
 
@@ -823,8 +823,8 @@ mod tests {
         assert_eq!(system.constellation, 0);
         assert!(system.planets.is_empty());
         assert!(system.connections.is_empty());
-        assert_eq!(system.real_coords, MapPoint::default());
-        assert_eq!(system.projected_coords, MapPoint::default());
+        assert_eq!(system.real_coords, SdePoint::default());
+        assert_eq!(system.projected_coords, SdePoint::default());
         assert_eq!(system.factor, 1000);
     }
 
@@ -844,7 +844,7 @@ mod tests {
         assert_eq!(constellation.name, String::new());
         assert_eq!(constellation.region, 0);
         assert!(constellation.solar_systems.is_empty());
-        assert_eq!(constellation.projected_coords, MapPoint::default());
+        assert_eq!(constellation.projected_coords, SdePoint::default());
         assert_eq!(constellation, Constellation::default());
     }
 
@@ -854,7 +854,7 @@ mod tests {
         assert_eq!(region.id, 0);
         assert_eq!(region.name, String::new());
         assert!(region.constellations.is_empty());
-        assert_eq!(region.projected_coords, MapPoint::default());
+        assert_eq!(region.projected_coords, SdePoint::default());
         assert_eq!(region, Region::default());
     }
 

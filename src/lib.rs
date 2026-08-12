@@ -7,7 +7,7 @@
 //!
 //!
 use crate::objects::{
-    Constellation, MapPoint, MapSegment, Moon, Planet, Region, SolarSystem, Universe,
+    Constellation, SdePoint, SdeSegment, Moon, Planet, Region, SolarSystem, Universe,
 };
 use kdtree::KdTree;
 use objects::EveRegionArea;
@@ -68,9 +68,9 @@ impl<'a> SdeManager<'a> {
     /// `get_abstract_systems`/`get_abstract_connections` don't.
     ///
     /// Used by [`Self::get_systempoints`]/[`Self::get_abstract_systems`]
-    /// (which build [`objects::MapPoint`], `coords: [f64; 3]`) and
+    /// (which build [`objects::SdePoint`], `coords: [f64; 3]`) and
     /// [`Self::get_connections`]/[`Self::get_abstract_connections`]
-    /// (building [`objects::MapSegment`], `point1`/`point2: [f64; 2]`) --
+    /// (building [`objects::SdeSegment`], `point1`/`point2: [f64; 2]`) --
     /// both types are `f64` throughout, so there's a single version of
     /// this helper, not one per type as there used to be.
     ///
@@ -152,7 +152,7 @@ impl<'a> SdeManager<'a> {
     /// All K-space solar systems with a computed 2D map projection,
     /// indexed in a [`kdtree::KdTree`] by `[x, y, 0.0]` (the third
     /// component unused, kept for API consistency with
-    /// [`objects::MapPoint`]'s 3D shape) -- built for nearest-neighbor
+    /// [`objects::SdePoint`]'s 3D shape) -- built for nearest-neighbor
     /// queries, e.g. hit-testing a mouse click on a rendered map.
     ///
     /// "K-space" here means `solarSystemId` between `30000000` and
@@ -167,8 +167,8 @@ impl<'a> SdeManager<'a> {
     ///
     /// Each point also carries the ids of every solar system it has a
     /// stargate connection to (via `mapSystemConnections`), in
-    /// [`objects::MapPoint::connections`].
-    pub fn get_systempoints(&self) -> Result<KdTree<f64, MapPoint, [f64; 3]>, Error> {
+    /// [`objects::SdePoint::connections`].
+    pub fn get_systempoints(&self) -> Result<KdTree<f64, SdePoint, [f64; 3]>, Error> {
         let connection = self.get_standart_connection()?;
 
         let mut tree = KdTree::new(3);
@@ -190,7 +190,7 @@ impl<'a> SdeManager<'a> {
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows = statement.query(params![30000000, 30999999])?;
         let mut last_id = isize::MIN;
-        let mut point = MapPoint {
+        let mut point = SdePoint {
             id: None,
             name: None,
             coords: [0.0, 0.0, 0.0],
@@ -209,7 +209,7 @@ impl<'a> SdeManager<'a> {
 
                 //we get the coordinate point and multiply with the adjust factor
                 let [x, y] = self.scale_coords([x, y], self.invert_coordinates);
-                point = MapPoint {
+                point = SdePoint {
                     id: Some(id.try_into().unwrap()),
                     name: Some(row.get::<usize, String>(3)?),
                     coords: [x, y, 0.0],
@@ -275,20 +275,20 @@ impl<'a> SdeManager<'a> {
             // subquery) also yield REAL storage class -- rusqlite's `i64`
             // FromSql impl does NOT coerce a SQLite REAL into an integer,
             // so this has to be read as f64. Unlike before the
-            // SdePoint/MapPoint merge, there's no need to narrow it to
-            // `i64` afterward -- `MapPoint::from([f64; 3])` takes the
+            // SdePoint/SdePoint merge, there's no need to narrow it to
+            // `i64` afterward -- `SdePoint::from([f64; 3])` takes the
             // f64 values directly, without an unnecessary
             // f64 -> i64 -> f64 round-trip that would silently truncate
             // any fractional part.
             //
-            // EveRegionArea.max/min stay `MapPoint` (3D) for API
+            // EveRegionArea.max/min stay `SdePoint` (3D) for API
             // stability, but the region bounding box is now 2D (there's
             // no third component to report anymore) -- the Z component is
             // just always 0.
             region.max =
-                MapPoint::from([row.get::<usize, f64>(2)?, row.get::<usize, f64>(3)?, 0.0]);
+                SdePoint::from([row.get::<usize, f64>(2)?, row.get::<usize, f64>(3)?, 0.0]);
             region.min =
-                MapPoint::from([row.get::<usize, f64>(4)?, row.get::<usize, f64>(5)?, 0.0]);
+                SdePoint::from([row.get::<usize, f64>(4)?, row.get::<usize, f64>(5)?, 0.0]);
             // we invert the coordinates and swap the min with the max
             if self.invert_coordinates {
                 std::mem::swap(&mut region.max, &mut region.min);
@@ -342,11 +342,11 @@ impl<'a> SdeManager<'a> {
     /// variable holding the id as a string is misleadingly named
     /// `system_like_name`: despite the name, the query does an exact
     /// `= ?1` match, not a `LIKE`.)
-    pub fn get_system_coords(&self, id_node: usize) -> Result<Option<MapPoint>, Error> {
+    pub fn get_system_coords(&self, id_node: usize) -> Result<Option<SdePoint>, Error> {
         let connection = self.get_standart_connection()?;
 
         // projX/Y/Z no longer exist (see the note in get_systempoints());
-        // this function returns a genuinely 3D MapPoint (unlike
+        // this function returns a genuinely 3D SdePoint (unlike
         // get_systempoints()/get_connections(), which only need 2
         // components), so it reads centerX/Y/Z -- the system's
         // real 3D coordinates, always `NOT NULL` in the schema, without
@@ -358,7 +358,7 @@ impl<'a> SdeManager<'a> {
         let system_like_name = id_node.to_string();
         let mut rows = statement.query(params![system_like_name])?;
         if let Some(row) = rows.next()? {
-            let mut coord = MapPoint::from([
+            let mut coord = SdePoint::from([
                 row.get::<usize, f64>(0)?,
                 row.get::<usize, f64>(1)?,
                 row.get::<usize, f64>(2)?,
@@ -382,7 +382,7 @@ impl<'a> SdeManager<'a> {
     /// (`locate_in_envelope_intersecting`) or "which connection is
     /// closest to this point" (`nearest_neighbor`, hit-testing a mouse
     /// click), rather than a plain linear scan.
-    pub fn get_connections(&self) -> Result<RTree<MapSegment>, Error> {
+    pub fn get_connections(&self) -> Result<RTree<SdeSegment>, Error> {
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT msc.systemA, msc.systemB, ");
@@ -413,7 +413,7 @@ impl<'a> SdeManager<'a> {
                 row.get::<usize, i64>(0)? as usize,
                 row.get::<usize, i64>(1)? as usize,
             );
-            results.push(MapSegment { id, point1, point2 });
+            results.push(SdeSegment { id, point1, point2 });
         }
         Ok(RTree::bulk_load(results))
     }
@@ -441,7 +441,7 @@ impl<'a> SdeManager<'a> {
     pub fn get_abstract_systems(
         &self,
         regions: Vec<u32>,
-    ) -> Result<KdTree<f64, MapPoint, [f64; 3]>, Error> {
+    ) -> Result<KdTree<f64, SdePoint, [f64; 3]>, Error> {
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT mas.solarSystemId, mas.x, mas.y, mas.regionId, ");
@@ -471,7 +471,7 @@ impl<'a> SdeManager<'a> {
         }
 
         let mut current_index = isize::MIN;
-        let mut point = MapPoint {
+        let mut point = SdePoint {
             id: None,
             name: None,
             coords: [0.0, 0.0, 0.0],
@@ -491,7 +491,7 @@ impl<'a> SdeManager<'a> {
                     [row.get::<usize, f64>(1)?, row.get::<usize, f64>(2)?],
                     false,
                 );
-                point = MapPoint {
+                point = SdePoint {
                     id: Some(id.try_into().unwrap()),
                     name: Some(row.get::<usize, String>(6)?),
                     coords: [x, y, 0.0],
@@ -518,7 +518,7 @@ impl<'a> SdeManager<'a> {
     /// `Err(rusqlite::Error::SqliteFailure(..., "no such table:
     /// mapAbstractSystems"))`, not a panic, against a database built
     /// without `--with-third-party`.
-    pub fn get_abstract_connections(&self, regions: Vec<u32>) -> Result<RTree<MapSegment>, Error> {
+    pub fn get_abstract_connections(&self, regions: Vec<u32>) -> Result<RTree<SdeSegment>, Error> {
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT msc.systemA, msc.systemB, ");
@@ -558,7 +558,7 @@ impl<'a> SdeManager<'a> {
                 row.get::<usize, i64>(0)? as usize,
                 row.get::<usize, i64>(1)? as usize,
             );
-            results.push(MapSegment { id, point1, point2 });
+            results.push(SdeSegment { id, point1, point2 });
         }
         Ok(RTree::bulk_load(results))
     }
@@ -767,8 +767,8 @@ impl<'a> SdeManager<'a> {
                 proj_x *= -1.0;
                 proj_y *= -1.0;
             }
-            object.real_coords = MapPoint::new(real_x, real_y, real_z);
-            object.projected_coords = MapPoint::new(proj_x, proj_y, 0.0);
+            object.real_coords = SdePoint::new(real_x, real_y, real_z);
+            object.projected_coords = SdePoint::new(proj_x, proj_y, 0.0);
 
             object.region = row.get(2)?;
             result.insert(row.get(0)?, object);
