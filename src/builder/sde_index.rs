@@ -36,6 +36,8 @@ use std::path::Path;
 /// number is an opaque identifier meant to be compared as text, not
 /// something meant to be operated on numerically.
 fn find_sde_build_number(jsonl: &str) -> Option<String> {
+    profiling::function_scope!();
+
     for line in jsonl.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -87,6 +89,8 @@ pub async fn update_as_needed(
     sde_url_base: &str,
     variant: &str,
 ) -> Result<bool, BuilderError> {
+    profiling::function_scope!();
+
     std::fs::create_dir_all(data_dir)?;
 
     let build_file = data_dir.join(format!("sde-{variant}.build"));

@@ -496,6 +496,8 @@ impl Parser {
         connection: &Connection,
         state: &mut StarTypeState,
     ) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let mut insert_type = connection.prepare(
             "INSERT INTO invTypes (typeId, groupId, typeName, iconId, published, volume) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -546,6 +548,8 @@ impl Parser {
     /// Populates `invCategories` from `<sde_directory>/categories.jsonl`.
     /// Returns the number of rows inserted.
     pub fn parse_categories(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let mut insert_category = connection.prepare(
             "INSERT INTO invCategories (categoryId, categoryName, published) VALUES (?1, ?2, ?3)",
         )?;
@@ -579,6 +583,8 @@ impl Parser {
         connection: &Connection,
         state: &mut StarTypeState,
     ) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let mut insert_group = connection.prepare(
             "INSERT INTO invGroups (groupId, categoryId, groupName, anchorable) \
             VALUES (?1, ?2, ?3, ?4)",
@@ -613,6 +619,8 @@ impl Parser {
     /// Populates `races` from `<sde_directory>/races.jsonl`. Returns the
     /// number of rows inserted.
     pub fn parse_races(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let mut insert_race =
             connection.prepare("INSERT INTO races (raceId, raceName) VALUES (?1, ?2)")?;
 
@@ -642,6 +650,8 @@ impl Parser {
         &self,
         connection: &Connection,
     ) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let mut insert = connection.prepare(
             "INSERT INTO npcCorporationDivisions (divisionId, internalName, leaderTypeName) \
             VALUES (?1, ?2, ?3)",
@@ -689,6 +699,8 @@ impl Parser {
     /// `ceoID`/`divisions[].leaderID` are kept as plain unconstrained
     /// integers (no character table exists to reference).
     pub fn parse_npc_corporations(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let mut insert_corp = connection.prepare(
             "INSERT INTO npcCorporations \
             (corporationId, corporationName, tickerName, deleted, description, extent, \
@@ -840,6 +852,8 @@ impl Parser {
     /// `militiaCorporationID` are rarer (14.8%/66.7%/22.2%/22.2%) but
     /// genuinely present.
     pub fn parse_factions(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let mut insert_faction = connection.prepare(
             "INSERT INTO factions \
             (factionId, factionName, iconId, sizeFactor, uniqueName, description, shortDescription, \
@@ -903,6 +917,8 @@ impl Parser {
     /// `maxProjX`/`maxProjY` aren't included in the INSERT: the DDL gives
     /// them `DEFAULT(0.0)`, which SQLite applies automatically.
     pub fn parse_regions(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let mut insert_region = connection.prepare(
             "INSERT INTO mapRegions (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -948,6 +964,8 @@ impl Parser {
     /// The preferred id is `constellationID` if the record carries it and
     /// it's a valid integer; otherwise it falls back to `_key`.
     pub fn parse_constellations(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let mut insert_constellation = connection.prepare(
             "INSERT INTO mapConstellations (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -1045,6 +1063,8 @@ impl Parser {
         connection: &Connection,
         state: &mut SystemScopeState,
     ) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let mut insert_system = connection.prepare(
             "INSERT INTO mapSolarSystems (solarSystemId, solarSystemName, constellationId, \
             type, luminosity, radius, centerX, centerY, centerZ, \
@@ -1208,6 +1228,8 @@ impl Parser {
         connection: &Connection,
         state: &SystemScopeState,
     ) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let mut insert_gate = connection.prepare(
             "INSERT INTO mapSystemGates (systemGateId, solarSystemId, typeId, \
             positionX, positionY, positionZ, destinationGateId, destinationSystemId) \
@@ -1286,6 +1308,8 @@ impl Parser {
         state: &SystemScopeState,
         star_state: &StarTypeState,
     ) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let mut insert_star = connection.prepare(
             "INSERT INTO mapStars (starId, solarSystemId, locked, radius, starTypeId) \
             VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1365,6 +1389,8 @@ impl Parser {
         connection: &Connection,
         state: &SystemScopeState,
     ) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let mut insert_planet = connection.prepare(
             "INSERT INTO mapPlanets (planetId, solarSystemId, planetaryIndex, fragmented, radius, \
             locked, typeId, positionX, positionY, positionZ) \
@@ -1449,6 +1475,8 @@ impl Parser {
         connection: &Connection,
         state: &SystemScopeState,
     ) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let mut insert_moon = connection.prepare(
             "INSERT INTO mapMoons (moonId, solarSystemId, moonIndex, planetId, typeId, radius, \
             positionX, positionY, positionZ) \
@@ -1518,6 +1546,8 @@ impl Parser {
     /// they always end up returning
     /// `(msga.solarSystemId, msgb.solarSystemId)` in that order.
     pub fn parse_connections(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let count = connection.execute(
             "INSERT INTO mapSystemConnections (systemA, systemB) \
             SELECT MIN(msga.solarSystemId, msgb.solarSystemId), \
@@ -1543,6 +1573,8 @@ impl Parser {
     /// why `staStation`/`staCorporations`, which used to cover this area of
     /// the schema, are gone.
     pub fn parse_station_services(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let mut insert = connection
             .prepare("INSERT INTO stationServices (serviceId, serviceName) VALUES (?1, ?2)")?;
 
@@ -1584,6 +1616,8 @@ impl Parser {
     /// each flag means beyond the raw value; `stationOperationTypes.sizeKey`
     /// is kept as a plain integer rather than guessing at named constants.
     pub fn parse_station_operations(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let mut insert_operation = connection.prepare(
             "INSERT INTO stationOperations \
             (operationId, activityId, operationName, description, border, corridor, fringe, hub, \
@@ -1680,6 +1714,8 @@ impl Parser {
     /// their real, confirmed absence rate -- not just a defensive
     /// assumption.
     pub fn parse_npc_stations(&self, connection: &Connection) -> Result<usize, BuilderError> {
+        profiling::function_scope!();
+
         let mut moon_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
         {
             let mut statement = connection.prepare("SELECT moonId FROM mapMoons")?;
@@ -1790,6 +1826,8 @@ impl Parser {
     /// genuinely-neither station in the real data. See
     /// [`Self::parse_npc_stations`]'s docstring for more on this table.
     pub fn parse_data(&self, connection: &mut Connection) -> Result<ParseSummary, BuilderError> {
+        profiling::function_scope!();
+
         let tx = connection.transaction()?;
 
         let categories = self.parse_categories(&tx)?;
@@ -1973,6 +2011,8 @@ impl Parser {
         client: &Client,
         maps_url_base: &str,
     ) -> Result<ParseSummary, BuilderError> {
+        profiling::function_scope!();
+
         let summary = self.parse_data(connection)?;
 
         if self.config.with_third_party {

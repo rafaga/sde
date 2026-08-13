@@ -39,6 +39,8 @@ pub fn manifest_path(maps_dir: &Path) -> PathBuf {
 /// returns an empty manifest -- safe behavior: the next run simply
 /// re-downloads everything, it never gets stuck because of this.
 pub fn load(maps_dir: &Path) -> Manifest {
+    profiling::function_scope!();
+
     let path = manifest_path(maps_dir);
     match std::fs::read_to_string(&path) {
         Ok(contents) => serde_json::from_str(&contents).unwrap_or_else(|err| {
@@ -57,6 +59,8 @@ pub fn load(maps_dir: &Path) -> Manifest {
 
 /// Saves the manifest to disk (creates `maps_dir` if needed).
 pub fn save(maps_dir: &Path, manifest: &Manifest) -> io::Result<()> {
+    profiling::function_scope!();
+
     std::fs::create_dir_all(maps_dir)?;
     let json = serde_json::to_string_pretty(manifest)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
@@ -77,6 +81,8 @@ pub fn needs_download(
     cached: Option<&MapFingerprint>,
     remote: Option<&MapFingerprint>,
 ) -> bool {
+    profiling::function_scope!();
+
     if !local_file_exists {
         return true;
     }

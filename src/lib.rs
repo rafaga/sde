@@ -47,6 +47,8 @@ impl<'a> SdeManager<'a> {
     /// [`objects::Universe::new`] to build the initial, empty
     /// `universe`. `invert_coordinates` starts `true`.
     pub fn new(path: &Path, factor: f64) -> SdeManager<'_> {
+        profiling::function_scope!();
+
         SdeManager {
             path,
             universe: Universe::new(factor),
@@ -108,6 +110,8 @@ impl<'a> SdeManager<'a> {
     /// `Ok(true)` -- the `bool` carries no information beyond
     /// "succeeded" (any failure short-circuits via `?` instead).
     pub fn get_universe(&mut self) -> Result<bool, Error> {
+        profiling::function_scope!();
+
         let filter = Vec::new();
         self.universe.regions = self.get_region(filter.clone(), None)?;
         self.universe.constellations = self.get_constellation(filter.clone())?;
@@ -144,6 +148,8 @@ impl<'a> SdeManager<'a> {
     /// stargate connection to (via `mapSystemConnections`), in
     /// [`objects::SdePoint::connections`].
     pub fn get_systems(&self) -> Result<HashMap<usize, SdePoint>, Error> {
+        profiling::function_scope!();
+
         let connection = self.get_standart_connection()?;
 
         let mut result = HashMap::new();
@@ -216,6 +222,8 @@ impl<'a> SdeManager<'a> {
     /// (now negative) coordinates, so `max`/`min` would no longer
     /// actually describe the box's extremes without the swap.
     pub fn get_region_coordinates(&self) -> Result<Vec<EveRegionArea>, Error> {
+        profiling::function_scope!();
+
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT reg.regionId, reg.regionName, ");
@@ -287,6 +295,8 @@ impl<'a> SdeManager<'a> {
         &self,
         name: String,
     ) -> Result<Vec<(isize, String, isize, String)>, Error> {
+        profiling::function_scope!();
+
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from(
@@ -317,6 +327,8 @@ impl<'a> SdeManager<'a> {
     /// `system_like_name`: despite the name, the query does an exact
     /// `= ?1` match, not a `LIKE`.)
     pub fn get_system_coords(&self, id_node: usize) -> Result<Option<SdePoint>, Error> {
+        profiling::function_scope!();
+
         let connection = self.get_standart_connection()?;
 
         // projX/Y/Z no longer exist (see the note in get_systems());
@@ -357,6 +369,8 @@ impl<'a> SdeManager<'a> {
     /// can build their own `rstar::RTree::bulk_load(map.into_values().collect())`
     /// from this directly.
     pub fn get_connections(&self) -> Result<HashMap<(usize, usize), SdeSegment>, Error> {
+        profiling::function_scope!();
+
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT msc.systemA, msc.systemB, ");
@@ -416,6 +430,8 @@ impl<'a> SdeManager<'a> {
         &self,
         regions: Vec<u32>,
     ) -> Result<HashMap<usize, SdePoint>, Error> {
+        profiling::function_scope!();
+
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT mas.solarSystemId, mas.x, mas.y, mas.regionId, ");
@@ -493,6 +509,8 @@ impl<'a> SdeManager<'a> {
         &self,
         regions: Vec<u32>,
     ) -> Result<HashMap<(usize, usize), SdeSegment>, Error> {
+        profiling::function_scope!();
+
         let connection = self.get_standart_connection()?;
 
         let mut query = String::from("SELECT msc.systemA, msc.systemB, ");
@@ -586,6 +604,8 @@ impl<'a> SdeManager<'a> {
         regions: Vec<u32>,
         region_name: Option<String>,
     ) -> Result<HashMap<u32, Region>, Error> {
+        profiling::function_scope!();
+
         let mut id_list: array::Array;
         let mut params: Vec<&dyn ToSql> = Vec::new();
         let mut _temp_value = String::new();
@@ -867,6 +887,8 @@ impl<'a> SdeManager<'a> {
     /// `HashMap` keyed by id -- [`Self::get_universe`] keys it into one
     /// itself when populating `universe.planets`.
     pub fn get_planet(&self, solar_systems: Vec<u32>) -> Result<Vec<Planet>, Error> {
+        profiling::function_scope!();
+
         // preparing the connections that will be shared between threads
         let connection = self.get_standart_connection()?;
         let mut result = vec![];
@@ -908,6 +930,8 @@ impl<'a> SdeManager<'a> {
     /// [`Self::get_planet`] -- [`Self::get_universe`] keys it into a
     /// `HashMap` itself when populating `universe.moons`.
     pub fn get_moon(&self, planets: Vec<u32>) -> Result<Vec<Moon>, Error> {
+        profiling::function_scope!();
+
         // preparing the connections that will be shared between threads
         let connection = self.get_standart_connection()?;
         let mut result = vec![];

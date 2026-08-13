@@ -58,11 +58,22 @@ builder = [
     "dep:clap",
     "dep:anyhow",
 ]
+# Enables live profiling with the Tracy profiler (https://github.com/wolfpld/tracy)
+# for the `sde-builder` CLI: `cargo run --bin sde-builder --features builder,profile-with-tracy -- build`,
+# then open the Tracy desktop app and connect (it auto-discovers the running
+# process on the local network). A consumer of this crate as a library (e.g.
+# telescope) that also enables `profile-with-tracy` on its own binary gets
+# `sde`'s scopes (the `SdeManager` read path and, with `builder`, the whole
+# database-construction pipeline) in the same trace for free, via Cargo's
+# feature unification on the shared `profiling` dependency -- no extra wiring
+# needed on either side.
+profile-with-tracy = ["profiling/profile-with-tracy", "dep:tracy-client"]
 
 [dependencies]
 kdtree = "0.8"
 rstar = "0.13"
 rusqlite = { version = "0.40", features = ["bundled", "backup", "blob", "array"] }
+profiling = "1.0"
 
 # --- Dependencias opcionales, solo activas con la feature "builder" ---
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "stream"], optional = true }
@@ -74,6 +85,9 @@ serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 clap = { version = "4.6.6", features = ["derive"], optional = true }
 anyhow = { version = "1", optional = true }
+
+# --- Dependencia opcional, solo activa con la feature "profile-with-tracy" ---
+tracy-client = { version = "0.18", optional = true }
 
 [dev-dependencies]
 wiremock = "0.6"

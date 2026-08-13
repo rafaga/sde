@@ -78,6 +78,19 @@ enum Command {
 /// drifting) between this binary and the library.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Start the Tracy client before any `profiling::scope!`/`function_scope!`
+    // call runs anywhere in the process -- this binary is the top-level
+    // orchestrator for the whole database-construction pipeline
+    // (`sde_index` -> `extract` -> `schema` -> `parser::Parser::build_database`,
+    // which drives every `parse_*` table and, with `--with-third-party`,
+    // `community::process`), so this is the natural place to start it. Bound
+    // to `_tracy_client` (not `_`) so it stays alive for the whole process
+    // instead of being dropped immediately; open the Tracy desktop app to
+    // connect (it auto-discovers the running process).
+    #[cfg(feature = "profile-with-tracy")]
+    let _tracy_client = tracy_client::Client::start();
+    profiling::function_scope!();
+
     let cli = Cli::parse();
     let Command::Build {
         force,

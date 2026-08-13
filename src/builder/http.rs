@@ -27,6 +27,8 @@ pub struct DownloadProgress {
 /// pools connections internally; creating a new one per request throws
 /// that advantage away).
 pub fn build_client() -> reqwest::Result<Client> {
+    profiling::function_scope!();
+
     Client::builder()
         .user_agent(concat!(
             env!("CARGO_PKG_NAME"),
@@ -45,6 +47,8 @@ fn header_string(headers: &HeaderMap, name: HeaderName) -> Option<String> {
 /// verified -- no network, timeout, or a non-2xx status -- so a
 /// one-off network hiccup doesn't block the build.
 pub async fn fingerprint(client: &Client, url: &str) -> Option<MapFingerprint> {
+    profiling::function_scope!();
+
     let response = match client.head(url).send().await {
         Ok(resp) => resp,
         Err(err) => {
@@ -77,6 +81,8 @@ pub async fn fingerprint_many(
     items: impl IntoIterator<Item = (String, String)>,
     concurrency: usize,
 ) -> HashMap<String, Option<MapFingerprint>> {
+    profiling::function_scope!();
+
     futures::stream::iter(items)
         .map(|(key, url)| {
             let client = client.clone();
@@ -98,6 +104,8 @@ pub async fn fingerprint_many(
 /// [`crate::builder::sde_index`]). Unlike [`download`], it doesn't write
 /// anything to disk nor report progress.
 pub async fn fetch_text(client: &Client, url: &str) -> Result<String, BuilderError> {
+    profiling::function_scope!();
+
     let response = client.get(url).send().await?;
     if !response.status().is_success() {
         return Err(BuilderError::HttpStatus {
@@ -117,6 +125,8 @@ pub async fn download(
     destination: &Path,
     mut on_progress: impl FnMut(DownloadProgress),
 ) -> Result<u64, BuilderError> {
+    profiling::function_scope!();
+
     let response = client.get(url).send().await?;
     if !response.status().is_success() {
         return Err(BuilderError::HttpStatus {
