@@ -5,9 +5,10 @@ Data Export (SDE) from a SQLite database, plus an optional builder that
 assembles that database from CCP's official SDE and additional
 community-maintained sources.
 
-This is the Rust counterpart of
-[databaseCreator](https://github.com/rafaga/databaseCreator), the
-original Python prototype this crate ports and extends.
+This is the Rust port of [databaseCreator](https://github.com/rafaga/databaseCreator),
+the original Python prototype where this crate gets inspired. Much
+of the original algorithm was replaced with better abstractions
+or with better design practices
 
 ## What's in the database
 
@@ -88,8 +89,8 @@ See [ERD.md](ERD.md) for the database's entity-relationship diagram.
 
 ## Related projects
 
-- [databaseCreator](https://github.com/rafaga/databaseCreator) — the
-  Python prototype this crate ports and extends.
+- [databaseCreator](https://github.com/rafaga/databaseCreator) — the original
+  Python prototype where this crate gets inspired.
 
 ## License
 

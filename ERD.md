@@ -8,13 +8,6 @@ identifying name field per table, for readability — see `schema.sql`
 and `builder/community.rs` for the full column list, types, and
 constraints.
 
-`npcStations`/`stationOperations`/`stationServices` (plus their two
-junction tables) replace the old `staStation`/`staCorporations`, which
-were declared in the schema but never populated by any version of this
-project, Rust or Python — verified against real SDE exports
-(`npcStations.jsonl`, `stationOperations.jsonl`,
-`stationServices.jsonl`), not a rename of the old design.
-
 `npcCorporations` (6 → 27 columns) and `factions` (6 → 12 columns) were
 similarly expanded against real data (`npcCorporations.jsonl`,
 `npcCorporationDivisions.jsonl`, `factions.jsonl`) -- the original
