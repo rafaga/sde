@@ -434,29 +434,6 @@ impl<'a> SdeManager<'a> {
 
         let connection = self.get_standart_connection()?;
 
-        // Was a single `mapAbstractSystems RIGHT OUTER JOIN mapSystemConnections
-        // ON (msc.systemA = mas.solarSystemId OR msc.systemB = mas.solarSystemId)`.
-        // Two problems compounded there: (1) an OR across two *different*
-        // columns of `msc` in a JOIN...ON clause isn't something SQLite's OR
-        // optimization turns into indexed lookups (`EXPLAIN QUERY PLAN` showed
-        // a full `SCAN msc`, ignoring `idx_mapSystemConnections_systemA/B`
-        // entirely), and (2) `RIGHT OUTER JOIN` pins the join order, so the
-        // planner couldn't pick a better one on its own. The subsequent
-        // `INNER JOIN mapSolarSystems` already made the outer-ness moot in
-        // practice (a `mas` miss produces a NULL `mas.solarSystemId`, which
-        // never matches `mss.solarSystemId`, so that row was dropped anyway)
-        // -- so this is a correctness-preserving rewrite, not a behavior
-        // change: split the OR into two plain INNER JOINs (one per `msc`
-        // column, each now able to use its own index) unioned together.
-        // `UNION ALL`, not `UNION`: a stargate never connects a system to
-        // itself (`systemA != systemB` always holds for real SDE data), so
-        // the two branches can never emit the exact same row for the same
-        // underlying (mas, msc) pair -- there's nothing to deduplicate, and
-        // `UNION ALL` skips the sort/hash pass plain `UNION` would otherwise
-        // pay for nothing. Benchmarked against a synthetic fixture the same
-        // order of magnitude as the real SDE (8000 systems / 13000
-        // connections): ~400x faster unfiltered, ~4800x faster filtered by
-        // region, with byte-identical row sets to the old query in both cases.
         let filter = if regions.is_empty() {
             ""
         } else {

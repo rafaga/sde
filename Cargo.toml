@@ -7,7 +7,7 @@ repository = "https://github.com/rafaga/sde/"
 keywords = ["sde", "eve-online"]
 categories = ["games", "value-formatting"]
 exclude = ["tests/",".github/",".gitignore"]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 license = "MIT"
 
