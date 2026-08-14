@@ -88,12 +88,6 @@ async fn main() -> anyhow::Result<()> {
     // `TracyLayer::default()` starts the shared `tracy_client::Client`
     // itself (`Client::start()` is idempotent); open the Tracy desktop app
     // to connect, it auto-discovers the running process.
-    //
-    // MIGRATION IN PROGRESS (see Cargo.toml's `profile-with-tracy` comment):
-    // `profiling`'s own tracy backend is still enabled by this same feature
-    // for any `profiling::function_scope!()` call not yet migrated to
-    // `#[tracing::instrument]` -- it shares this same Tracy client, so
-    // nothing goes dark mid-migration.
     #[cfg(feature = "profile-with-tracy")]
     {
         use tracing_subscriber::layer::SubscriberExt as _;

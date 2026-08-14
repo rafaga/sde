@@ -26,9 +26,8 @@ pub struct DownloadProgress {
 /// Builds the `Client` that should be reused for every call (reqwest
 /// pools connections internally; creating a new one per request throws
 /// that advantage away).
+#[tracing::instrument]
 pub fn build_client() -> reqwest::Result<Client> {
-    profiling::function_scope!();
-
     Client::builder()
         .user_agent(concat!(
             env!("CARGO_PKG_NAME"),
@@ -46,9 +45,8 @@ fn header_string(headers: &HeaderMap, name: HeaderName) -> Option<String> {
 /// (ETag/Last-Modified/Content-Length). Returns `None` if it couldn't be
 /// verified -- no network, timeout, or a non-2xx status -- so a
 /// one-off network hiccup doesn't block the build.
+#[tracing::instrument]
 pub async fn fingerprint(client: &Client, url: &str) -> Option<MapFingerprint> {
-    profiling::function_scope!();
-
     let response = match client.head(url).send().await {
         Ok(resp) => resp,
         Err(err) => {
@@ -76,13 +74,12 @@ pub async fn fingerprint(client: &Client, url: &str) -> Option<MapFingerprint> {
 /// requests). `items` are `(key, url)` pairs; the key is typically the
 /// region name, and it's returned as-is so it can be cross-referenced
 /// against the manifest.
+#[tracing::instrument(skip(items))]
 pub async fn fingerprint_many(
     client: &Client,
     items: impl IntoIterator<Item = (String, String)>,
     concurrency: usize,
 ) -> HashMap<String, Option<MapFingerprint>> {
-    profiling::function_scope!();
-
     futures::stream::iter(items)
         .map(|(key, url)| {
             let client = client.clone();
@@ -103,9 +100,8 @@ pub async fn fingerprint_many(
 /// (e.g. `latest.jsonl`, the SDE build-number index consumed by
 /// [`crate::builder::sde_index`]). Unlike [`download`], it doesn't write
 /// anything to disk nor report progress.
+#[tracing::instrument]
 pub async fn fetch_text(client: &Client, url: &str) -> Result<String, BuilderError> {
-    profiling::function_scope!();
-
     let response = client.get(url).send().await?;
     if !response.status().is_success() {
         return Err(BuilderError::HttpStatus {
@@ -119,14 +115,13 @@ pub async fn fetch_text(client: &Client, url: &str) -> Result<String, BuilderErr
 /// Downloads `url` to `destination` (overwriting it if it already
 /// exists), reporting progress per chunk via `on_progress`. Returns the
 /// total bytes downloaded.
+#[tracing::instrument(skip(on_progress))]
 pub async fn download(
     client: &Client,
     url: &str,
     destination: &Path,
     mut on_progress: impl FnMut(DownloadProgress),
 ) -> Result<u64, BuilderError> {
-    profiling::function_scope!();
-
     let response = client.get(url).send().await?;
     if !response.status().is_success() {
         return Err(BuilderError::HttpStatus {

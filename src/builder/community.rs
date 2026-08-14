@@ -87,9 +87,8 @@ impl Default for CommunityConfig {
 /// `SdeManager::get_abstract_systems()` expects on the read side
 /// (`row.get::<usize, f32>(...)`), and what `tests/manager.rs`'s
 /// fixture already uses.
+#[tracing::instrument]
 pub fn create_abstract_map(connection: &Connection) -> Result<(), BuilderError> {
-    profiling::function_scope!();
-
     connection.execute_batch(
         "CREATE TABLE mapAbstractSystems ( \
             solarSystemId INTEGER NOT NULL \
@@ -109,9 +108,8 @@ pub fn create_abstract_map(connection: &Connection) -> Result<(), BuilderError> 
 /// **structure only**, doesn't populate it. Actual population depends
 /// on parsing each regional SVG (`<rect class="i" id="...">`), so it
 /// lives alongside that parsing, not here.
+#[tracing::instrument]
 pub fn create_icebelts(connection: &Connection) -> Result<(), BuilderError> {
-    profiling::function_scope!();
-
     connection.execute_batch(
         "ALTER TABLE mapSolarSystems ADD COLUMN iceBelt \
             INTEGER NOT NULL DEFAULT 0 CHECK (iceBelt IN (0,1)); \
@@ -142,9 +140,8 @@ pub fn create_icebelts(connection: &Connection) -> Result<(), BuilderError> {
 /// `trigStatusID=0` ('None'): an unmarked system has no special status
 /// either way. The FK stays active and validates normally (verified: a
 /// value outside `mapTriglavianStatus`'s 5 rows is still rejected).
+#[tracing::instrument]
 pub fn setup_triglavian_status(connection: &Connection) -> Result<(), BuilderError> {
-    profiling::function_scope!();
-
     connection.execute_batch(
         "CREATE TABLE mapTriglavianStatus ( \
             trigStatusId INTEGER NOT NULL PRIMARY KEY, \
@@ -179,9 +176,8 @@ pub fn setup_triglavian_status(connection: &Connection) -> Result<(), BuilderErr
 
 /// Adds `mapSolarSystems.joveObservatory` (with its index) and marks
 /// the 1029 systems from `JOVE_OBSERVATORY_SYSTEMS`.
+#[tracing::instrument]
 pub fn setup_jove_observatories(connection: &Connection) -> Result<(), BuilderError> {
-    profiling::function_scope!();
-
     connection.execute_batch(
         "ALTER TABLE mapSolarSystems ADD COLUMN joveObservatory \
             INTEGER NOT NULL DEFAULT 0 CHECK (joveObservatory IN (0,1)); \
@@ -205,9 +201,8 @@ pub fn setup_jove_observatories(connection: &Connection) -> Result<(), BuilderEr
 /// `ts.name` rather than an unqualified `name` -- `mapStars` has no
 /// `name` column of its own, so it's unambiguous either way, but
 /// qualifying it is clearer.
+#[tracing::instrument]
 pub fn setup_special_anomalies(connection: &Connection) -> Result<(), BuilderError> {
-    profiling::function_scope!();
-
     connection.execute_batch(
         "ALTER TABLE mapSolarSystems ADD COLUMN specialOreAnom \
             INTEGER NOT NULL DEFAULT 0 CHECK (specialOreAnom IN (0,1));",
@@ -234,12 +229,11 @@ pub fn setup_special_anomalies(connection: &Connection) -> Result<(), BuilderErr
 /// together (unlike the `mapSystemGates.destinationGateId` case
 /// documented in `parser::parse_stargates`). If the `mapAbstractSystems`
 /// + SVG flow is added, this is worth reconsidering.
+#[tracing::instrument]
 pub fn update_tables(
     connection: &Connection,
     config: &CommunityConfig,
 ) -> Result<(), BuilderError> {
-    profiling::function_scope!();
-
     create_abstract_map(connection)?;
     if config.with_icebelts {
         create_icebelts(connection)?;
@@ -299,13 +293,12 @@ pub fn update_tables(
 /// to `i64`/`f64` before binding them: this is a real requirement of
 /// this crate's `STRICT` tables, which don't accept the implicit
 /// text-to-number coercion classic SQLite does.
+#[tracing::instrument]
 pub fn extract_map_data(
     connection: &Connection,
     map_path: &Path,
     config: &CommunityConfig,
 ) -> Result<bool, BuilderError> {
-    profiling::function_scope!();
-
     if !map_path.exists() {
         eprintln!(
             "community: {} doesn't exist, skipping parsing",
@@ -394,9 +387,8 @@ pub fn extract_map_data(
 /// Fetches `(regionId, regionName)` for every "real" SDE region
 /// (excludes w-space/abyssal, with `regionId >= 11000000`). A SQL
 /// error propagates as an `Err`.
+#[tracing::instrument]
 fn get_all_regions(connection: &Connection) -> Result<Vec<(i64, String)>, BuilderError> {
-    profiling::function_scope!();
-
     let mut statement =
         connection.prepare("SELECT regionId, regionName FROM mapRegions WHERE regionId < ?1")?;
     let rows = statement
@@ -429,6 +421,7 @@ fn get_all_regions(connection: &Connection) -> Result<Vec<(i64, String)>, Builde
 ///   acceptable given that, worst case, an invalid file that couldn't
 ///   be removed just ends up getting overwritten on the next
 ///   successful attempt anyway.
+#[tracing::instrument]
 pub async fn process(
     connection: &Connection,
     client: &Client,
@@ -436,8 +429,6 @@ pub async fn process(
     map_url_base: &str,
     config: &CommunityConfig,
 ) -> Result<(), BuilderError> {
-    profiling::function_scope!();
-
     update_tables(connection, config)?;
     let regions = get_all_regions(connection)?;
 

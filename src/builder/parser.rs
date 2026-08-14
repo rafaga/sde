@@ -276,6 +276,12 @@ fn iter_jsonl_records(
     }))
 }
 
+// `Debug` (not derived before): needed so `#[tracing::instrument]` can
+// capture `self` on `Parser`'s methods below -- both fields are cheap and
+// meaningful to see on a span (which SDE directory, which config flags),
+// unlike `SdeManager` in `lib.rs` (skipped there instead: it carries the
+// whole in-memory universe).
+#[derive(Debug)]
 pub struct Parser {
     sde_directory: std::path::PathBuf,
     config: ParserConfig,
@@ -491,13 +497,12 @@ impl Parser {
     /// by [`Self::parse_groups`] via `state.sun_group_id`). Returns the number of
     /// rows inserted into `invTypes`. See "Notable behavior" in the
     /// module's docstring for how malformed star names are handled.
+    #[tracing::instrument(skip(state))]
     pub fn parse_types(
         &self,
         connection: &Connection,
         state: &mut StarTypeState,
     ) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let mut insert_type = connection.prepare(
             "INSERT INTO invTypes (typeId, groupId, typeName, iconId, published, volume) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -547,9 +552,8 @@ impl Parser {
 
     /// Populates `invCategories` from `<sde_directory>/categories.jsonl`.
     /// Returns the number of rows inserted.
+    #[tracing::instrument]
     pub fn parse_categories(&self, connection: &Connection) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let mut insert_category = connection.prepare(
             "INSERT INTO invCategories (categoryId, categoryName, published) VALUES (?1, ?2, ?3)",
         )?;
@@ -578,13 +582,12 @@ impl Parser {
     /// way, detects the group named exactly `"Sun"` and saves its id in
     /// `state.sun_group_id` -- [`Self::parse_types`] needs it to recognize star
     /// types. Returns the number of rows inserted.
+    #[tracing::instrument(skip(state))]
     pub fn parse_groups(
         &self,
         connection: &Connection,
         state: &mut StarTypeState,
     ) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let mut insert_group = connection.prepare(
             "INSERT INTO invGroups (groupId, categoryId, groupName, anchorable) \
             VALUES (?1, ?2, ?3, ?4)",
@@ -618,9 +621,8 @@ impl Parser {
 
     /// Populates `races` from `<sde_directory>/races.jsonl`. Returns the
     /// number of rows inserted.
+    #[tracing::instrument]
     pub fn parse_races(&self, connection: &Connection) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let mut insert_race =
             connection.prepare("INSERT INTO races (raceId, raceName) VALUES (?1, ?2)")?;
 
@@ -646,12 +648,11 @@ impl Parser {
     /// Populates `npcCorporationDivisions` from
     /// `<sde_directory>/npcCorporationDivisions.jsonl` (10 records,
     /// confirmed complete for `_key`/`internalName`/`leaderTypeName`).
+    #[tracing::instrument]
     pub fn parse_npc_corporation_divisions(
         &self,
         connection: &Connection,
     ) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let mut insert = connection.prepare(
             "INSERT INTO npcCorporationDivisions (divisionId, internalName, leaderTypeName) \
             VALUES (?1, ?2, ?3)",
@@ -698,9 +699,8 @@ impl Parser {
     /// without a second real example to confirm the shape against.
     /// `ceoID`/`divisions[].leaderID` are kept as plain unconstrained
     /// integers (no character table exists to reference).
+    #[tracing::instrument]
     pub fn parse_npc_corporations(&self, connection: &Connection) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let mut insert_corp = connection.prepare(
             "INSERT INTO npcCorporations \
             (corporationId, corporationName, tickerName, deleted, description, extent, \
@@ -851,9 +851,8 @@ impl Parser {
     /// `shortDescription`/`flatLogo`/`flatLogoWithName`/
     /// `militiaCorporationID` are rarer (14.8%/66.7%/22.2%/22.2%) but
     /// genuinely present.
+    #[tracing::instrument]
     pub fn parse_factions(&self, connection: &Connection) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let mut insert_faction = connection.prepare(
             "INSERT INTO factions \
             (factionId, factionName, iconId, sizeFactor, uniqueName, description, shortDescription, \
@@ -916,9 +915,8 @@ impl Parser {
     ///
     /// `maxProjX`/`maxProjY` aren't included in the INSERT: the DDL gives
     /// them `DEFAULT(0.0)`, which SQLite applies automatically.
+    #[tracing::instrument]
     pub fn parse_regions(&self, connection: &Connection) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let mut insert_region = connection.prepare(
             "INSERT INTO mapRegions (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -963,9 +961,8 @@ impl Parser {
     ///
     /// The preferred id is `constellationID` if the record carries it and
     /// it's a valid integer; otherwise it falls back to `_key`.
+    #[tracing::instrument]
     pub fn parse_constellations(&self, connection: &Connection) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let mut insert_constellation = connection.prepare(
             "INSERT INTO mapConstellations (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -1058,13 +1055,12 @@ impl Parser {
     /// just be a second copy of data already in the database, with no
     /// mechanism keeping the two in sync if they were ever expected to
     /// diverge.
+    #[tracing::instrument(skip(state))]
     pub fn parse_solar_systems(
         &self,
         connection: &Connection,
         state: &mut SystemScopeState,
     ) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let mut insert_system = connection.prepare(
             "INSERT INTO mapSolarSystems (solarSystemId, solarSystemName, constellationId, \
             type, luminosity, radius, centerX, centerY, centerZ, \
@@ -1223,13 +1219,12 @@ impl Parser {
     /// module's docstring) -- here it can make the insertion of perfectly
     /// valid data fail, purely because of the order records appear in the
     /// file.
+    #[tracing::instrument(skip(state))]
     pub fn parse_stargates(
         &self,
         connection: &Connection,
         state: &SystemScopeState,
     ) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let mut insert_gate = connection.prepare(
             "INSERT INTO mapSystemGates (systemGateId, solarSystemId, typeId, \
             positionX, positionY, positionZ, destinationGateId, destinationSystemId) \
@@ -1302,14 +1297,13 @@ impl Parser {
     /// `mapStars.starTypeId -> typeStar.starTypeId` FK, since those are
     /// completely different id sequences -- one is `invTypes.typeId`, the
     /// other a self-assigned `ROWID` from `typeStar`).
+    #[tracing::instrument(skip(state, star_state))]
     pub fn parse_stars(
         &self,
         connection: &Connection,
         state: &SystemScopeState,
         star_state: &StarTypeState,
     ) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let mut insert_star = connection.prepare(
             "INSERT INTO mapStars (starId, solarSystemId, locked, radius, starTypeId) \
             VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1384,13 +1378,12 @@ impl Parser {
     ///   `statistics` (never at the top level) -- the opposite of
     ///   `radius`. Here the fallback genuinely matters, to not lose the
     ///   data.
+    #[tracing::instrument(skip(state))]
     pub fn parse_planets(
         &self,
         connection: &Connection,
         state: &SystemScopeState,
     ) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let mut insert_planet = connection.prepare(
             "INSERT INTO mapPlanets (planetId, solarSystemId, planetaryIndex, fragmented, radius, \
             locked, typeId, positionX, positionY, positionZ) \
@@ -1470,13 +1463,12 @@ impl Parser {
     /// future function that might expose it (`SdeManager::get_moon()`
     /// doesn't read `position` today; `objects::Moon` has no coordinate
     /// field to put it in).
+    #[tracing::instrument(skip(state))]
     pub fn parse_moons(
         &self,
         connection: &Connection,
         state: &SystemScopeState,
     ) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let mut insert_moon = connection.prepare(
             "INSERT INTO mapMoons (moonId, solarSystemId, moonIndex, planetId, typeId, radius, \
             positionX, positionY, positionZ) \
@@ -1545,9 +1537,8 @@ impl Parser {
     /// the min/max *per row*, not across rows; given the `WHERE` above,
     /// they always end up returning
     /// `(msga.solarSystemId, msgb.solarSystemId)` in that order.
+    #[tracing::instrument]
     pub fn parse_connections(&self, connection: &Connection) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let count = connection.execute(
             "INSERT INTO mapSystemConnections (systemA, systemB) \
             SELECT MIN(msga.solarSystemId, msgb.solarSystemId), \
@@ -1572,9 +1563,8 @@ impl Parser {
     /// 100% of records). See [`Self::parse_npc_stations`]'s docstring for
     /// why `staStation`/`staCorporations`, which used to cover this area of
     /// the schema, are gone.
+    #[tracing::instrument]
     pub fn parse_station_services(&self, connection: &Connection) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let mut insert = connection
             .prepare("INSERT INTO stationServices (serviceId, serviceName) VALUES (?1, ?2)")?;
 
@@ -1615,9 +1605,8 @@ impl Parser {
     /// station-size bit-flag, though the SDE itself doesn't document what
     /// each flag means beyond the raw value; `stationOperationTypes.sizeKey`
     /// is kept as a plain integer rather than guessing at named constants.
+    #[tracing::instrument]
     pub fn parse_station_operations(&self, connection: &Connection) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let mut insert_operation = connection.prepare(
             "INSERT INTO stationOperations \
             (operationId, activityId, operationName, description, border, corridor, fringe, hub, \
@@ -1713,9 +1702,8 @@ impl Parser {
     /// moon) are both treated as optional (`optional_i64`), matching
     /// their real, confirmed absence rate -- not just a defensive
     /// assumption.
+    #[tracing::instrument]
     pub fn parse_npc_stations(&self, connection: &Connection) -> Result<usize, BuilderError> {
-        profiling::function_scope!();
-
         let mut moon_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
         {
             let mut statement = connection.prepare("SELECT moonId FROM mapMoons")?;
@@ -1825,9 +1813,8 @@ impl Parser {
     /// `orbitMoonId`/`orbitPlanetId` `NULL`), same as the one
     /// genuinely-neither station in the real data. See
     /// [`Self::parse_npc_stations`]'s docstring for more on this table.
+    #[tracing::instrument]
     pub fn parse_data(&self, connection: &mut Connection) -> Result<ParseSummary, BuilderError> {
-        profiling::function_scope!();
-
         let tx = connection.transaction()?;
 
         let categories = self.parse_categories(&tx)?;
@@ -2005,14 +1992,13 @@ impl Parser {
     /// duplicated as separate config fields, so a caller that isn't using
     /// `with_third_party` doesn't need to supply a real `maps_url_base` at
     /// all (any string works; it's never read).
+    #[tracing::instrument]
     pub async fn build_database(
         &self,
         connection: &mut Connection,
         client: &Client,
         maps_url_base: &str,
     ) -> Result<ParseSummary, BuilderError> {
-        profiling::function_scope!();
-
         let summary = self.parse_data(connection)?;
 
         if self.config.with_third_party {

@@ -18,9 +18,8 @@ use std::path::Path;
 /// part of an explicit retry flow; here there's no possible retry inside
 /// this function, so a direct `Err` is clearer than a `bool` the caller
 /// would have to interpret).
+#[tracing::instrument]
 pub fn unzip(zip_path: &Path, destination: &Path) -> Result<(), BuilderError> {
-    profiling::function_scope!();
-
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
     archive.extract(destination)?;
@@ -37,9 +36,8 @@ pub fn unzip(zip_path: &Path, destination: &Path) -> Result<(), BuilderError> {
 /// upfront would fail if that folder doesn't exist yet (a perfectly
 /// valid case -- e.g. the first time the builder runs, before
 /// `community::process()` has downloaded any map).
+#[tracing::instrument]
 pub fn clean_except_maps(sde_dir: &Path) -> Result<(), BuilderError> {
-    profiling::function_scope!();
-
     if !sde_dir.exists() {
         return Ok(());
     }
@@ -61,9 +59,8 @@ pub fn clean_except_maps(sde_dir: &Path) -> Result<(), BuilderError> {
 /// Cleans `sde_dir` while preserving `maps/` and decompresses
 /// `zip_path` into it -- a direct composition of [`clean_except_maps`]
 /// followed by [`unzip`], in that order.
+#[tracing::instrument]
 pub fn prepare_sde_directory(zip_path: &Path, sde_dir: &Path) -> Result<(), BuilderError> {
-    profiling::function_scope!();
-
     clean_except_maps(sde_dir)?;
     unzip(zip_path, sde_dir)?;
     Ok(())

@@ -34,9 +34,8 @@ pub const SCHEMA_DDL: &str = include_str!("schema.sql");
 /// already exists`) instead of silently mixing in with a partial or
 /// corrupted schema from a previous run. The caller is responsible for
 /// passing in a "clean" connection (a new or empty database).
+#[tracing::instrument]
 pub fn create_schema(connection: &Connection) -> rusqlite::Result<()> {
-    profiling::function_scope!();
-
     connection.execute_batch(SCHEMA_DDL)
 }
 

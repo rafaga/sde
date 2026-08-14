@@ -35,9 +35,8 @@ use std::path::Path;
 /// a number or already text in the original JSON, since the build
 /// number is an opaque identifier meant to be compared as text, not
 /// something meant to be operated on numerically.
+#[tracing::instrument]
 fn find_sde_build_number(jsonl: &str) -> Option<String> {
-    profiling::function_scope!();
-
     for line in jsonl.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -83,14 +82,13 @@ fn find_sde_build_number(jsonl: &str) -> Option<String> {
 /// `rename`, atomic on the same filesystem) once the download finished
 /// successfully -- if it fails, the previous zip stays intact instead
 /// of being deleted upfront and left missing.
+#[tracing::instrument]
 pub async fn update_as_needed(
     client: &Client,
     data_dir: &Path,
     sde_url_base: &str,
     variant: &str,
 ) -> Result<bool, BuilderError> {
-    profiling::function_scope!();
-
     std::fs::create_dir_all(data_dir)?;
 
     let build_file = data_dir.join(format!("sde-{variant}.build"));
