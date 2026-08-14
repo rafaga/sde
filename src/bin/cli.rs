@@ -77,19 +77,31 @@ enum Command {
 /// lives in one place instead of being duplicated (and potentially
 /// drifting) between this binary and the library.
 #[tokio::main]
+#[tracing::instrument]
 async fn main() -> anyhow::Result<()> {
-    // Start the Tracy client before any `profiling::scope!`/`function_scope!`
-    // call runs anywhere in the process -- this binary is the top-level
+    // Wire up `tracing` for the whole process before any span/event runs
+    // anywhere in the dependency graph -- this binary is the top-level
     // orchestrator for the whole database-construction pipeline
     // (`sde_index` -> `extract` -> `schema` -> `parser::Parser::build_database`,
     // which drives every `parse_*` table and, with `--with-third-party`,
-    // `community::process`), so this is the natural place to start it. Bound
-    // to `_tracy_client` (not `_`) so it stays alive for the whole process
-    // instead of being dropped immediately; open the Tracy desktop app to
-    // connect (it auto-discovers the running process).
+    // `community::process`), so this is the natural place to do it.
+    // `TracyLayer::default()` starts the shared `tracy_client::Client`
+    // itself (`Client::start()` is idempotent); open the Tracy desktop app
+    // to connect, it auto-discovers the running process.
+    //
+    // MIGRATION IN PROGRESS (see Cargo.toml's `profile-with-tracy` comment):
+    // `profiling`'s own tracy backend is still enabled by this same feature
+    // for any `profiling::function_scope!()` call not yet migrated to
+    // `#[tracing::instrument]` -- it shares this same Tracy client, so
+    // nothing goes dark mid-migration.
     #[cfg(feature = "profile-with-tracy")]
-    let _tracy_client = tracy_client::Client::start();
-    profiling::function_scope!();
+    {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(tracing_tracy::TracyLayer::default()),
+        )
+        .expect("setting the global tracing subscriber");
+    }
 
     let cli = Cli::parse();
     let Command::Build {
