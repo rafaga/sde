@@ -124,3 +124,24 @@ stations -- gets written but can't be queried from `SdeManager` today.
   `sde-builder build --with-third-party`, so a plain build produces a
   database containing canonical SDE data only.
 
+## Build fingerprint
+
+`sdeFingerprint` (one row, written by
+`builder::parser::Parser::build_database`) records the SDE build
+number and every `ParserConfig`/`CommunityConfig` flag that affects
+what ends up in the database, plus a SHA-256 hash over them --
+`SdeManager::get_fingerprint()` reads it back and reports whether the
+row still matches that hash.
+
+This is tamper-**evidence**, not tamper-**proof**: `sde-builder` is a
+tool anyone runs against their own copy, so there's no party who holds
+a private key the way a code-signing certificate would, and the hash
+has none either -- anyone with access to this crate's public source
+can compute a valid hash for any values they want to write. It answers
+"does this table's content match what `sde-builder` actually
+produced", not "can I trust this database came from a specific,
+authorized build". The latter would need a genuinely different
+mechanism (asymmetric signing, with the private key held only by a
+trusted build pipeline end users never run themselves), not a
+variation on this one.
+

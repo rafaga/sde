@@ -7,7 +7,8 @@
 //!
 //!
 use crate::objects::{
-    Constellation, Moon, Planet, Region, SdePoint, SdeSegment, SolarSystem, Universe,
+    Constellation, Moon, Planet, ProjectedAxis, Region, SdeFingerprint, SdePoint, SdeSegment,
+    SolarSystem, Universe,
 };
 use objects::EveRegionArea;
 use rusqlite::ToSql;
@@ -985,5 +986,68 @@ impl<'a> SdeManager<'a> {
         }
 
         Ok(result)
+    }
+
+    /// The settings this specific database was built with (see
+    /// [`objects::SdeFingerprint`]), plus whether they still match the
+    /// stored hash -- `true` means the `sdeFingerprint` row hasn't been
+    /// altered since `Parser::build_database` wrote it (or at least not
+    /// in a way this hash would catch; see that type's docstring for
+    /// what this can and can't guarantee).
+    ///
+    /// `Ok(None)` if the table exists but has no row -- a database
+    /// built by calling [`crate::builder::parser::Parser::parse_data`]
+    /// directly, bypassing `build_database`, never gets one written.
+    /// `Err(...)` (not a panic) against a database built before this
+    /// table existed at all (`sdeFingerprint` wasn't always part of the
+    /// static schema) -- same "no such table" pattern as
+    /// [`Self::get_abstract_systems`] against a database without
+    /// `mapAbstractSystems`.
+    pub fn get_fingerprint(&self) -> Result<Option<(SdeFingerprint, bool)>, Error> {
+        let connection = self.get_standart_connection()?;
+
+        let mut statement = connection.prepare(
+            "SELECT sdeBuild, language, forceIsometricPosition2d, isometricProjectedAxis, \
+            mapKspace, mapWspace, mapAbyssal, mapVoid, withGates, withMoons, withThirdParty, \
+            withIcebelts, withTriglavianStatus, withJoveObservatories, withSpecialOre, hash \
+            FROM sdeFingerprint WHERE id = 1",
+        )?;
+        let mut rows = statement.query([])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+
+        let axis_text: String = row.get(3)?;
+        let isometric_projected_axis = match axis_text.as_str() {
+            "X" => ProjectedAxis::X,
+            "Z" => ProjectedAxis::Z,
+            // "Y" and anything unrecognized both fall back to the
+            // default axis -- same tolerant-parsing spirit already used
+            // throughout builder::parser for optional/malformed fields,
+            // rather than failing the whole read over a single
+            // unexpected value in a column nothing but this code writes.
+            _ => ProjectedAxis::Y,
+        };
+        let stored_hash: String = row.get(15)?;
+
+        let fingerprint = SdeFingerprint {
+            sde_build: row.get(0)?,
+            language: row.get(1)?,
+            force_isometric_position_2d: row.get(2)?,
+            isometric_projected_axis,
+            map_kspace: row.get(4)?,
+            map_wspace: row.get(5)?,
+            map_abyssal: row.get(6)?,
+            map_void: row.get(7)?,
+            with_gates: row.get(8)?,
+            with_moons: row.get(9)?,
+            with_third_party: row.get(10)?,
+            with_icebelts: row.get(11)?,
+            with_triglavian_status: row.get(12)?,
+            with_jove_observatories: row.get(13)?,
+            with_special_ore: row.get(14)?,
+        };
+        let matches = fingerprint.hash() == stored_hash;
+        Ok(Some((fingerprint, matches)))
     }
 }

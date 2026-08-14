@@ -80,6 +80,7 @@
 
 use crate::builder::BuilderError;
 use crate::builder::community::{self, CommunityConfig};
+use crate::objects::SdeFingerprint;
 use reqwest::Client;
 use rusqlite::Connection;
 use serde_json::Value;
@@ -1992,16 +1993,25 @@ impl Parser {
     /// duplicated as separate config fields, so a caller that isn't using
     /// `with_third_party` doesn't need to supply a real `maps_url_base` at
     /// all (any string works; it's never read).
+    ///
+    /// `sde_build`, if given, is recorded verbatim in the
+    /// `sdeFingerprint` table's `sdeBuild` column -- this function
+    /// doesn't validate it or fetch it itself (that's `sde_index`'s
+    /// job); pass `None` if the caller doesn't have one (e.g. a library
+    /// consumer that isn't going through `sde_index::update_as_needed`
+    /// at all). See [`objects::SdeFingerprint`] for what "fingerprint"
+    /// means here and its real limits.
     #[tracing::instrument]
     pub async fn build_database(
         &self,
         connection: &mut Connection,
         client: &Client,
         maps_url_base: &str,
+        sde_build: Option<&str>,
     ) -> Result<ParseSummary, BuilderError> {
         let summary = self.parse_data(connection)?;
 
-        if self.config.with_third_party {
+        let community_config = if self.config.with_third_party {
             let community_config = CommunityConfig {
                 with_icebelts: true,
                 with_triglavian_status: true,
@@ -2016,9 +2026,71 @@ impl Parser {
                 &community_config,
             )
             .await?;
-        }
+            Some(community_config)
+        } else {
+            None
+        };
+
+        self.write_fingerprint(connection, sde_build, community_config.as_ref())?;
 
         Ok(summary)
+    }
+
+    /// Writes the single row of `sdeFingerprint`, recording the exact
+    /// settings this database was built with (see
+    /// [`objects::SdeFingerprint`]). Called automatically by
+    /// [`Self::build_database`] -- not `pub`, since there's no reason to
+    /// call it on its own outside of that.
+    fn write_fingerprint(
+        &self,
+        connection: &Connection,
+        sde_build: Option<&str>,
+        community_config: Option<&CommunityConfig>,
+    ) -> Result<(), BuilderError> {
+        let fingerprint = SdeFingerprint {
+            sde_build: sde_build.map(str::to_string),
+            language: self.config.language.clone(),
+            force_isometric_position_2d: self.config.force_isometric_position_2d,
+            isometric_projected_axis: self.config.isometric_projected_axis,
+            map_kspace: self.config.map_kspace,
+            map_wspace: self.config.map_wspace,
+            map_abyssal: self.config.map_abyssal,
+            map_void: self.config.map_void,
+            with_gates: self.config.with_gates,
+            with_moons: self.config.with_moons,
+            with_third_party: self.config.with_third_party,
+            with_icebelts: community_config.map(|c| c.with_icebelts),
+            with_triglavian_status: community_config.map(|c| c.with_triglavian_status),
+            with_jove_observatories: community_config.map(|c| c.with_jove_observatories),
+            with_special_ore: community_config.map(|c| c.with_special_ore),
+        };
+        let hash = fingerprint.hash();
+        connection.execute(
+            "INSERT INTO sdeFingerprint (id, sdeBuild, language, \
+            forceIsometricPosition2d, isometricProjectedAxis, mapKspace, mapWspace, \
+            mapAbyssal, mapVoid, withGates, withMoons, withThirdParty, withIcebelts, \
+            withTriglavianStatus, withJoveObservatories, withSpecialOre, hash) \
+            VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            rusqlite::params![
+                fingerprint.sde_build,
+                fingerprint.language,
+                fingerprint.force_isometric_position_2d,
+                format!("{:?}", fingerprint.isometric_projected_axis),
+                fingerprint.map_kspace,
+                fingerprint.map_wspace,
+                fingerprint.map_abyssal,
+                fingerprint.map_void,
+                fingerprint.with_gates,
+                fingerprint.with_moons,
+                fingerprint.with_third_party,
+                fingerprint.with_icebelts,
+                fingerprint.with_triglavian_status,
+                fingerprint.with_jove_observatories,
+                fingerprint.with_special_ore,
+                hash,
+            ],
+        )?;
+        Ok(())
     }
 }
 
@@ -4177,6 +4249,204 @@ mod tests {
             .unwrap();
         assert_eq!(dest_gate, 50000002);
         assert_eq!(dest_system, 30002187);
+    }
+
+    #[tokio::test]
+    async fn build_database_writes_fingerprint_row() {
+        let dir = TempSdeDir::new(
+            "build_database_fingerprint",
+            &[
+                (
+                    "categories.jsonl",
+                    "{\"_key\": 6, \"name\": {\"en\": \"Celestial\"}, \"published\": true}\n",
+                ),
+                (
+                    "groups.jsonl",
+                    "{\"_key\": 6, \"categoryID\": 6, \"name\": {\"en\": \"Sun\"}, \"anchorable\": false}\n\
+                     {\"_key\": 7, \"categoryID\": 6, \"name\": {\"en\": \"Frigate\"}, \"anchorable\": false}\n",
+                ),
+                (
+                    "races.jsonl",
+                    "{\"_key\": 1, \"name\": {\"en\": \"Caldari\"}}\n",
+                ),
+                (
+                    "npcCorporations.jsonl",
+                    "{\"_key\": 1000004, \"name\": {\"en\": \"CBD Corporation\"}, \
+                     \"tickerName\": \"CBD\", \"deleted\": false, \"extent\": \"L\", \
+                     \"hasPlayerPersonnelManager\": false, \"initialPrice\": 0, \"memberLimit\": -1, \
+                     \"minSecurity\": 0.0, \"minimumJoinStanding\": 1, \
+                     \"sendCharTerminationMessage\": true, \"shares\": 1000, \"size\": \"L\", \
+                     \"taxRate\": 0.0, \"uniqueName\": true, \"iconID\": 500, \"raceID\": 1}\n",
+                ),
+                (
+                    "factions.jsonl",
+                    "{\"_key\": 500001, \"name\": {\"en\": \"Caldari State\"}, \"iconID\": 600, \
+                     \"sizeFactor\": 3.0, \"uniqueName\": true, \"description\": {\"en\": \"x\"}, \
+                     \"corporationID\": 1000004, \"memberRaces\": [1]}\n",
+                ),
+                ("npcCorporationDivisions.jsonl", ""),
+                ("stationServices.jsonl", ""),
+                ("stationOperations.jsonl", ""),
+                ("npcStations.jsonl", ""),
+                (
+                    "mapRegions.jsonl",
+                    "{\"_key\": 10000002, \"name\": {\"en\": \"The Forge\"}, \"nebulaID\": 5, \
+                     \"position\": {\"x\": 100.0, \"y\": 200.0, \"z\": 300.0}}\n",
+                ),
+                (
+                    "mapConstellations.jsonl",
+                    "{\"_key\": 20000020, \"name\": {\"en\": \"Kimotoro\"}, \"regionID\": 10000002, \
+                     \"position\": {\"x\": 110.0, \"y\": 210.0, \"z\": 310.0}}\n",
+                ),
+                (
+                    "mapSolarSystems.jsonl",
+                    "{\"_key\": 30000142, \"name\": {\"en\": \"Jita\"}, \"constellationID\": 20000020, \
+                     \"radius\": 999999999.0, \"position\": {\"x\": -100.0, \"y\": 200.0, \"z\": -300.0}, \
+                     \"securityStatus\": 0.9459, \"securityClass\": \"B\", \"corridor\": false, \
+                     \"fringe\": false, \"hub\": true, \"international\": true, \"regional\": true, \
+                     \"luminosity\": 0.049, \"position2D\": {\"x\": 12.5, \"y\": -7.25}}\n\
+                     {\"_key\": 30002187, \"name\": {\"en\": \"Perimeter\"}, \"constellationID\": 20000020, \
+                     \"radius\": 1.0, \"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}, \
+                     \"securityStatus\": 0.9}\n",
+                ),
+                (
+                    "mapStargates.jsonl",
+                    "{\"_key\": 50000001, \"solarSystemID\": 30000142, \"typeID\": 16, \
+                     \"position\": {\"x\": 1.0, \"y\": 2.0, \"z\": 3.0}, \
+                     \"destination\": {\"stargateID\": 50000002, \"solarSystemID\": 30002187}}\n\
+                     {\"_key\": 50000002, \"solarSystemID\": 30002187, \"typeID\": 16, \
+                     \"position\": {\"x\": 4.0, \"y\": 5.0, \"z\": 6.0}, \
+                     \"destination\": {\"stargateID\": 50000001, \"solarSystemID\": 30000142}}\n",
+                ),
+                (
+                    "mapStars.jsonl",
+                    "{\"_key\": 40000001, \"radius\": 63350000, \"solarSystemID\": 30000142, \
+                     \"statistics\": {\"age\": 4.5e17, \"life\": 6.9e17, \"luminosity\": 0.01575, \
+                     \"spectralClass\": \"K2 V\", \"temperature\": 4567.0}, \"typeID\": 3000}\n",
+                ),
+                (
+                    "mapPlanets.jsonl",
+                    "{\"_key\": 40000002, \"celestialIndex\": 1, \
+                     \"position\": {\"x\": 161891117336.0, \"y\": 21288951986.0, \"z\": -73529712226.0}, \
+                     \"radius\": 5060000, \"solarSystemID\": 30000142, \
+                     \"statistics\": {\"locked\": false}, \"typeID\": 11}\n",
+                ),
+                (
+                    "mapMoons.jsonl",
+                    "{\"_key\": 40000004, \"solarSystemID\": 30000142, \"orbitIndex\": 1, \
+                     \"orbitID\": 40000002, \"typeID\": 12, \"radius\": 100000, \
+                     \"position\": {\"x\": 1.0, \"y\": 2.0, \"z\": 3.0}}\n",
+                ),
+                (
+                    "types.jsonl",
+                    "{\"_key\": 3000, \"groupID\": 6, \"name\": {\"en\": \"Yellow G5 (ffcc00)\"}, \
+                     \"iconID\": 100, \"published\": true, \"volume\": 0.0}\n\
+                     {\"_key\": 16, \"groupID\": 7, \"name\": {\"en\": \"Stargate\"}, \"published\": true}\n\
+                     {\"_key\": 11, \"groupID\": 7, \"name\": {\"en\": \"Planet (Barren)\"}, \"published\": true}\n\
+                     {\"_key\": 12, \"groupID\": 7, \"name\": {\"en\": \"Moon\"}, \"published\": true}\n",
+                ),
+            ],
+        );
+
+        let mut connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        let mut config = ParserConfig::default();
+        config.language = "en".to_string();
+        config.force_isometric_position_2d = true;
+        config.isometric_projected_axis = ProjectedAxis::Z;
+        config.map_kspace = true;
+        config.map_wspace = false;
+        config.map_abyssal = false;
+        config.map_void = false;
+        config.with_gates = true;
+        config.with_moons = true;
+        config.with_third_party = false;
+        let parser = Parser::new(&dir.path, config);
+        let client = reqwest::Client::new();
+
+        parser
+            .build_database(&mut connection, &client, "http://example.invalid/", Some("3458726"))
+            .await
+            .unwrap();
+
+        let (
+            sde_build,
+            language,
+            force_iso,
+            axis,
+            kspace,
+            wspace,
+            abyssal,
+            void,
+            gates,
+            moons,
+            third_party,
+            icebelts,
+            trig,
+            jove,
+            ore,
+            hash,
+        ): (
+            Option<String>,
+            String,
+            bool,
+            String,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            Option<bool>,
+            Option<bool>,
+            Option<bool>,
+            Option<bool>,
+            String,
+        ) = connection
+            .query_row(
+                "SELECT sdeBuild, language, forceIsometricPosition2d, isometricProjectedAxis, \
+                 mapKspace, mapWspace, mapAbyssal, mapVoid, withGates, withMoons, \
+                 withThirdParty, withIcebelts, withTriglavianStatus, withJoveObservatories, \
+                 withSpecialOre, hash FROM sdeFingerprint WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
+                        row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?,
+                        row.get(10)?, row.get(11)?, row.get(12)?, row.get(13)?, row.get(14)?,
+                        row.get(15)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(sde_build, Some("3458726".to_string()));
+        assert_eq!(language, "en");
+        assert!(force_iso);
+        assert_eq!(axis, "Z");
+        assert!(kspace);
+        assert!(!wspace);
+        assert!(!abyssal);
+        assert!(!void);
+        assert!(gates);
+        assert!(moons);
+        // with_third_party was false, so the four CommunityConfig flags
+        // were never consulted -- confirms they're recorded as NULL,
+        // not e.g. silently defaulted to false.
+        assert!(!third_party);
+        assert_eq!(icebelts, None);
+        assert_eq!(trig, None);
+        assert_eq!(jove, None);
+        assert_eq!(ore, None);
+        assert_eq!(hash.len(), 64);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // A second build_database() call would violate sdeFingerprint's
+        // singleton PRIMARY KEY -- out of scope for this test (it would
+        // need a second full parse_data() run first), but confirms the
+        // schema-level guarantee is what protects against more than one
+        // row existing, not application logic that could be bypassed.
     }
 
     #[test]

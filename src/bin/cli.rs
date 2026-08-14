@@ -152,8 +152,23 @@ async fn main() -> anyhow::Result<()> {
         with_third_party,
     };
     let sde_parser = parser::Parser::new(&sde_dir, parser_config);
+    // Read back the build number update_as_needed() just wrote (or
+    // confirmed unchanged) to sde-{SDE_VARIANT}.build, purely to record
+    // it in sdeFingerprint -- build_database() doesn't otherwise need
+    // it. `Ok` and not `.context(...)`-wrapped into an early return: a
+    // database with no recorded build number (sdeFingerprint.sdeBuild
+    // = NULL) is still valid, so a read failure here shouldn't abort
+    // the whole build.
+    let build_number = std::fs::read_to_string(data_dir.join(format!("sde-{SDE_VARIANT}.build")))
+        .ok()
+        .map(|s| s.trim().to_string());
     let _summary = sde_parser
-        .build_database(&mut connection, &client, MAPS_URL)
+        .build_database(
+            &mut connection,
+            &client,
+            MAPS_URL,
+            build_number.as_deref(),
+        )
         .await
         .context("building the database")?;
     println!("sde: Parse complete");

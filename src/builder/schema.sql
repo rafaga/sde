@@ -561,3 +561,42 @@ CREATE TABLE npcStations (
 CREATE INDEX idx_npcStations_solarSystemId ON npcStations(solarSystemId);
 CREATE INDEX idx_npcStations_operationId ON npcStations(operationId);
 CREATE INDEX idx_npcStations_ownerId ON npcStations(ownerId);
+
+-- ------------------------------------------------------------
+-- Fingerprint of the settings this specific database was built with
+-- ------------------------------------------------------------
+-- Tamper-evidence, not tamper-proof: the hash has no secret key (there
+-- is no build pipeline distinct from the end user here -- anyone runs
+-- sde-builder against their own copy), so this detects unintentional
+-- or careless edits after the fact, not a deliberate one by someone
+-- with access to this crate's public source. See
+-- objects::SdeFingerprint's docstring for the detail. Enforced as a
+-- single row via `id INTEGER PRIMARY KEY CHECK (id = 1)`: a database
+-- has exactly one build history, not several.
+CREATE TABLE sdeFingerprint (
+  id                     INTEGER PRIMARY KEY CHECK (id = 1),
+  -- Nullable: the caller that built this database may not have had an
+  -- SDE build number available (e.g. a library consumer of
+  -- Parser::build_database that isn't going through sde_index at all).
+  sdeBuild               TEXT,
+  language               TEXT NOT NULL,
+  forceIsometricPosition2d INTEGER NOT NULL CHECK (forceIsometricPosition2d IN (0,1)),
+  isometricProjectedAxis TEXT NOT NULL,
+  mapKspace              INTEGER NOT NULL CHECK (mapKspace IN (0,1)),
+  mapWspace              INTEGER NOT NULL CHECK (mapWspace IN (0,1)),
+  mapAbyssal             INTEGER NOT NULL CHECK (mapAbyssal IN (0,1)),
+  mapVoid                INTEGER NOT NULL CHECK (mapVoid IN (0,1)),
+  withGates              INTEGER NOT NULL CHECK (withGates IN (0,1)),
+  withMoons              INTEGER NOT NULL CHECK (withMoons IN (0,1)),
+  withThirdParty         INTEGER NOT NULL CHECK (withThirdParty IN (0,1)),
+  -- NULL when withThirdParty = 0 -- these four are never consulted in
+  -- that case (see CommunityConfig), so there's nothing to record.
+  withIcebelts           INTEGER CHECK (withIcebelts IN (0,1)),
+  withTriglavianStatus   INTEGER CHECK (withTriglavianStatus IN (0,1)),
+  withJoveObservatories  INTEGER CHECK (withJoveObservatories IN (0,1)),
+  withSpecialOre         INTEGER CHECK (withSpecialOre IN (0,1)),
+  -- SHA-256 hex digest (64 lowercase hex chars) over every column
+  -- above -- see objects::SdeFingerprint::to_hash_input for the exact
+  -- format.
+  hash                   TEXT NOT NULL CHECK (length(hash) = 64)
+) STRICT;

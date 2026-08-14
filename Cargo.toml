@@ -73,6 +73,7 @@ profile-with-tracy = ["dep:tracing-subscriber", "dep:tracing-tracy"]
 kdtree = "0.8"
 rstar = "0.13"
 rusqlite = { version = "0.40", features = ["bundled", "backup", "blob", "array"] }
+sha2 = "0.10"
 tracing = "0.1"
 
 # --- Dependencias opcionales, solo activas con la feature "builder" ---
