@@ -4365,7 +4365,12 @@ mod tests {
         let client = reqwest::Client::new();
 
         parser
-            .build_database(&mut connection, &client, "http://example.invalid/", Some("3458726"))
+            .build_database(
+                &mut connection,
+                &client,
+                "http://example.invalid/",
+                Some("3458726"),
+            )
             .await
             .unwrap();
 
@@ -4412,9 +4417,21 @@ mod tests {
                 [],
                 |row| {
                     Ok((
-                        row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
-                        row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?,
-                        row.get(10)?, row.get(11)?, row.get(12)?, row.get(13)?, row.get(14)?,
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                        row.get(10)?,
+                        row.get(11)?,
+                        row.get(12)?,
+                        row.get(13)?,
+                        row.get(14)?,
                         row.get(15)?,
                     ))
                 },

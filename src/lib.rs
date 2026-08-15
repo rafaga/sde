@@ -1003,6 +1003,7 @@ impl<'a> SdeManager<'a> {
     /// static schema) -- same "no such table" pattern as
     /// [`Self::get_abstract_systems`] against a database without
     /// `mapAbstractSystems`.
+    #[tracing::instrument(skip(self))]
     pub fn get_fingerprint(&self) -> Result<Option<(SdeFingerprint, bool)>, Error> {
         let connection = self.get_standart_connection()?;
 

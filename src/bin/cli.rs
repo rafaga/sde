@@ -163,12 +163,7 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .map(|s| s.trim().to_string());
     let _summary = sde_parser
-        .build_database(
-            &mut connection,
-            &client,
-            MAPS_URL,
-            build_number.as_deref(),
-        )
+        .build_database(&mut connection, &client, MAPS_URL, build_number.as_deref())
         .await
         .context("building the database")?;
     println!("sde: Parse complete");

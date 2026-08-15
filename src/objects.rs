@@ -705,7 +705,11 @@ impl SdeFingerprint {
 
     /// SHA-256 hex digest of [`Self::to_hash_input`].
     pub fn hash(&self) -> String {
-        format!("{:x}", Sha256::digest(self.to_hash_input().as_bytes()))
+        let digest = Sha256::digest(self.to_hash_input().as_bytes());
+        digest
+            .iter()
+            .map(|byte| format!("{:02x}", byte))
+            .collect::<String>()
     }
 }
 
