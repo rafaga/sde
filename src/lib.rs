@@ -12,10 +12,18 @@ use crate::objects::{
 };
 use objects::EveRegionArea;
 use rusqlite::ToSql;
-use rusqlite::{Connection, Error, OpenFlags, params, vtab::array};
+use rusqlite::{Connection, OpenFlags, params, vtab::array};
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
+use std::fs::File;
+use std::io::Read;
+
+/// Crate-wide error type. See `src/error.rs` for the detail on why
+/// `SdeManager`'s read methods and, with the `builder` feature,
+/// everything under `builder` all share this one type now.
+mod error;
+pub use error::Error;
 
 /// Module that has Data object abstractions to fill with the database data.
 pub mod objects;
@@ -24,6 +32,8 @@ pub mod objects;
 /// default). See `src/builder/mod.rs` for the detail.
 #[cfg(feature = "builder")]
 pub mod builder;
+
+const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 
 /// Manages the process of reading SDE data and putting into different data structures
 /// for easy in-memory access.
@@ -49,11 +59,25 @@ impl<'a> SdeManager<'a> {
     /// `universe`. `invert_coordinates` starts `true`.
     #[tracing::instrument]
     pub fn new(path: &Path, factor: f64) -> SdeManager<'_> {
-        SdeManager {
-            path,
-            universe: Universe::new(factor),
-            factor, // 10000000000000
-            invert_coordinates: true,
+        if Self::has_sqlite_header(path){
+            SdeManager {
+                path,
+                universe: Universe::new(factor),
+                factor, // 10000000000000
+                invert_coordinates: true,
+            }
+        }
+        else {
+            panic!("The file {} is not a valid SQLite database", path.display());
+        }
+    }
+
+    fn has_sqlite_header(path: &Path) -> bool {
+        let mut file = File::open(path).unwrap();
+        let mut buf = [0u8; 16];
+        match file.read_exact(&mut buf) {
+            Ok(()) => &buf == SQLITE_HEADER,
+            Err(_) => false, // archivo demasiado pequeño (ej. vacío)
         }
     }
 
@@ -414,12 +438,14 @@ impl<'a> SdeManager<'a> {
     /// `mapAbstractSystems` doesn't exist at all in a database built
     /// without `--with-third-party` (or, equivalently,
     /// `ParserConfig.with_third_party = false`) -- this method returns
-    /// `Err(rusqlite::Error::SqliteFailure(..., "no such table:
-    /// mapAbstractSystems"))` in that case, not a panic. There's
-    /// currently no way to check for this ahead of the call other than
-    /// handling that `Err`; a fingerprint of what a given database
-    /// actually contains, queryable without hitting this error, is
-    /// planned but not implemented yet.
+    /// an `Err(`[`Error`]`)` in that case, not a panic, whose
+    /// `std::error::Error::source()` is a
+    /// `rusqlite::Error::SqliteFailure(..., "no such table:
+    /// mapAbstractSystems")`. There's currently no way to check for
+    /// this ahead of the call other than handling that `Err`; a
+    /// fingerprint of what a given database actually contains,
+    /// queryable without hitting this error, is planned but not
+    /// implemented yet.
     #[tracing::instrument(skip(self))]
     pub fn get_abstract_systems(
         &self,
@@ -524,10 +550,10 @@ impl<'a> SdeManager<'a> {
     /// Same as [`Self::get_connections`], but for the abstract map
     /// (`mapAbstractSystems`), optionally filtered by region.
     ///
-    /// Same caveat as [`Self::get_abstract_systems`]: fails with
-    /// `Err(rusqlite::Error::SqliteFailure(..., "no such table:
-    /// mapAbstractSystems"))`, not a panic, against a database built
-    /// without `--with-third-party`.
+    /// Same caveat as [`Self::get_abstract_systems`]: fails with an
+    /// `Err(`[`Error`]`)` sourced from `rusqlite::Error::SqliteFailure(...,
+    /// "no such table: mapAbstractSystems")`, not a panic, against a
+    /// database built without `--with-third-party`.
     #[tracing::instrument(skip(self))]
     pub fn get_abstract_connections(
         &self,

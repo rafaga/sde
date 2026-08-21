@@ -9,7 +9,7 @@
 //! (preserving `maps/`, see [`super::manifest::manifest_path`]) is
 //! `builder::extract`'s job.
 
-use crate::builder::BuilderError;
+use crate::Error;
 use crate::builder::http;
 use reqwest::Client;
 use std::path::Path;
@@ -88,7 +88,7 @@ pub async fn update_as_needed(
     data_dir: &Path,
     sde_url_base: &str,
     variant: &str,
-) -> Result<bool, BuilderError> {
+) -> Result<bool, Error> {
     std::fs::create_dir_all(data_dir)?;
 
     let build_file = data_dir.join(format!("sde-{variant}.build"));

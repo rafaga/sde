@@ -5,7 +5,7 @@
 //! Async, and able to run many checks in parallel (`fingerprint_many`)
 //! instead of one at a time.
 
-use crate::builder::BuilderError;
+use crate::Error;
 use crate::builder::manifest::MapFingerprint;
 use futures::StreamExt;
 use reqwest::Client;
@@ -101,13 +101,10 @@ pub async fn fingerprint_many(
 /// [`crate::builder::sde_index`]). Unlike [`download`], it doesn't write
 /// anything to disk nor report progress.
 #[tracing::instrument]
-pub async fn fetch_text(client: &Client, url: &str) -> Result<String, BuilderError> {
+pub async fn fetch_text(client: &Client, url: &str) -> Result<String, Error> {
     let response = client.get(url).send().await?;
     if !response.status().is_success() {
-        return Err(BuilderError::HttpStatus {
-            url: url.to_string(),
-            status: response.status().as_u16(),
-        });
+        return Err(Error::http_status(url, response.status().as_u16()));
     }
     Ok(response.text().await?)
 }
@@ -121,13 +118,10 @@ pub async fn download(
     url: &str,
     destination: &Path,
     mut on_progress: impl FnMut(DownloadProgress),
-) -> Result<u64, BuilderError> {
+) -> Result<u64, Error> {
     let response = client.get(url).send().await?;
     if !response.status().is_success() {
-        return Err(BuilderError::HttpStatus {
-            url: url.to_string(),
-            status: response.status().as_u16(),
-        });
+        return Err(Error::http_status(url, response.status().as_u16()));
     }
     let total_bytes = response.content_length();
 
@@ -224,7 +218,10 @@ mod tests {
         let result = fetch_text(&client, &url).await;
         assert!(matches!(
             result,
-            Err(BuilderError::HttpStatus { status: 404, .. })
+            Err(err) if matches!(
+                err.kind(),
+                crate::error::ErrorKind::HttpStatus { status: 404, .. }
+            )
         ));
     }
 
@@ -298,7 +295,10 @@ mod tests {
         let result = download(&client, &url, &destination, |_| {}).await;
         assert!(matches!(
             result,
-            Err(BuilderError::HttpStatus { status: 500, .. })
+            Err(err) if matches!(
+                err.kind(),
+                crate::error::ErrorKind::HttpStatus { status: 500, .. }
+            )
         ));
     }
 }

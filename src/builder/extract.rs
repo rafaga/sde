@@ -6,20 +6,20 @@
 //! itself (version 8.x), is used here -- no auxiliary crate like
 //! `zip-extensions` is needed.
 
-use crate::builder::BuilderError;
+use crate::Error;
 use std::path::Path;
 
 /// Decompresses `zip_path` into `destination` (creates it if it doesn't
 /// exist). Overwrites existing files. A corrupt/invalid zip
-/// propagates as an `Err` (via `BuilderError::Zip`) instead of returning
-/// `false` -- consistent with the rest of this module (`extract_map_data`
-/// is the only function that distinguishes "recoverable failure, retry
-/// the download" from "genuine error" with a `bool`, because there it's
-/// part of an explicit retry flow; here there's no possible retry inside
-/// this function, so a direct `Err` is clearer than a `bool` the caller
-/// would have to interpret).
+/// propagates as an `Err` (wrapping the underlying `zip` crate error)
+/// instead of returning `false` -- consistent with the rest of this
+/// module (`extract_map_data` is the only function that distinguishes
+/// "recoverable failure, retry the download" from "genuine error" with
+/// a `bool`, because there it's part of an explicit retry flow; here
+/// there's no possible retry inside this function, so a direct `Err` is
+/// clearer than a `bool` the caller would have to interpret).
 #[tracing::instrument]
-pub fn unzip(zip_path: &Path, destination: &Path) -> Result<(), BuilderError> {
+pub fn unzip(zip_path: &Path, destination: &Path) -> Result<(), Error> {
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
     archive.extract(destination)?;
@@ -37,7 +37,7 @@ pub fn unzip(zip_path: &Path, destination: &Path) -> Result<(), BuilderError> {
 /// valid case -- e.g. the first time the builder runs, before
 /// `community::process()` has downloaded any map).
 #[tracing::instrument]
-pub fn clean_except_maps(sde_dir: &Path) -> Result<(), BuilderError> {
+pub fn clean_except_maps(sde_dir: &Path) -> Result<(), Error> {
     if !sde_dir.exists() {
         return Ok(());
     }
@@ -60,7 +60,7 @@ pub fn clean_except_maps(sde_dir: &Path) -> Result<(), BuilderError> {
 /// `zip_path` into it -- a direct composition of [`clean_except_maps`]
 /// followed by [`unzip`], in that order.
 #[tracing::instrument]
-pub fn prepare_sde_directory(zip_path: &Path, sde_dir: &Path) -> Result<(), BuilderError> {
+pub fn prepare_sde_directory(zip_path: &Path, sde_dir: &Path) -> Result<(), Error> {
     clean_except_maps(sde_dir)?;
     unzip(zip_path, sde_dir)?;
     Ok(())
@@ -125,7 +125,10 @@ mod tests {
         let destination = dir.join("out");
 
         let result = unzip(&bad_zip, &destination);
-        assert!(matches!(result, Err(BuilderError::Zip(_))));
+        assert!(matches!(
+            result,
+            Err(err) if matches!(err.kind(), crate::error::ErrorKind::Zip(_))
+        ));
     }
 
     #[test]

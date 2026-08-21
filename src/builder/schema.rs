@@ -88,7 +88,7 @@ mod tests {
         assert_eq!(existing, expected);
         // Extra anchor: if this number changes, the DDL likely changed
         // too, and it's worth reviewing the rest of this test file.
-        assert_eq!(expected.len(), 30);
+        assert_eq!(expected.len(), 31);
     }
 
     #[test]
