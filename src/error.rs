@@ -44,6 +44,12 @@ pub(crate) enum ErrorKind {
     /// `SdeManager`'s read path is the only thing compiled by default.
     Sqlite(rusqlite::Error),
 
+    /// The database file doesn't have a valid SQLite header (the first 16
+    /// bytes of the file aren't `SQLite format 3\0`), so it can't be 
+    /// opened as a SQLite database. This is a fatal error: the crate 
+    /// can't read any SDE data from a file that isn't a valid SQLite database.    
+    InvalidDatabase(std::path::PathBuf),
+
     /// I/O error (reading/writing a file on disk).
     #[cfg(feature = "builder")]
     Io(std::io::Error),
@@ -78,6 +84,13 @@ pub(crate) enum ErrorKind {
 }
 
 impl Error {
+    /// Builds an [`ErrorKind::InvalidDatabase`] error: the database file
+    /// at `path` doesn't have a valid SQLite header, so it can't be
+    /// opened as a SQLite database.
+    pub(crate) fn invalid_database(path: std::path::PathBuf) -> Self {
+        Error(ErrorKind::InvalidDatabase(path))
+    }
+
     /// Builds an [`ErrorKind::Data`] error: an SDE record that read and
     /// parsed fine but doesn't have the shape a parser needs (a
     /// required field is missing, or is of the wrong type).
@@ -109,6 +122,7 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
+            ErrorKind::InvalidDatabase(path) => write!(f, "invalid SQLite database: {}", path.display()),
             ErrorKind::Sqlite(err) => write!(f, "SQLite error: {err}"),
             #[cfg(feature = "builder")]
             ErrorKind::Io(err) => write!(f, "I/O error: {err}"),
@@ -131,6 +145,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.0 {
+            ErrorKind::InvalidDatabase(_) => None,
             ErrorKind::Sqlite(err) => Some(err),
             #[cfg(feature = "builder")]
             ErrorKind::Io(err) => Some(err),

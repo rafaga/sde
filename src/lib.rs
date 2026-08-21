@@ -58,17 +58,17 @@ impl<'a> SdeManager<'a> {
     /// [`objects::Universe::new`] to build the initial, empty
     /// `universe`. `invert_coordinates` starts `true`.
     #[tracing::instrument]
-    pub fn new(path: &Path, factor: f64) -> SdeManager<'_> {
+    pub fn new(path: &Path, factor: f64) -> Result<SdeManager<'_>, Error> {
         if Self::has_sqlite_header(path){
-            SdeManager {
+            Ok(SdeManager {
                 path,
                 universe: Universe::new(factor),
                 factor, // 10000000000000
                 invert_coordinates: true,
-            }
+            })
         }
         else {
-            panic!("The file {} is not a valid SQLite database", path.display());
+            Err(Error::invalid_database(path.to_path_buf()))
         }
     }
 

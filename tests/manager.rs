@@ -171,7 +171,7 @@ impl Fixture {
     }
 
     fn manager(&self) -> SdeManager<'_> {
-        SdeManager::new(&self.path, FACTOR)
+        SdeManager::new(&self.path, FACTOR).unwrap()
     }
 }
 
