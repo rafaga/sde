@@ -298,10 +298,7 @@ pub fn extract_map_data(
     config: &CommunityConfig,
 ) -> Result<bool, Error> {
     if !map_path.exists() {
-        eprintln!(
-            "community: {} doesn't exist, skipping parsing",
-            map_path.display()
-        );
+        tracing::warn!("{} doesn't exist, skipping parsing", map_path.display());
         return Ok(false);
     }
 
@@ -309,7 +306,7 @@ pub fn extract_map_data(
     let doc = match roxmltree::Document::parse(&content) {
         Ok(doc) => doc,
         Err(err) => {
-            eprintln!("community: error parsing {} - {err}", map_path.display());
+            tracing::warn!("error parsing {} - {err}", map_path.display());
             return Ok(false);
         }
     };
@@ -325,8 +322,8 @@ pub fn extract_map_data(
         };
         match raw_id.get(3..).and_then(|s| s.parse::<i64>().ok()) {
             Some(id) => icebelt_ids.push(id),
-            None => eprintln!(
-                "community: unexpected icebelt id '{raw_id}' in {}, skipping",
+            None => tracing::warn!(
+                "unexpected icebelt id '{raw_id}' in {}, skipping",
                 map_path.display()
             ),
         }
@@ -370,8 +367,8 @@ pub fn extract_map_data(
             .zip(raw_x.parse::<f64>().ok())
             .zip(raw_y.parse::<f64>().ok());
         let Some(((id, x), y)) = parsed else {
-            eprintln!(
-                "community: unexpected <use id='{raw_id}' x='{raw_x}' y='{raw_y}'> in {}, skipping",
+            tracing::warn!(
+                "unexpected <use id='{raw_id}' x='{raw_x}' y='{raw_y}'> in {}, skipping",
                 map_path.display()
             );
             continue;
@@ -450,7 +447,7 @@ pub async fn process(
             if needs_download {
                 match http::download(client, &map_url, &map_path, |_| {}).await {
                     Ok(size) if size > 100 => {
-                        println!("community: map downloaded for {region_name}");
+                        tracing::info!("map downloaded for {region_name}");
                         if let Some(fp) = &remote_fingerprint {
                             manifest.insert(region_name.clone(), fp.clone());
                             manifest_changed = true;
@@ -458,24 +455,24 @@ pub async fn process(
                     }
                     Ok(_) => {
                         let _ = std::fs::remove_file(&map_path);
-                        eprintln!("community: invalid data received for {region_name}");
+                        tracing::warn!("invalid data received for {region_name}");
                     }
                     Err(err) => {
                         let _ = std::fs::remove_file(&map_path);
-                        eprintln!("community: error downloading the map for {region_name}: {err}");
+                        tracing::warn!("error downloading the map for {region_name}: {err}");
                     }
                 }
             } else {
-                println!("community: {region_name} unchanged, skipping download.");
+                tracing::info!("{region_name} unchanged, skipping download.");
             }
 
-            println!("community: parsing data for {region_name}");
+            tracing::info!("parsing data for {region_name}");
             if extract_map_data(connection, &map_path, config)? {
                 break;
             }
             needs_download = true;
             let _ = std::fs::remove_file(&map_path);
-            eprintln!("community: invalid data for {region_name}, retrying download ({attempt}).");
+            tracing::warn!("invalid data for {region_name}, retrying download ({attempt}).");
         }
     }
 

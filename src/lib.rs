@@ -14,10 +14,10 @@ use objects::EveRegionArea;
 use rusqlite::ToSql;
 use rusqlite::{Connection, OpenFlags, params, vtab::array};
 use std::collections::HashMap;
-use std::path::Path;
-use std::rc::Rc;
 use std::fs::File;
 use std::io::Read;
+use std::path::Path;
+use std::rc::Rc;
 
 /// Crate-wide error type. See `src/error.rs` for the detail on why
 /// `SdeManager`'s read methods and, with the `builder` feature,
@@ -59,21 +59,20 @@ impl<'a> SdeManager<'a> {
     /// `universe`. `invert_coordinates` starts `true`.
     #[tracing::instrument]
     pub fn new(path: &Path, factor: f64) -> Result<SdeManager<'_>, Error> {
-        if Self::has_sqlite_header(path){
+        if Self::has_sqlite_header(path) {
             Ok(SdeManager {
                 path,
                 universe: Universe::new(factor),
                 factor, // 10000000000000
                 invert_coordinates: true,
             })
-        }
-        else {
+        } else {
             Err(Error::invalid_database(path.to_path_buf()))
         }
     }
 
     fn has_sqlite_header(path: &Path) -> bool {
-        if !path.exists()  { 
+        if !path.exists() {
             return false;
         }
         let mut file = File::open(path).unwrap();

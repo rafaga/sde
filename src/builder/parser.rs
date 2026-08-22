@@ -531,7 +531,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} types");
+            tracing::info!("Parsed {count} types");
         }
         Ok(count)
     }
@@ -559,7 +559,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} categories");
+            tracing::info!("Parsed {count} categories");
         }
         Ok(count)
     }
@@ -600,7 +600,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} groups");
+            tracing::info!("Parsed {count} groups");
         }
         Ok(count)
     }
@@ -626,7 +626,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} races");
+            tracing::info!("Parsed {count} races");
         }
         Ok(count)
     }
@@ -655,7 +655,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} npcCorporationDivisions");
+            tracing::info!("Parsed {count} npcCorporationDivisions");
         }
         Ok(count)
     }
@@ -815,7 +815,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} npcCorporations");
+            tracing::info!("Parsed {count} npcCorporations");
         }
         Ok(count)
     }
@@ -888,7 +888,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} factions");
+            tracing::info!("Parsed {count} factions");
         }
         Ok(count)
     }
@@ -932,7 +932,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} regions");
+            tracing::info!("Parsed {count} regions");
         }
         Ok(count)
     }
@@ -972,7 +972,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} constellations");
+            tracing::info!("Parsed {count} constellations");
         }
         Ok(count)
     }
@@ -1160,7 +1160,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} solar systems");
+            tracing::info!("Parsed {count} solar systems");
         }
         Ok(count)
     }
@@ -1247,7 +1247,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} stargates");
+            tracing::info!("Parsed {count} stargates");
         }
         Ok(count)
     }
@@ -1330,7 +1330,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} stars");
+            tracing::info!("Parsed {count} stars");
         }
         Ok(count)
     }
@@ -1409,7 +1409,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} planets");
+            tracing::info!("Parsed {count} planets");
         }
         Ok(count)
     }
@@ -1491,7 +1491,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} moons");
+            tracing::info!("Parsed {count} moons");
         }
         Ok(count)
     }
@@ -1536,7 +1536,7 @@ impl Parser {
             [],
         )?;
         if self.config.verbose {
-            println!("Parsed {count} system connections");
+            tracing::info!("Parsed {count} system connections");
         }
         Ok(count)
     }
@@ -1564,7 +1564,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} station services");
+            tracing::info!("Parsed {count} station services");
         }
         Ok(count)
     }
@@ -1651,7 +1651,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} station operations");
+            tracing::info!("Parsed {count} station operations");
         }
         Ok(count)
     }
@@ -1763,7 +1763,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} NPC stations");
+            tracing::info!("Parsed {count} NPC stations");
         }
         Ok(count)
     }

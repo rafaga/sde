@@ -57,6 +57,7 @@ builder = [
     "dep:serde_json",
     "dep:clap",
     "dep:anyhow",
+    "dep:tracing-subscriber",
 ]
 # Enables live profiling with the Tracy profiler (https://github.com/wolfpld/tracy)
 # for the `sde-builder` CLI: `cargo run --bin sde-builder --features builder,profile-with-tracy -- build`,
@@ -67,7 +68,7 @@ builder = [
 # database-construction pipeline) in the same trace for free, via Cargo's
 # feature unification on the shared `tracing` dependency -- no extra wiring
 # needed on either side.
-profile-with-tracy = ["dep:tracing-subscriber", "dep:tracing-tracy"]
+profile-with-tracy = ["dep:tracing-tracy"]
 
 [dependencies]
 kdtree = "0.8"

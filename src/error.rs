@@ -45,8 +45,8 @@ pub(crate) enum ErrorKind {
     Sqlite(rusqlite::Error),
 
     /// The database file doesn't have a valid SQLite header (the first 16
-    /// bytes of the file aren't `SQLite format 3\0`), so it can't be 
-    /// opened as a SQLite database. This is a fatal error: the crate 
+    /// bytes of the file aren't `SQLite format 3\0`), so it can't be
+    /// opened as a SQLite database. This is a fatal error: the crate
     /// can't read any SDE data from a file that isn't a valid SQLite database.    
     InvalidDatabase(std::path::PathBuf),
 
@@ -122,7 +122,9 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
-            ErrorKind::InvalidDatabase(path) => write!(f, "invalid SQLite database: {}", path.display()),
+            ErrorKind::InvalidDatabase(path) => {
+                write!(f, "invalid SQLite database: {}", path.display())
+            }
             ErrorKind::Sqlite(err) => write!(f, "SQLite error: {err}"),
             #[cfg(feature = "builder")]
             ErrorKind::Io(err) => write!(f, "I/O error: {err}"),

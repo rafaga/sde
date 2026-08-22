@@ -50,15 +50,12 @@ pub async fn fingerprint(client: &Client, url: &str) -> Option<MapFingerprint> {
     let response = match client.head(url).send().await {
         Ok(resp) => resp,
         Err(err) => {
-            eprintln!("http: {url} can't be verified ({err})");
+            tracing::warn!("{url} can't be verified ({err})");
             return None;
         }
     };
     if !response.status().is_success() {
-        eprintln!(
-            "http: HEAD {url} responded with status {}",
-            response.status()
-        );
+        tracing::warn!("HEAD {url} responded with status {}", response.status());
         return None;
     }
     let headers = response.headers();
