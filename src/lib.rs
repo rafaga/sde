@@ -73,6 +73,9 @@ impl<'a> SdeManager<'a> {
     }
 
     fn has_sqlite_header(path: &Path) -> bool {
+        if !path.exists()  { 
+            return false;
+        }
         let mut file = File::open(path).unwrap();
         let mut buf = [0u8; 16];
         match file.read_exact(&mut buf) {
