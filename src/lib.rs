@@ -245,7 +245,9 @@ impl<'a> SdeManager<'a> {
         while let Some(row) = rows.next()? {
             let system_id = row.get::<usize, isize>(0)? as usize;
             let color: String = row.get(1)?;
-            result.entry(system_id).and_modify(|p| p.color = Some(color));
+            result
+                .entry(system_id)
+                .and_modify(|p| p.color = Some(color));
         }
 
         Ok(result)
@@ -582,7 +584,9 @@ impl<'a> SdeManager<'a> {
         while let Some(row) = rows.next()? {
             let system_id = row.get::<usize, isize>(0)? as usize;
             let color: String = row.get(1)?;
-            result.entry(system_id).and_modify(|p| p.color = Some(color));
+            result
+                .entry(system_id)
+                .and_modify(|p| p.color = Some(color));
         }
 
         Ok(result)
