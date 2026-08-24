@@ -515,8 +515,7 @@ impl Parser {
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
 
-        let star_colors: StarColors =
-            serde_json::from_str(include_str!("star_colors.json"))?;
+        let star_colors: StarColors = serde_json::from_str(include_str!("star_colors.json"))?;
 
         let mut count = 0usize;
         for record in iter_jsonl_records(&self.sde_directory, "types")? {
