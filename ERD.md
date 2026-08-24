@@ -133,8 +133,7 @@ erDiagram
         int typeId FK
     }
     typeStar {
-        int starTypeId PK
-        int typeId FK
+        int typeId PK, FK
         string name
     }
     mapStars {
@@ -214,7 +213,7 @@ erDiagram
     mapSolarSystems ||--|{ mapSystemConnections : "systemB"
     mapSolarSystems ||--o{ mapPlanets : ""
     invTypes ||--|{ mapPlanets : ""
-    invTypes ||--|{ typeStar : ""
+    invTypes ||--|| typeStar : ""
     mapSolarSystems ||--o{ mapStars : ""
     typeStar ||--|{ mapStars : ""
     mapSolarSystems ||--o{ mapMoons : ""

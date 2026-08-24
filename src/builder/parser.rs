@@ -1,9 +1,9 @@
 //! Populates the SDE data into the tables created by [`super::schema`].
 //!
 //! The state that needs sharing between [`Parser::parse_groups`] and
-//! [`Parser::parse_types`] -- the "Sun" group's id and the `typeId ->
-//! starTypeId` mapping -- is passed explicitly via [`StarTypeState`],
-//! rather than living on `self`.
+//! [`Parser::parse_types`] -- the "Sun" group's id and the set of
+//! `typeId`s recognized as star types -- is passed explicitly via
+//! [`StarTypeState`], rather than living on `self`.
 //!
 //! ## Contents
 //!
@@ -235,10 +235,15 @@ pub struct StarTypeState {
     /// `groupId` of the group named exactly `"Sun"`, once
     /// [`Parser::parse_groups`] finds it.
     pub sun_group_id: Option<i64>,
-    /// `typeId` (from `invTypes`) -> `starTypeId` (from `typeStar`) for
-    /// each star type inserted by [`Parser::parse_types`]. Used by
-    /// [`Parser::parse_stars`] to resolve each star's `starTypeId`.
-    pub star_type_ids: std::collections::HashMap<i64, i64>,
+    /// Every `typeId` (from `invTypes`) that [`Parser::parse_types`]
+    /// inserted into `typeStar`. Used by [`Parser::parse_stars`] to
+    /// validate a star's `typeID` before writing it directly as
+    /// `mapStars.starTypeId` -- `typeStar.typeId` is `mapStars`'
+    /// `starTypeId`'s FK target (`typeStar`'s primary key *is*
+    /// `typeId`; there's no separate, self-assigned id to translate
+    /// into), so this only needs to say "is this typeId one of them",
+    /// not map it to anything else.
+    pub star_type_ids: std::collections::HashSet<i64>,
 }
 
 /// Solar system ids that passed the `ParserConfig::system_in_scope`
@@ -311,26 +316,23 @@ impl Parser {
     // invTypes (+ typeStar for star types)
     // ---------------------------------------------------------------------
 
-    /// Inserts a row into `typeStar` and returns the `starTypeId` SQLite
-    /// assigned it (a plain `ROWID`, no `AUTOINCREMENT`, so it's read back
-    /// via a `SELECT` right after the `INSERT`).
+    /// Inserts a row into `typeStar`, keyed by `type_id` directly --
+    /// `typeStar.typeId` is its own primary key (a genuine 1:1 with
+    /// `invTypes`, confirmed by every real "Sun"-group type having a
+    /// unique `_key`/`typeId`), not a separate, self-assigned id, so
+    /// there's nothing to read back after the `INSERT`.
     fn add_star_type(
         &self,
         connection: &Connection,
         type_id: i64,
         name: &str,
         color: &str,
-    ) -> Result<i64, Error> {
+    ) -> Result<(), Error> {
         connection.execute(
             "INSERT INTO typeStar (typeId, name, color) VALUES (?1, ?2, ?3)",
             rusqlite::params![type_id, name, color],
         )?;
-        let star_type_id = connection.query_row(
-            "SELECT starTypeId FROM typeStar WHERE typeId = ?1",
-            rusqlite::params![type_id],
-            |row| row.get(0),
-        )?;
-        Ok(star_type_id)
+        Ok(())
     }
 
     /// Extracts a required integer field from the record: if the field
@@ -545,8 +547,8 @@ impl Parser {
                             ))
                         })?
                         .hex;
-                    let star_type_id = self.add_star_type(connection, id, star_name, color)?;
-                    state.star_type_ids.insert(id, star_type_id);
+                    self.add_star_type(connection, id, star_name, color)?;
+                    state.star_type_ids.insert(id);
                 }
                 // Fewer than 3 tokens: not treated as a star. See
                 // "Notable behavior" in the module's docstring.
@@ -1283,8 +1285,9 @@ impl Parser {
     /// Populates `mapStars` from `<sde_directory>/mapStars.jsonl`, filtering
     /// by `state.systems_in_scope` (populated by [`Self::parse_solar_systems`]).
     /// Requires [`Self::parse_types`] to have already run -- it needs
-    /// `star_state.star_type_ids`, the `typeId -> starTypeId` mapping --
-    /// and `mapSolarSystems`/`typeStar` to already be populated (FKs).
+    /// `star_state.star_type_ids`, the set of `typeId`s [`Self::parse_types`]
+    /// inserted into `typeStar` -- and `mapSolarSystems`/`typeStar` to
+    /// already be populated (FKs).
     /// Returns the number of rows inserted.
     ///
     /// Confirmed against a real sample of `mapStars.jsonl` (8089
@@ -1297,17 +1300,15 @@ impl Parser {
     /// `optional_bool_with_nested_fallback`) is kept anyway, in case some
     /// other SDE version does carry it.
     ///
-    /// # `starTypeId` not found
+    /// # Unrecognized `typeID`
     ///
     /// If a star's `typeID` isn't in `star_state.star_type_ids` (meaning
     /// [`Self::parse_types`] didn't detect it as belonging to the "Sun"
     /// group), that's a direct `Error::data` -- same criterion as
     /// the rest of this file: fail early with a clear message instead of
     /// letting SQLite reject a value that was going to be invalid anyway
-    /// (a raw `typeID` would almost certainly violate the
-    /// `mapStars.starTypeId -> typeStar.starTypeId` FK, since those are
-    /// completely different id sequences -- one is `invTypes.typeId`, the
-    /// other a self-assigned `ROWID` from `typeStar`).
+    /// (a raw, unrecognized `typeID` would violate the
+    /// `mapStars.starTypeId -> typeStar.typeId` FK).
     #[tracing::instrument(skip(state, star_state))]
     pub fn parse_stars(
         &self,
@@ -1332,17 +1333,18 @@ impl Parser {
             let locked = self.optional_bool_with_nested_fallback(&record, "locked", "statistics");
             let radius = self.optional_i64_with_nested_fallback(&record, "radius", "statistics");
             let type_id = self.required_i64(&record, "typeID")?;
-            let star_type_id =
-                star_state
-                    .star_type_ids
-                    .get(&type_id)
-                    .copied()
-                    .ok_or_else(|| {
-                        Error::data(format!(
-                            "star {star_id}: typeId {type_id} isn't in star_type_ids \
+            // typeStar's primary key *is* typeId (no separate,
+            // self-assigned id to translate into), so the only thing
+            // left to check is that this typeId was actually recognized
+            // as a star type -- the value written to
+            // mapStars.starTypeId is type_id itself, unchanged.
+            if !star_state.star_type_ids.contains(&type_id) {
+                return Err(Error::data(format!(
+                    "star {star_id}: typeId {type_id} isn't in star_type_ids \
                     (parse_types() didn't detect it as a star type)"
-                        ))
-                    })?;
+                )));
+            }
+            let star_type_id = type_id;
 
             insert_star.execute(rusqlite::params![
                 star_id,
@@ -2277,11 +2279,11 @@ mod tests {
 
         // The "Sun"-group type should have generated a row in typeStar.
         assert_eq!(state.star_type_ids.len(), 1);
-        let star_type_id = state.star_type_ids[&3000];
+        assert!(state.star_type_ids.contains(&3000));
         let (name, color): (String, String) = connection
             .query_row(
-                "SELECT name, color FROM typeStar WHERE starTypeId = ?1",
-                rusqlite::params![star_type_id],
+                "SELECT name, color FROM typeStar WHERE typeId = ?1",
+                rusqlite::params![3000],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();

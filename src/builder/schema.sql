@@ -420,13 +420,11 @@ CREATE UNIQUE INDEX planetSystem ON mapPlanets (solarSystemId, planetaryIndex);
 CREATE INDEX idx_mapPlanets_typeId ON mapPlanets(typeId);
 
 CREATE TABLE typeStar (
-  starTypeId INTEGER PRIMARY KEY,
-  typeId INTEGER NOT NULL REFERENCES invTypes(typeId)
+  typeId INTEGER PRIMARY KEY REFERENCES invTypes(typeId)
            ON UPDATE CASCADE ON DELETE CASCADE,
   name  TEXT NOT NULL CHECK (length(name) <= 4),
   color TEXT NOT NULL
 ) STRICT;
-CREATE INDEX idx_typeStar_typeId ON typeStar(typeId);
 
 CREATE TABLE mapStars (
   starId INTEGER NOT NULL PRIMARY KEY,
@@ -434,7 +432,7 @@ CREATE TABLE mapStars (
                   ON UPDATE CASCADE ON DELETE RESTRICT,
   locked INTEGER CHECK (locked IN (0,1)),
   radius INTEGER,
-  starTypeId INTEGER NOT NULL REFERENCES typeStar(starTypeId)
+  starTypeId INTEGER NOT NULL REFERENCES typeStar(typeId)
                ON UPDATE CASCADE ON DELETE CASCADE
 ) STRICT;
 CREATE UNIQUE INDEX starId ON mapStars (solarSystemId, starId);
