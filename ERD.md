@@ -1,6 +1,6 @@
 # Entity-Relationship Diagram
 
-Generated from `src/builder/schema.sql` (30 tables, the static schema
+Generated from `src/builder/schema.sql` (31 tables, the static schema
 that's always present), plus the tables/columns `builder::community` adds
 at runtime rather than declaring statically (see the note below the
 diagram). Attribute lists are trimmed to primary/foreign keys plus one
@@ -133,8 +133,7 @@ erDiagram
         int typeId FK
     }
     typeStar {
-        int starTypeId PK
-        int typeId FK
+        int typeId PK, FK
         string name
     }
     mapStars {
@@ -156,6 +155,10 @@ erDiagram
         int ownerId FK
         int solarSystemId FK
         int typeId FK
+    }
+    sdeFingerprint {
+        int id PK
+        string hash
     }
     stationOperations {
         int operationId PK
@@ -210,7 +213,7 @@ erDiagram
     mapSolarSystems ||--|{ mapSystemConnections : "systemB"
     mapSolarSystems ||--o{ mapPlanets : ""
     invTypes ||--|{ mapPlanets : ""
-    invTypes ||--|{ typeStar : ""
+    invTypes ||--|| typeStar : ""
     mapSolarSystems ||--o{ mapStars : ""
     typeStar ||--|{ mapStars : ""
     mapSolarSystems ||--o{ mapMoons : ""
@@ -266,6 +269,10 @@ erDiagram
   end of the connection) — shown as three separate relationship lines.
 - `mapSystemConnections` likewise has two foreign keys into
   `mapSolarSystems` (`systemA`, `systemB`).
+- `sdeFingerprint` has no foreign keys at all -- it's not about any
+  entity in the diagram, it's metadata about the build itself (see
+  [TODO.md](TODO.md#build-fingerprint)). Its `hash` column is the only
+  one shown; the rest are the settings it hashes over.
 
 ### Static vs. dynamic
 

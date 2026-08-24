@@ -7,14 +7,23 @@
 //!
 //!
 use crate::objects::{
-    Constellation, Moon, Planet, Region, SdePoint, SdeSegment, SolarSystem, Universe,
+    Constellation, Moon, Planet, ProjectedAxis, Region, SdeFingerprint, SdePoint, SdeSegment,
+    SolarSystem, Star, Universe,
 };
 use objects::EveRegionArea;
 use rusqlite::ToSql;
-use rusqlite::{Connection, Error, OpenFlags, params, vtab::array};
+use rusqlite::{Connection, OpenFlags, params, vtab::array};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 use std::rc::Rc;
+
+/// Crate-wide error type. See `src/error.rs` for the detail on why
+/// `SdeManager`'s read methods and, with the `builder` feature,
+/// everything under `builder` all share this one type now.
+mod error;
+pub use error::Error;
 
 /// Module that has Data object abstractions to fill with the database data.
 pub mod objects;
@@ -23,6 +32,8 @@ pub mod objects;
 /// default). See `src/builder/mod.rs` for the detail.
 #[cfg(feature = "builder")]
 pub mod builder;
+
+const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 
 /// Manages the process of reading SDE data and putting into different data structures
 /// for easy in-memory access.
@@ -47,12 +58,28 @@ impl<'a> SdeManager<'a> {
     /// [`objects::Universe::new`] to build the initial, empty
     /// `universe`. `invert_coordinates` starts `true`.
     #[tracing::instrument]
-    pub fn new(path: &Path, factor: f64) -> SdeManager<'_> {
-        SdeManager {
-            path,
-            universe: Universe::new(factor),
-            factor, // 10000000000000
-            invert_coordinates: true,
+    pub fn new(path: &Path, factor: f64) -> Result<SdeManager<'_>, Error> {
+        if Self::has_sqlite_header(path) {
+            Ok(SdeManager {
+                path,
+                universe: Universe::new(factor),
+                factor, // 10000000000000
+                invert_coordinates: true,
+            })
+        } else {
+            Err(Error::invalid_database(path.to_path_buf()))
+        }
+    }
+
+    fn has_sqlite_header(path: &Path) -> bool {
+        if !path.exists() {
+            return false;
+        }
+        let mut file = File::open(path).unwrap();
+        let mut buf = [0u8; 16];
+        match file.read_exact(&mut buf) {
+            Ok(()) => &buf == SQLITE_HEADER,
+            Err(_) => false, // archivo demasiado pequeño (ej. vacío)
         }
     }
 
@@ -173,6 +200,7 @@ impl<'a> SdeManager<'a> {
             name: None,
             coords: [0.0, 0.0, 0.0],
             connections: Vec::new(),
+            color: None,
         };
         while let Some(row) = rows.next()? {
             let id = row.get::<usize, isize>(0)?;
@@ -191,6 +219,7 @@ impl<'a> SdeManager<'a> {
                     name: Some(row.get::<usize, String>(3)?),
                     coords: [x, y, 0.0],
                     connections: Vec::new(),
+                    color: None,
                 };
             }
             point.connections.push((
@@ -201,6 +230,24 @@ impl<'a> SdeManager<'a> {
         if last_id != isize::MIN {
             result.insert(point.id.unwrap(), point);
         }
+
+        // Star color, joined in separately (like get_solarsystem does for
+        // SolarSystem.star): the main query above already depends on a
+        // JOIN against mapSystemConnections, so folding mapStars/typeStar
+        // into it directly would tie "has a color" to "has a stargate
+        // connection" for no reason. A second pass over `result` keeps the
+        // color purely additive -- systems with no mapStars row (~4.7%,
+        // see SolarSystem::star) simply keep color: None.
+        let query = "SELECT ms.solarSystemId, ts.color \
+                      FROM mapStars AS ms INNER JOIN typeStar AS ts ON (ms.starTypeId = ts.typeId);";
+        let mut statement = connection.prepare(query)?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let system_id = row.get::<usize, isize>(0)? as usize;
+            let color: String = row.get(1)?;
+            result.entry(system_id).and_modify(|p| p.color = Some(color));
+        }
+
         Ok(result)
     }
 
@@ -413,12 +460,14 @@ impl<'a> SdeManager<'a> {
     /// `mapAbstractSystems` doesn't exist at all in a database built
     /// without `--with-third-party` (or, equivalently,
     /// `ParserConfig.with_third_party = false`) -- this method returns
-    /// `Err(rusqlite::Error::SqliteFailure(..., "no such table:
-    /// mapAbstractSystems"))` in that case, not a panic. There's
-    /// currently no way to check for this ahead of the call other than
-    /// handling that `Err`; a fingerprint of what a given database
-    /// actually contains, queryable without hitting this error, is
-    /// planned but not implemented yet.
+    /// an `Err(`[`Error`]`)` in that case, not a panic, whose
+    /// `std::error::Error::source()` is a
+    /// `rusqlite::Error::SqliteFailure(..., "no such table:
+    /// mapAbstractSystems")`. There's currently no way to check for
+    /// this ahead of the call other than handling that `Err`; a
+    /// fingerprint of what a given database actually contains,
+    /// queryable without hitting this error, is planned but not
+    /// implemented yet.
     #[tracing::instrument(skip(self))]
     pub fn get_abstract_systems(
         &self,
@@ -474,6 +523,7 @@ impl<'a> SdeManager<'a> {
             name: None,
             coords: [0.0, 0.0, 0.0],
             connections: Vec::new(),
+            color: None,
         };
         while let Some(row) = rows.next()? {
             let id = row.get::<usize, isize>(0)?;
@@ -491,6 +541,7 @@ impl<'a> SdeManager<'a> {
                             name: None,
                             coords: [0.0, 0.0, 0.0],
                             connections: Vec::new(),
+                            color: None,
                         },
                     );
                     result.insert(finished.id.unwrap(), finished);
@@ -507,6 +558,7 @@ impl<'a> SdeManager<'a> {
                     name: Some(row.get::<usize, String>(6)?),
                     coords: [x, y, 0.0],
                     connections: Vec::new(),
+                    color: None,
                 };
             }
             point.connections.push((
@@ -517,16 +569,32 @@ impl<'a> SdeManager<'a> {
         if current_index != isize::MIN {
             result.insert(point.id.unwrap(), point);
         }
+
+        // Star color, same second-pass approach as get_systems (see there
+        // for why it isn't folded into the main query): unscoped by
+        // region, but `.and_modify` is a no-op for any solarSystemId not
+        // already a key of `result`, so this is still effectively
+        // region-filtered.
+        let query = "SELECT ms.solarSystemId, ts.color \
+                      FROM mapStars AS ms INNER JOIN typeStar AS ts ON (ms.starTypeId = ts.typeId);";
+        let mut statement = connection.prepare(query)?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let system_id = row.get::<usize, isize>(0)? as usize;
+            let color: String = row.get(1)?;
+            result.entry(system_id).and_modify(|p| p.color = Some(color));
+        }
+
         Ok(result)
     }
 
     /// Same as [`Self::get_connections`], but for the abstract map
     /// (`mapAbstractSystems`), optionally filtered by region.
     ///
-    /// Same caveat as [`Self::get_abstract_systems`]: fails with
-    /// `Err(rusqlite::Error::SqliteFailure(..., "no such table:
-    /// mapAbstractSystems"))`, not a panic, against a database built
-    /// without `--with-third-party`.
+    /// Same caveat as [`Self::get_abstract_systems`]: fails with an
+    /// `Err(`[`Error`]`)` sourced from `rusqlite::Error::SqliteFailure(...,
+    /// "no such table: mapAbstractSystems")`, not a panic, against a
+    /// database built without `--with-third-party`.
     #[tracing::instrument(skip(self))]
     pub fn get_abstract_connections(
         &self,
@@ -716,12 +784,17 @@ impl<'a> SdeManager<'a> {
     /// `centerX`/`Y`/`Z`) and its 2D map position (`projected_coords`,
     /// from `position2DX`/`Y`, falling back to `(0.0, 0.0)` if the
     /// system has none) plus its stargate `connections`,
-    /// `disallowed_anchor_categories`, and `disallowed_anchor_groups`,
-    /// each populated by its own second query (over
+    /// `disallowed_anchor_categories`, `disallowed_anchor_groups`, and
+    /// `star`, each populated by its own second query (over
     /// `mapSystemConnections`/`mapSolarSystemDisallowedAnchorableCategories`/
-    /// `...Groups` respectively) -- empty for the (large majority of)
-    /// systems with no restrictions of that kind, populated for the
-    /// ones that do. Unlike
+    /// `...Groups`/`mapStars` joined with `typeStar` respectively).
+    /// `disallowed_anchor_categories`/`disallowed_anchor_groups` come
+    /// back empty for the (large majority of) systems with no
+    /// restrictions of that kind, populated for the ones that do.
+    /// `star` is `None` for the systems with no `mapStars` row (401 of
+    /// 8490 real solar systems, 4.7%, confirmed August 2026), populated
+    /// with both the star's own data and its spectral-class properties
+    /// for the rest. Unlike
     /// [`Self::get_systems`]/[`Self::get_connections`], systems
     /// without a 2D projection are kept (with that fallback position)
     /// rather than excluded -- this method feeds general system data,
@@ -832,6 +905,26 @@ impl<'a> SdeManager<'a> {
             let group_id = row.get::<usize, u32>(1)?;
             result.entry(system_id).and_modify(|point| {
                 point.disallowed_anchor_groups.push(group_id);
+            });
+        }
+
+        let query = String::from(
+            "SELECT ms.solarSystemId, ms.starId, ms.locked, ms.radius, ts.name, ts.color \
+             FROM mapStars AS ms INNER JOIN typeStar AS ts ON (ms.starTypeId = ts.typeId);",
+        );
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let system_id = row.get::<usize, u32>(0)?;
+            let star = Star {
+                id: row.get(1)?,
+                locked: row.get(2)?,
+                radius: row.get(3)?,
+                spectral_class: row.get(4)?,
+                color: row.get(5)?,
+            };
+            result.entry(system_id).and_modify(|point| {
+                point.star = Some(star);
             });
         }
 
@@ -985,5 +1078,69 @@ impl<'a> SdeManager<'a> {
         }
 
         Ok(result)
+    }
+
+    /// The settings this specific database was built with (see
+    /// [`objects::SdeFingerprint`]), plus whether they still match the
+    /// stored hash -- `true` means the `sdeFingerprint` row hasn't been
+    /// altered since `Parser::build_database` wrote it (or at least not
+    /// in a way this hash would catch; see that type's docstring for
+    /// what this can and can't guarantee).
+    ///
+    /// `Ok(None)` if the table exists but has no row -- a database
+    /// built by calling [`crate::builder::parser::Parser::parse_data`]
+    /// directly, bypassing `build_database`, never gets one written.
+    /// `Err(...)` (not a panic) against a database built before this
+    /// table existed at all (`sdeFingerprint` wasn't always part of the
+    /// static schema) -- same "no such table" pattern as
+    /// [`Self::get_abstract_systems`] against a database without
+    /// `mapAbstractSystems`.
+    #[tracing::instrument(skip(self))]
+    pub fn get_fingerprint(&self) -> Result<Option<(SdeFingerprint, bool)>, Error> {
+        let connection = self.get_standart_connection()?;
+
+        let mut statement = connection.prepare(
+            "SELECT sdeBuild, language, forceIsometricPosition2d, isometricProjectedAxis, \
+            mapKspace, mapWspace, mapAbyssal, mapVoid, withGates, withMoons, withThirdParty, \
+            withIcebelts, withTriglavianStatus, withJoveObservatories, withSpecialOre, hash \
+            FROM sdeFingerprint WHERE id = 1",
+        )?;
+        let mut rows = statement.query([])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+
+        let axis_text: String = row.get(3)?;
+        let isometric_projected_axis = match axis_text.as_str() {
+            "X" => ProjectedAxis::X,
+            "Z" => ProjectedAxis::Z,
+            // "Y" and anything unrecognized both fall back to the
+            // default axis -- same tolerant-parsing spirit already used
+            // throughout builder::parser for optional/malformed fields,
+            // rather than failing the whole read over a single
+            // unexpected value in a column nothing but this code writes.
+            _ => ProjectedAxis::Y,
+        };
+        let stored_hash: String = row.get(15)?;
+
+        let fingerprint = SdeFingerprint {
+            sde_build: row.get(0)?,
+            language: row.get(1)?,
+            force_isometric_position_2d: row.get(2)?,
+            isometric_projected_axis,
+            map_kspace: row.get(4)?,
+            map_wspace: row.get(5)?,
+            map_abyssal: row.get(6)?,
+            map_void: row.get(7)?,
+            with_gates: row.get(8)?,
+            with_moons: row.get(9)?,
+            with_third_party: row.get(10)?,
+            with_icebelts: row.get(11)?,
+            with_triglavian_status: row.get(12)?,
+            with_jove_observatories: row.get(13)?,
+            with_special_ore: row.get(14)?,
+        };
+        let matches = fingerprint.hash() == stored_hash;
+        Ok(Some((fingerprint, matches)))
     }
 }

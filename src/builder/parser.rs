@@ -1,9 +1,9 @@
 //! Populates the SDE data into the tables created by [`super::schema`].
 //!
 //! The state that needs sharing between [`Parser::parse_groups`] and
-//! [`Parser::parse_types`] -- the "Sun" group's id and the `typeId ->
-//! starTypeId` mapping -- is passed explicitly via [`StarTypeState`],
-//! rather than living on `self`.
+//! [`Parser::parse_types`] -- the "Sun" group's id and the set of
+//! `typeId`s recognized as star types -- is passed explicitly via
+//! [`StarTypeState`], rather than living on `self`.
 //!
 //! ## Contents
 //!
@@ -46,10 +46,11 @@
 //!   space-separated tokens, that type simply isn't treated as a star
 //!   (it isn't inserted into `typeStar`) and the rest of the file keeps
 //!   processing normally.
-//! - Color extraction uses `strip_prefix('(')`/`strip_suffix(')')`,
-//!   tolerant of malformed data (a value without surrounding
-//!   parentheses is kept as-is rather than having its first/last
-//!   character blindly stripped).
+//! - Color extraction looks up the star's RGB code in the embedded
+//!   `star_colors.json` by the first two characters of `parts[1]` (the
+//!   spectral class, e.g. `"G5"`), not from the parenthesized token.
+//!   An unknown spectral class is an `Error::data`, failing the whole
+//!   parse.
 //! - **Transactions**: this file's individual `parse_*` functions,
 //!   called on their own, do NOT wrap their inserts in an explicit
 //!   transaction (autocommit per INSERT, SQLite's default mode) -- only
@@ -60,14 +61,14 @@
 //!   directly, outside of `parse_data`, doesn't get that atomicity
 //!   guarantee -- only `parse_data` provides it.
 //! - [`Parser::parse_factions`] validates every element of
-//!   `memberRaces` and returns [`BuilderError::Data`] on the first one
+//!   `memberRaces` and returns `Error::data` on the first one
 //!   that isn't an integer, since it would violate
 //!   `factionRace.raceId INTEGER NOT NULL` on insert anyway -- failing
 //!   early with a clear message beats a generic SQLite error further
 //!   down.
 //! - `mapRegions.nebula` is `INTEGER NOT NULL`, so
 //!   [`Parser::parse_regions`] treats `nebulaID` as required (same
-//!   criterion as `name`): it fails with [`BuilderError::Data`] and a
+//!   criterion as `name`): it fails with `Error::data` and a
 //!   clear message instead of letting SQLite reject it further down.
 //! - [`Parser::parse_constellations`] computes the id as
 //!   `constellationID` when present, falling back to `_key` otherwise
@@ -78,8 +79,9 @@
 //!   locally via [`isometric_projection_2d`] when
 //!   `config.force_isometric_position_2d` is on.
 
-use crate::builder::BuilderError;
+use crate::Error;
 use crate::builder::community::{self, CommunityConfig};
+use crate::objects::SdeFingerprint;
 use reqwest::Client;
 use rusqlite::Connection;
 use serde_json::Value;
@@ -194,14 +196,10 @@ impl ParserConfig {
     }
 
     /// Same as [`Self::localized`], but a missing/unusable field is a
-    /// data error ([`BuilderError::Data`]) instead of a silent `None`.
-    fn required_localized<'a>(
-        &self,
-        record: &'a Value,
-        field: &str,
-    ) -> Result<&'a str, BuilderError> {
+    /// data error (`Error::data`) instead of a silent `None`.
+    fn required_localized<'a>(&self, record: &'a Value, field: &str) -> Result<&'a str, Error> {
         self.localized(record, field).ok_or_else(|| {
-            BuilderError::Data(format!(
+            Error::data(format!(
                 "record has no localizable field `{field}` in `{}`/`en`: {record}",
                 self.language
             ))
@@ -237,10 +235,15 @@ pub struct StarTypeState {
     /// `groupId` of the group named exactly `"Sun"`, once
     /// [`Parser::parse_groups`] finds it.
     pub sun_group_id: Option<i64>,
-    /// `typeId` (from `invTypes`) -> `starTypeId` (from `typeStar`) for
-    /// each star type inserted by [`Parser::parse_types`]. Used by
-    /// [`Parser::parse_stars`] to resolve each star's `starTypeId`.
-    pub star_type_ids: std::collections::HashMap<i64, i64>,
+    /// Every `typeId` (from `invTypes`) that [`Parser::parse_types`]
+    /// inserted into `typeStar`. Used by [`Parser::parse_stars`] to
+    /// validate a star's `typeID` before writing it directly as
+    /// `mapStars.starTypeId` -- `typeStar.typeId` is `mapStars`'
+    /// `starTypeId`'s FK target (`typeStar`'s primary key *is*
+    /// `typeId`; there's no separate, self-assigned id to translate
+    /// into), so this only needs to say "is this typeId one of them",
+    /// not map it to anything else.
+    pub star_type_ids: std::collections::HashSet<i64>,
 }
 
 /// Solar system ids that passed the `ParserConfig::system_in_scope`
@@ -251,6 +254,20 @@ pub struct StarTypeState {
 #[derive(Debug, Default)]
 pub struct SystemScopeState {
     pub systems_in_scope: std::collections::HashSet<i64>,
+}
+
+/// Root of `star_colors.json`, embedded via `include_str!`: maps each
+/// spectral class (e.g. `"G5"`) to its color info.
+#[derive(Debug, serde::Deserialize)]
+struct StarColors {
+    spectral_classes: std::collections::HashMap<String, StarColorEntry>,
+}
+
+/// A single spectral class entry. Only `hex` is consumed (the RGB code
+/// stored in `typeStar.color`); `temperature_K`/`rgb` are ignored.
+#[derive(Debug, serde::Deserialize)]
+struct StarColorEntry {
+    hex: String,
 }
 
 // ---------------------------------------------------------------------
@@ -265,14 +282,14 @@ pub struct SystemScopeState {
 fn iter_jsonl_records(
     sde_directory: &Path,
     stem: &str,
-) -> Result<impl Iterator<Item = Result<Value, BuilderError>>, BuilderError> {
+) -> Result<impl Iterator<Item = Result<Value, Error>>, Error> {
     let path = sde_directory.join(format!("{stem}.jsonl"));
     let file = std::fs::File::open(&path)?;
     let reader = std::io::BufReader::new(file);
     Ok(reader.lines().filter_map(|line| match line {
         Ok(line) if line.trim().is_empty() => None,
-        Ok(line) => Some(serde_json::from_str::<Value>(&line).map_err(BuilderError::Json)),
-        Err(err) => Some(Err(BuilderError::Io(err))),
+        Ok(line) => Some(serde_json::from_str::<Value>(&line).map_err(Error::from)),
+        Err(err) => Some(Err(Error::from(err))),
     }))
 }
 
@@ -299,34 +316,31 @@ impl Parser {
     // invTypes (+ typeStar for star types)
     // ---------------------------------------------------------------------
 
-    /// Inserts a row into `typeStar` and returns the `starTypeId` SQLite
-    /// assigned it (a plain `ROWID`, no `AUTOINCREMENT`, so it's read back
-    /// via a `SELECT` right after the `INSERT`).
+    /// Inserts a row into `typeStar`, keyed by `type_id` directly --
+    /// `typeStar.typeId` is its own primary key (a genuine 1:1 with
+    /// `invTypes`, confirmed by every real "Sun"-group type having a
+    /// unique `_key`/`typeId`), not a separate, self-assigned id, so
+    /// there's nothing to read back after the `INSERT`.
     fn add_star_type(
         &self,
         connection: &Connection,
         type_id: i64,
         name: &str,
         color: &str,
-    ) -> Result<i64, BuilderError> {
+    ) -> Result<(), Error> {
         connection.execute(
             "INSERT INTO typeStar (typeId, name, color) VALUES (?1, ?2, ?3)",
             rusqlite::params![type_id, name, color],
         )?;
-        let star_type_id = connection.query_row(
-            "SELECT starTypeId FROM typeStar WHERE typeId = ?1",
-            rusqlite::params![type_id],
-            |row| row.get(0),
-        )?;
-        Ok(star_type_id)
+        Ok(())
     }
 
     /// Extracts a required integer field from the record: if the field
     /// isn't present or isn't numeric, this is a data error
-    /// ([`BuilderError::Data`]), not a silent `None`.
-    fn required_i64(&self, record: &Value, field: &str) -> Result<i64, BuilderError> {
+    /// (`Error::data`), not a silent `None`.
+    fn required_i64(&self, record: &Value, field: &str) -> Result<i64, Error> {
         record.get(field).and_then(Value::as_i64).ok_or_else(|| {
-            BuilderError::Data(format!(
+            Error::data(format!(
                 "record missing required field `{field}` (or it's not an integer): {record}"
             ))
         })
@@ -349,27 +363,27 @@ impl Parser {
 
     /// Extracts a required plain string field (not localized -- for fields
     /// like `tickerName` that don't carry per-language variants).
-    fn required_str<'a>(&self, record: &'a Value, field: &str) -> Result<&'a str, BuilderError> {
+    fn required_str<'a>(&self, record: &'a Value, field: &str) -> Result<&'a str, Error> {
         record.get(field).and_then(Value::as_str).ok_or_else(|| {
-            BuilderError::Data(format!(
+            Error::data(format!(
                 "record missing required field `{field}` (or it's not a string): {record}"
             ))
         })
     }
 
     /// Extracts a required boolean field.
-    fn required_bool(&self, record: &Value, field: &str) -> Result<bool, BuilderError> {
+    fn required_bool(&self, record: &Value, field: &str) -> Result<bool, Error> {
         record.get(field).and_then(Value::as_bool).ok_or_else(|| {
-            BuilderError::Data(format!(
+            Error::data(format!(
                 "record missing required field `{field}` (or it's not a boolean): {record}"
             ))
         })
     }
 
     /// Extracts a required floating-point field.
-    fn required_f64(&self, record: &Value, field: &str) -> Result<f64, BuilderError> {
+    fn required_f64(&self, record: &Value, field: &str) -> Result<f64, Error> {
         record.get(field).and_then(Value::as_f64).ok_or_else(|| {
-            BuilderError::Data(format!(
+            Error::data(format!(
                 "record missing required field `{field}` (or it's not a number): {record}"
             ))
         })
@@ -378,20 +392,18 @@ impl Parser {
     /// Extracts ids from an optional integer array -- empty if the field is
     /// missing or `null`. If the field IS present but isn't an array, or
     /// any of its elements isn't an integer, that's a data error.
-    fn optional_i64_array(&self, record: &Value, field: &str) -> Result<Vec<i64>, BuilderError> {
+    fn optional_i64_array(&self, record: &Value, field: &str) -> Result<Vec<i64>, Error> {
         match record.get(field) {
             None | Some(Value::Null) => Ok(Vec::new()),
             Some(Value::Array(items)) => items
                 .iter()
                 .map(|item| {
                     item.as_i64().ok_or_else(|| {
-                        BuilderError::Data(format!(
-                            "non-integer element in array `{field}`: {item}"
-                        ))
+                        Error::data(format!("non-integer element in array `{field}`: {item}"))
                     })
                 })
                 .collect(),
-            Some(other) => Err(BuilderError::Data(format!(
+            Some(other) => Err(Error::data(format!(
                 "field `{field}` is not an array: {other}"
             ))),
         }
@@ -400,9 +412,9 @@ impl Parser {
     /// Extracts `record["position"]["x"/"y"/"z"]` as `(f64, f64, f64)`.
     /// Both levels are required; if `position` or any of its three
     /// components is missing, that's a data error.
-    fn required_position(&self, record: &Value) -> Result<(f64, f64, f64), BuilderError> {
+    fn required_position(&self, record: &Value) -> Result<(f64, f64, f64), Error> {
         let position = record.get("position").ok_or_else(|| {
-            BuilderError::Data(format!(
+            Error::data(format!(
                 "record missing required field `position`: {record}"
             ))
         })?;
@@ -415,14 +427,9 @@ impl Parser {
     /// Extracts `record[outer][inner]` as a required `i64` -- used for
     /// `destination.stargateID`/`destination.solarSystemID` in
     /// [`Self::parse_stargates`].
-    fn required_nested_i64(
-        &self,
-        record: &Value,
-        outer: &str,
-        inner: &str,
-    ) -> Result<i64, BuilderError> {
+    fn required_nested_i64(&self, record: &Value, outer: &str, inner: &str) -> Result<i64, Error> {
         let outer_val = record.get(outer).ok_or_else(|| {
-            BuilderError::Data(format!("record missing required field `{outer}`: {record}"))
+            Error::data(format!("record missing required field `{outer}`: {record}"))
         })?;
         self.required_i64(outer_val, inner)
     }
@@ -502,11 +509,14 @@ impl Parser {
         &self,
         connection: &Connection,
         state: &mut StarTypeState,
-    ) -> Result<usize, BuilderError> {
+    ) -> Result<usize, Error> {
         let mut insert_type = connection.prepare(
             "INSERT INTO invTypes (typeId, groupId, typeName, iconId, published, volume) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
+
+        let star_colors: StarColors =
+            serde_json::from_str(include_str!("star_colors.json"))?;
 
         let mut count = 0usize;
         for record in iter_jsonl_records(&self.sde_directory, "types")? {
@@ -526,13 +536,19 @@ impl Parser {
                 let parts: Vec<&str> = name.split(' ').collect();
                 if parts.len() >= 3 {
                     let star_name = parts[1];
-                    let color_token = parts[2];
-                    let color = color_token
-                        .strip_prefix('(')
-                        .and_then(|s| s.strip_suffix(')'))
-                        .unwrap_or(color_token);
-                    let star_type_id = self.add_star_type(connection, id, star_name, color)?;
-                    state.star_type_ids.insert(id, star_type_id);
+                    let spectral_class: String = star_name.chars().take(2).collect();
+                    let color = &star_colors
+                        .spectral_classes
+                        .get(&spectral_class)
+                        .ok_or_else(|| {
+                            Error::data(format!(
+                                "unknown spectral class `{spectral_class}` (from `{star_name}`) \
+                                 in star_colors.json"
+                            ))
+                        })?
+                        .hex;
+                    self.add_star_type(connection, id, star_name, color)?;
+                    state.star_type_ids.insert(id);
                 }
                 // Fewer than 3 tokens: not treated as a star. See
                 // "Notable behavior" in the module's docstring.
@@ -541,7 +557,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} types");
+            tracing::info!("Parsed {count} types");
         }
         Ok(count)
     }
@@ -553,7 +569,7 @@ impl Parser {
     /// Populates `invCategories` from `<sde_directory>/categories.jsonl`.
     /// Returns the number of rows inserted.
     #[tracing::instrument]
-    pub fn parse_categories(&self, connection: &Connection) -> Result<usize, BuilderError> {
+    pub fn parse_categories(&self, connection: &Connection) -> Result<usize, Error> {
         let mut insert_category = connection.prepare(
             "INSERT INTO invCategories (categoryId, categoryName, published) VALUES (?1, ?2, ?3)",
         )?;
@@ -569,7 +585,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} categories");
+            tracing::info!("Parsed {count} categories");
         }
         Ok(count)
     }
@@ -587,7 +603,7 @@ impl Parser {
         &self,
         connection: &Connection,
         state: &mut StarTypeState,
-    ) -> Result<usize, BuilderError> {
+    ) -> Result<usize, Error> {
         let mut insert_group = connection.prepare(
             "INSERT INTO invGroups (groupId, categoryId, groupName, anchorable) \
             VALUES (?1, ?2, ?3, ?4)",
@@ -610,7 +626,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} groups");
+            tracing::info!("Parsed {count} groups");
         }
         Ok(count)
     }
@@ -622,7 +638,7 @@ impl Parser {
     /// Populates `races` from `<sde_directory>/races.jsonl`. Returns the
     /// number of rows inserted.
     #[tracing::instrument]
-    pub fn parse_races(&self, connection: &Connection) -> Result<usize, BuilderError> {
+    pub fn parse_races(&self, connection: &Connection) -> Result<usize, Error> {
         let mut insert_race =
             connection.prepare("INSERT INTO races (raceId, raceName) VALUES (?1, ?2)")?;
 
@@ -636,7 +652,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} races");
+            tracing::info!("Parsed {count} races");
         }
         Ok(count)
     }
@@ -649,10 +665,7 @@ impl Parser {
     /// `<sde_directory>/npcCorporationDivisions.jsonl` (10 records,
     /// confirmed complete for `_key`/`internalName`/`leaderTypeName`).
     #[tracing::instrument]
-    pub fn parse_npc_corporation_divisions(
-        &self,
-        connection: &Connection,
-    ) -> Result<usize, BuilderError> {
+    pub fn parse_npc_corporation_divisions(&self, connection: &Connection) -> Result<usize, Error> {
         let mut insert = connection.prepare(
             "INSERT INTO npcCorporationDivisions (divisionId, internalName, leaderTypeName) \
             VALUES (?1, ?2, ?3)",
@@ -668,7 +681,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} npcCorporationDivisions");
+            tracing::info!("Parsed {count} npcCorporationDivisions");
         }
         Ok(count)
     }
@@ -700,7 +713,7 @@ impl Parser {
     /// `ceoID`/`divisions[].leaderID` are kept as plain unconstrained
     /// integers (no character table exists to reference).
     #[tracing::instrument]
-    pub fn parse_npc_corporations(&self, connection: &Connection) -> Result<usize, BuilderError> {
+    pub fn parse_npc_corporations(&self, connection: &Connection) -> Result<usize, Error> {
         let mut insert_corp = connection.prepare(
             "INSERT INTO npcCorporations \
             (corporationId, corporationName, tickerName, deleted, description, extent, \
@@ -828,7 +841,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} npcCorporations");
+            tracing::info!("Parsed {count} npcCorporations");
         }
         Ok(count)
     }
@@ -852,7 +865,7 @@ impl Parser {
     /// `militiaCorporationID` are rarer (14.8%/66.7%/22.2%/22.2%) but
     /// genuinely present.
     #[tracing::instrument]
-    pub fn parse_factions(&self, connection: &Connection) -> Result<usize, BuilderError> {
+    pub fn parse_factions(&self, connection: &Connection) -> Result<usize, Error> {
         let mut insert_faction = connection.prepare(
             "INSERT INTO factions \
             (factionId, factionName, iconId, sizeFactor, uniqueName, description, shortDescription, \
@@ -901,7 +914,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} factions");
+            tracing::info!("Parsed {count} factions");
         }
         Ok(count)
     }
@@ -916,7 +929,7 @@ impl Parser {
     /// `maxProjX`/`maxProjY` aren't included in the INSERT: the DDL gives
     /// them `DEFAULT(0.0)`, which SQLite applies automatically.
     #[tracing::instrument]
-    pub fn parse_regions(&self, connection: &Connection) -> Result<usize, BuilderError> {
+    pub fn parse_regions(&self, connection: &Connection) -> Result<usize, Error> {
         let mut insert_region = connection.prepare(
             "INSERT INTO mapRegions (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -945,7 +958,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} regions");
+            tracing::info!("Parsed {count} regions");
         }
         Ok(count)
     }
@@ -962,7 +975,7 @@ impl Parser {
     /// The preferred id is `constellationID` if the record carries it and
     /// it's a valid integer; otherwise it falls back to `_key`.
     #[tracing::instrument]
-    pub fn parse_constellations(&self, connection: &Connection) -> Result<usize, BuilderError> {
+    pub fn parse_constellations(&self, connection: &Connection) -> Result<usize, Error> {
         let mut insert_constellation = connection.prepare(
             "INSERT INTO mapConstellations (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -985,7 +998,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} constellations");
+            tracing::info!("Parsed {count} constellations");
         }
         Ok(count)
     }
@@ -1060,7 +1073,7 @@ impl Parser {
         &self,
         connection: &Connection,
         state: &mut SystemScopeState,
-    ) -> Result<usize, BuilderError> {
+    ) -> Result<usize, Error> {
         let mut insert_system = connection.prepare(
             "INSERT INTO mapSolarSystems (solarSystemId, solarSystemName, constellationId, \
             type, luminosity, radius, centerX, centerY, centerZ, \
@@ -1173,7 +1186,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} solar systems");
+            tracing::info!("Parsed {count} solar systems");
         }
         Ok(count)
     }
@@ -1224,7 +1237,7 @@ impl Parser {
         &self,
         connection: &Connection,
         state: &SystemScopeState,
-    ) -> Result<usize, BuilderError> {
+    ) -> Result<usize, Error> {
         let mut insert_gate = connection.prepare(
             "INSERT INTO mapSystemGates (systemGateId, solarSystemId, typeId, \
             positionX, positionY, positionZ, destinationGateId, destinationSystemId) \
@@ -1260,7 +1273,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} stargates");
+            tracing::info!("Parsed {count} stargates");
         }
         Ok(count)
     }
@@ -1272,8 +1285,9 @@ impl Parser {
     /// Populates `mapStars` from `<sde_directory>/mapStars.jsonl`, filtering
     /// by `state.systems_in_scope` (populated by [`Self::parse_solar_systems`]).
     /// Requires [`Self::parse_types`] to have already run -- it needs
-    /// `star_state.star_type_ids`, the `typeId -> starTypeId` mapping --
-    /// and `mapSolarSystems`/`typeStar` to already be populated (FKs).
+    /// `star_state.star_type_ids`, the set of `typeId`s [`Self::parse_types`]
+    /// inserted into `typeStar` -- and `mapSolarSystems`/`typeStar` to
+    /// already be populated (FKs).
     /// Returns the number of rows inserted.
     ///
     /// Confirmed against a real sample of `mapStars.jsonl` (8089
@@ -1286,24 +1300,22 @@ impl Parser {
     /// `optional_bool_with_nested_fallback`) is kept anyway, in case some
     /// other SDE version does carry it.
     ///
-    /// # `starTypeId` not found
+    /// # Unrecognized `typeID`
     ///
     /// If a star's `typeID` isn't in `star_state.star_type_ids` (meaning
     /// [`Self::parse_types`] didn't detect it as belonging to the "Sun"
-    /// group), that's a direct [`BuilderError::Data`] -- same criterion as
+    /// group), that's a direct `Error::data` -- same criterion as
     /// the rest of this file: fail early with a clear message instead of
     /// letting SQLite reject a value that was going to be invalid anyway
-    /// (a raw `typeID` would almost certainly violate the
-    /// `mapStars.starTypeId -> typeStar.starTypeId` FK, since those are
-    /// completely different id sequences -- one is `invTypes.typeId`, the
-    /// other a self-assigned `ROWID` from `typeStar`).
+    /// (a raw, unrecognized `typeID` would violate the
+    /// `mapStars.starTypeId -> typeStar.typeId` FK).
     #[tracing::instrument(skip(state, star_state))]
     pub fn parse_stars(
         &self,
         connection: &Connection,
         state: &SystemScopeState,
         star_state: &StarTypeState,
-    ) -> Result<usize, BuilderError> {
+    ) -> Result<usize, Error> {
         let mut insert_star = connection.prepare(
             "INSERT INTO mapStars (starId, solarSystemId, locked, radius, starTypeId) \
             VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1321,17 +1333,18 @@ impl Parser {
             let locked = self.optional_bool_with_nested_fallback(&record, "locked", "statistics");
             let radius = self.optional_i64_with_nested_fallback(&record, "radius", "statistics");
             let type_id = self.required_i64(&record, "typeID")?;
-            let star_type_id =
-                star_state
-                    .star_type_ids
-                    .get(&type_id)
-                    .copied()
-                    .ok_or_else(|| {
-                        BuilderError::Data(format!(
-                            "star {star_id}: typeId {type_id} isn't in star_type_ids \
+            // typeStar's primary key *is* typeId (no separate,
+            // self-assigned id to translate into), so the only thing
+            // left to check is that this typeId was actually recognized
+            // as a star type -- the value written to
+            // mapStars.starTypeId is type_id itself, unchanged.
+            if !star_state.star_type_ids.contains(&type_id) {
+                return Err(Error::data(format!(
+                    "star {star_id}: typeId {type_id} isn't in star_type_ids \
                     (parse_types() didn't detect it as a star type)"
-                        ))
-                    })?;
+                )));
+            }
+            let star_type_id = type_id;
 
             insert_star.execute(rusqlite::params![
                 star_id,
@@ -1343,7 +1356,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} stars");
+            tracing::info!("Parsed {count} stars");
         }
         Ok(count)
     }
@@ -1383,7 +1396,7 @@ impl Parser {
         &self,
         connection: &Connection,
         state: &SystemScopeState,
-    ) -> Result<usize, BuilderError> {
+    ) -> Result<usize, Error> {
         let mut insert_planet = connection.prepare(
             "INSERT INTO mapPlanets (planetId, solarSystemId, planetaryIndex, fragmented, radius, \
             locked, typeId, positionX, positionY, positionZ) \
@@ -1422,7 +1435,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} planets");
+            tracing::info!("Parsed {count} planets");
         }
         Ok(count)
     }
@@ -1468,7 +1481,7 @@ impl Parser {
         &self,
         connection: &Connection,
         state: &SystemScopeState,
-    ) -> Result<usize, BuilderError> {
+    ) -> Result<usize, Error> {
         let mut insert_moon = connection.prepare(
             "INSERT INTO mapMoons (moonId, solarSystemId, moonIndex, planetId, typeId, radius, \
             positionX, positionY, positionZ) \
@@ -1504,7 +1517,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} moons");
+            tracing::info!("Parsed {count} moons");
         }
         Ok(count)
     }
@@ -1538,7 +1551,7 @@ impl Parser {
     /// they always end up returning
     /// `(msga.solarSystemId, msgb.solarSystemId)` in that order.
     #[tracing::instrument]
-    pub fn parse_connections(&self, connection: &Connection) -> Result<usize, BuilderError> {
+    pub fn parse_connections(&self, connection: &Connection) -> Result<usize, Error> {
         let count = connection.execute(
             "INSERT INTO mapSystemConnections (systemA, systemB) \
             SELECT MIN(msga.solarSystemId, msgb.solarSystemId), \
@@ -1549,7 +1562,7 @@ impl Parser {
             [],
         )?;
         if self.config.verbose {
-            println!("Parsed {count} system connections");
+            tracing::info!("Parsed {count} system connections");
         }
         Ok(count)
     }
@@ -1564,7 +1577,7 @@ impl Parser {
     /// why `staStation`/`staCorporations`, which used to cover this area of
     /// the schema, are gone.
     #[tracing::instrument]
-    pub fn parse_station_services(&self, connection: &Connection) -> Result<usize, BuilderError> {
+    pub fn parse_station_services(&self, connection: &Connection) -> Result<usize, Error> {
         let mut insert = connection
             .prepare("INSERT INTO stationServices (serviceId, serviceName) VALUES (?1, ?2)")?;
 
@@ -1577,7 +1590,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} station services");
+            tracing::info!("Parsed {count} station services");
         }
         Ok(count)
     }
@@ -1606,7 +1619,7 @@ impl Parser {
     /// each flag means beyond the raw value; `stationOperationTypes.sizeKey`
     /// is kept as a plain integer rather than guessing at named constants.
     #[tracing::instrument]
-    pub fn parse_station_operations(&self, connection: &Connection) -> Result<usize, BuilderError> {
+    pub fn parse_station_operations(&self, connection: &Connection) -> Result<usize, Error> {
         let mut insert_operation = connection.prepare(
             "INSERT INTO stationOperations \
             (operationId, activityId, operationName, description, border, corridor, fringe, hub, \
@@ -1664,7 +1677,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} station operations");
+            tracing::info!("Parsed {count} station operations");
         }
         Ok(count)
     }
@@ -1703,7 +1716,7 @@ impl Parser {
     /// their real, confirmed absence rate -- not just a defensive
     /// assumption.
     #[tracing::instrument]
-    pub fn parse_npc_stations(&self, connection: &Connection) -> Result<usize, BuilderError> {
+    pub fn parse_npc_stations(&self, connection: &Connection) -> Result<usize, Error> {
         let mut moon_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
         {
             let mut statement = connection.prepare("SELECT moonId FROM mapMoons")?;
@@ -1776,7 +1789,7 @@ impl Parser {
             count += 1;
         }
         if self.config.verbose {
-            println!("Parsed {count} NPC stations");
+            tracing::info!("Parsed {count} NPC stations");
         }
         Ok(count)
     }
@@ -1814,7 +1827,7 @@ impl Parser {
     /// genuinely-neither station in the real data. See
     /// [`Self::parse_npc_stations`]'s docstring for more on this table.
     #[tracing::instrument]
-    pub fn parse_data(&self, connection: &mut Connection) -> Result<ParseSummary, BuilderError> {
+    pub fn parse_data(&self, connection: &mut Connection) -> Result<ParseSummary, Error> {
         let tx = connection.transaction()?;
 
         let categories = self.parse_categories(&tx)?;
@@ -1938,7 +1951,7 @@ impl Parser {
                 )?;
             }
             if !violations.is_empty() {
-                return Err(BuilderError::Data(format!(
+                return Err(Error::data(format!(
                     "foreign_key_check found {} unsatisfied constraint(s) before commit:\n  {}",
                     violations.len(),
                     violations.join("\n  ")
@@ -1992,16 +2005,25 @@ impl Parser {
     /// duplicated as separate config fields, so a caller that isn't using
     /// `with_third_party` doesn't need to supply a real `maps_url_base` at
     /// all (any string works; it's never read).
+    ///
+    /// `sde_build`, if given, is recorded verbatim in the
+    /// `sdeFingerprint` table's `sdeBuild` column -- this function
+    /// doesn't validate it or fetch it itself (that's `sde_index`'s
+    /// job); pass `None` if the caller doesn't have one (e.g. a library
+    /// consumer that isn't going through `sde_index::update_as_needed`
+    /// at all). See [`objects::SdeFingerprint`] for what "fingerprint"
+    /// means here and its real limits.
     #[tracing::instrument]
     pub async fn build_database(
         &self,
         connection: &mut Connection,
         client: &Client,
         maps_url_base: &str,
-    ) -> Result<ParseSummary, BuilderError> {
+        sde_build: Option<&str>,
+    ) -> Result<ParseSummary, Error> {
         let summary = self.parse_data(connection)?;
 
-        if self.config.with_third_party {
+        let community_config = if self.config.with_third_party {
             let community_config = CommunityConfig {
                 with_icebelts: true,
                 with_triglavian_status: true,
@@ -2016,9 +2038,71 @@ impl Parser {
                 &community_config,
             )
             .await?;
-        }
+            Some(community_config)
+        } else {
+            None
+        };
+
+        self.write_fingerprint(connection, sde_build, community_config.as_ref())?;
 
         Ok(summary)
+    }
+
+    /// Writes the single row of `sdeFingerprint`, recording the exact
+    /// settings this database was built with (see
+    /// [`objects::SdeFingerprint`]). Called automatically by
+    /// [`Self::build_database`] -- not `pub`, since there's no reason to
+    /// call it on its own outside of that.
+    fn write_fingerprint(
+        &self,
+        connection: &Connection,
+        sde_build: Option<&str>,
+        community_config: Option<&CommunityConfig>,
+    ) -> Result<(), Error> {
+        let fingerprint = SdeFingerprint {
+            sde_build: sde_build.map(str::to_string),
+            language: self.config.language.clone(),
+            force_isometric_position_2d: self.config.force_isometric_position_2d,
+            isometric_projected_axis: self.config.isometric_projected_axis,
+            map_kspace: self.config.map_kspace,
+            map_wspace: self.config.map_wspace,
+            map_abyssal: self.config.map_abyssal,
+            map_void: self.config.map_void,
+            with_gates: self.config.with_gates,
+            with_moons: self.config.with_moons,
+            with_third_party: self.config.with_third_party,
+            with_icebelts: community_config.map(|c| c.with_icebelts),
+            with_triglavian_status: community_config.map(|c| c.with_triglavian_status),
+            with_jove_observatories: community_config.map(|c| c.with_jove_observatories),
+            with_special_ore: community_config.map(|c| c.with_special_ore),
+        };
+        let hash = fingerprint.hash();
+        connection.execute(
+            "INSERT INTO sdeFingerprint (id, sdeBuild, language, \
+            forceIsometricPosition2d, isometricProjectedAxis, mapKspace, mapWspace, \
+            mapAbyssal, mapVoid, withGates, withMoons, withThirdParty, withIcebelts, \
+            withTriglavianStatus, withJoveObservatories, withSpecialOre, hash) \
+            VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            rusqlite::params![
+                fingerprint.sde_build,
+                fingerprint.language,
+                fingerprint.force_isometric_position_2d,
+                format!("{:?}", fingerprint.isometric_projected_axis),
+                fingerprint.map_kspace,
+                fingerprint.map_wspace,
+                fingerprint.map_abyssal,
+                fingerprint.map_void,
+                fingerprint.with_gates,
+                fingerprint.with_moons,
+                fingerprint.with_third_party,
+                fingerprint.with_icebelts,
+                fingerprint.with_triglavian_status,
+                fingerprint.with_jove_observatories,
+                fingerprint.with_special_ore,
+                hash,
+            ],
+        )?;
+        Ok(())
     }
 }
 
@@ -2195,16 +2279,16 @@ mod tests {
 
         // The "Sun"-group type should have generated a row in typeStar.
         assert_eq!(state.star_type_ids.len(), 1);
-        let star_type_id = state.star_type_ids[&3000];
+        assert!(state.star_type_ids.contains(&3000));
         let (name, color): (String, String) = connection
             .query_row(
-                "SELECT name, color FROM typeStar WHERE starTypeId = ?1",
-                rusqlite::params![star_type_id],
+                "SELECT name, color FROM typeStar WHERE typeId = ?1",
+                rusqlite::params![3000],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
         assert_eq!(name, "G5");
-        assert_eq!(color, "ffcc00");
+        assert_eq!(color, "#FFE996");
 
         // "Rifter" (Frigate group, not Sun) shouldn't generate a row in typeStar.
         let total_star_types: i64 = connection
@@ -4177,6 +4261,221 @@ mod tests {
             .unwrap();
         assert_eq!(dest_gate, 50000002);
         assert_eq!(dest_system, 30002187);
+    }
+
+    #[tokio::test]
+    async fn build_database_writes_fingerprint_row() {
+        let dir = TempSdeDir::new(
+            "build_database_fingerprint",
+            &[
+                (
+                    "categories.jsonl",
+                    "{\"_key\": 6, \"name\": {\"en\": \"Celestial\"}, \"published\": true}\n",
+                ),
+                (
+                    "groups.jsonl",
+                    "{\"_key\": 6, \"categoryID\": 6, \"name\": {\"en\": \"Sun\"}, \"anchorable\": false}\n\
+                     {\"_key\": 7, \"categoryID\": 6, \"name\": {\"en\": \"Frigate\"}, \"anchorable\": false}\n",
+                ),
+                (
+                    "races.jsonl",
+                    "{\"_key\": 1, \"name\": {\"en\": \"Caldari\"}}\n",
+                ),
+                (
+                    "npcCorporations.jsonl",
+                    "{\"_key\": 1000004, \"name\": {\"en\": \"CBD Corporation\"}, \
+                     \"tickerName\": \"CBD\", \"deleted\": false, \"extent\": \"L\", \
+                     \"hasPlayerPersonnelManager\": false, \"initialPrice\": 0, \"memberLimit\": -1, \
+                     \"minSecurity\": 0.0, \"minimumJoinStanding\": 1, \
+                     \"sendCharTerminationMessage\": true, \"shares\": 1000, \"size\": \"L\", \
+                     \"taxRate\": 0.0, \"uniqueName\": true, \"iconID\": 500, \"raceID\": 1}\n",
+                ),
+                (
+                    "factions.jsonl",
+                    "{\"_key\": 500001, \"name\": {\"en\": \"Caldari State\"}, \"iconID\": 600, \
+                     \"sizeFactor\": 3.0, \"uniqueName\": true, \"description\": {\"en\": \"x\"}, \
+                     \"corporationID\": 1000004, \"memberRaces\": [1]}\n",
+                ),
+                ("npcCorporationDivisions.jsonl", ""),
+                ("stationServices.jsonl", ""),
+                ("stationOperations.jsonl", ""),
+                ("npcStations.jsonl", ""),
+                (
+                    "mapRegions.jsonl",
+                    "{\"_key\": 10000002, \"name\": {\"en\": \"The Forge\"}, \"nebulaID\": 5, \
+                     \"position\": {\"x\": 100.0, \"y\": 200.0, \"z\": 300.0}}\n",
+                ),
+                (
+                    "mapConstellations.jsonl",
+                    "{\"_key\": 20000020, \"name\": {\"en\": \"Kimotoro\"}, \"regionID\": 10000002, \
+                     \"position\": {\"x\": 110.0, \"y\": 210.0, \"z\": 310.0}}\n",
+                ),
+                (
+                    "mapSolarSystems.jsonl",
+                    "{\"_key\": 30000142, \"name\": {\"en\": \"Jita\"}, \"constellationID\": 20000020, \
+                     \"radius\": 999999999.0, \"position\": {\"x\": -100.0, \"y\": 200.0, \"z\": -300.0}, \
+                     \"securityStatus\": 0.9459, \"securityClass\": \"B\", \"corridor\": false, \
+                     \"fringe\": false, \"hub\": true, \"international\": true, \"regional\": true, \
+                     \"luminosity\": 0.049, \"position2D\": {\"x\": 12.5, \"y\": -7.25}}\n\
+                     {\"_key\": 30002187, \"name\": {\"en\": \"Perimeter\"}, \"constellationID\": 20000020, \
+                     \"radius\": 1.0, \"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}, \
+                     \"securityStatus\": 0.9}\n",
+                ),
+                (
+                    "mapStargates.jsonl",
+                    "{\"_key\": 50000001, \"solarSystemID\": 30000142, \"typeID\": 16, \
+                     \"position\": {\"x\": 1.0, \"y\": 2.0, \"z\": 3.0}, \
+                     \"destination\": {\"stargateID\": 50000002, \"solarSystemID\": 30002187}}\n\
+                     {\"_key\": 50000002, \"solarSystemID\": 30002187, \"typeID\": 16, \
+                     \"position\": {\"x\": 4.0, \"y\": 5.0, \"z\": 6.0}, \
+                     \"destination\": {\"stargateID\": 50000001, \"solarSystemID\": 30000142}}\n",
+                ),
+                (
+                    "mapStars.jsonl",
+                    "{\"_key\": 40000001, \"radius\": 63350000, \"solarSystemID\": 30000142, \
+                     \"statistics\": {\"age\": 4.5e17, \"life\": 6.9e17, \"luminosity\": 0.01575, \
+                     \"spectralClass\": \"K2 V\", \"temperature\": 4567.0}, \"typeID\": 3000}\n",
+                ),
+                (
+                    "mapPlanets.jsonl",
+                    "{\"_key\": 40000002, \"celestialIndex\": 1, \
+                     \"position\": {\"x\": 161891117336.0, \"y\": 21288951986.0, \"z\": -73529712226.0}, \
+                     \"radius\": 5060000, \"solarSystemID\": 30000142, \
+                     \"statistics\": {\"locked\": false}, \"typeID\": 11}\n",
+                ),
+                (
+                    "mapMoons.jsonl",
+                    "{\"_key\": 40000004, \"solarSystemID\": 30000142, \"orbitIndex\": 1, \
+                     \"orbitID\": 40000002, \"typeID\": 12, \"radius\": 100000, \
+                     \"position\": {\"x\": 1.0, \"y\": 2.0, \"z\": 3.0}}\n",
+                ),
+                (
+                    "types.jsonl",
+                    "{\"_key\": 3000, \"groupID\": 6, \"name\": {\"en\": \"Yellow G5 (ffcc00)\"}, \
+                     \"iconID\": 100, \"published\": true, \"volume\": 0.0}\n\
+                     {\"_key\": 16, \"groupID\": 7, \"name\": {\"en\": \"Stargate\"}, \"published\": true}\n\
+                     {\"_key\": 11, \"groupID\": 7, \"name\": {\"en\": \"Planet (Barren)\"}, \"published\": true}\n\
+                     {\"_key\": 12, \"groupID\": 7, \"name\": {\"en\": \"Moon\"}, \"published\": true}\n",
+                ),
+            ],
+        );
+
+        let mut connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        let mut config = ParserConfig::default();
+        config.language = "en".to_string();
+        config.force_isometric_position_2d = true;
+        config.isometric_projected_axis = ProjectedAxis::Z;
+        config.map_kspace = true;
+        config.map_wspace = false;
+        config.map_abyssal = false;
+        config.map_void = false;
+        config.with_gates = true;
+        config.with_moons = true;
+        config.with_third_party = false;
+        let parser = Parser::new(&dir.path, config);
+        let client = reqwest::Client::new();
+
+        parser
+            .build_database(
+                &mut connection,
+                &client,
+                "http://example.invalid/",
+                Some("3458726"),
+            )
+            .await
+            .unwrap();
+
+        let (
+            sde_build,
+            language,
+            force_iso,
+            axis,
+            kspace,
+            wspace,
+            abyssal,
+            void,
+            gates,
+            moons,
+            third_party,
+            icebelts,
+            trig,
+            jove,
+            ore,
+            hash,
+        ): (
+            Option<String>,
+            String,
+            bool,
+            String,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            Option<bool>,
+            Option<bool>,
+            Option<bool>,
+            Option<bool>,
+            String,
+        ) = connection
+            .query_row(
+                "SELECT sdeBuild, language, forceIsometricPosition2d, isometricProjectedAxis, \
+                 mapKspace, mapWspace, mapAbyssal, mapVoid, withGates, withMoons, \
+                 withThirdParty, withIcebelts, withTriglavianStatus, withJoveObservatories, \
+                 withSpecialOre, hash FROM sdeFingerprint WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                        row.get(10)?,
+                        row.get(11)?,
+                        row.get(12)?,
+                        row.get(13)?,
+                        row.get(14)?,
+                        row.get(15)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(sde_build, Some("3458726".to_string()));
+        assert_eq!(language, "en");
+        assert!(force_iso);
+        assert_eq!(axis, "Z");
+        assert!(kspace);
+        assert!(!wspace);
+        assert!(!abyssal);
+        assert!(!void);
+        assert!(gates);
+        assert!(moons);
+        // with_third_party was false, so the four CommunityConfig flags
+        // were never consulted -- confirms they're recorded as NULL,
+        // not e.g. silently defaulted to false.
+        assert!(!third_party);
+        assert_eq!(icebelts, None);
+        assert_eq!(trig, None);
+        assert_eq!(jove, None);
+        assert_eq!(ore, None);
+        assert_eq!(hash.len(), 64);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // A second build_database() call would violate sdeFingerprint's
+        // singleton PRIMARY KEY -- out of scope for this test (it would
+        // need a second full parse_data() run first), but confirms the
+        // schema-level guarantee is what protects against more than one
+        // row existing, not application logic that could be bypassed.
     }
 
     #[test]

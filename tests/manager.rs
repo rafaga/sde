@@ -11,7 +11,7 @@
 
 use rusqlite::Connection;
 use sde::SdeManager;
-use sde::objects::SdePoint;
+use sde::objects::{ProjectedAxis, SdeFingerprint, SdePoint};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -99,6 +99,37 @@ impl Fixture {
                 groupId INTEGER NOT NULL,
                 PRIMARY KEY (solarSystemId, groupId)
             );
+            CREATE TABLE sdeFingerprint (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                sdeBuild TEXT,
+                language TEXT NOT NULL,
+                forceIsometricPosition2d INTEGER NOT NULL,
+                isometricProjectedAxis TEXT NOT NULL,
+                mapKspace INTEGER NOT NULL,
+                mapWspace INTEGER NOT NULL,
+                mapAbyssal INTEGER NOT NULL,
+                mapVoid INTEGER NOT NULL,
+                withGates INTEGER NOT NULL,
+                withMoons INTEGER NOT NULL,
+                withThirdParty INTEGER NOT NULL,
+                withIcebelts INTEGER,
+                withTriglavianStatus INTEGER,
+                withJoveObservatories INTEGER,
+                withSpecialOre INTEGER,
+                hash TEXT NOT NULL
+            );
+            CREATE TABLE typeStar (
+                typeId INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                color TEXT NOT NULL
+            );
+            CREATE TABLE mapStars (
+                starId INTEGER PRIMARY KEY,
+                solarSystemId INTEGER NOT NULL,
+                locked INTEGER,
+                radius INTEGER,
+                starTypeId INTEGER NOT NULL
+            );
 
             INSERT INTO mapRegions (regionId, regionName) VALUES
                 (10000001, 'Region Alpha'),
@@ -128,6 +159,10 @@ impl Fixture {
                 (30000001, 65), (30000001, 22);
             INSERT INTO mapSolarSystemDisallowedAnchorableGroups (solarSystemId, groupId) VALUES
                 (30000001, 361);
+            INSERT INTO typeStar (typeId, name, color) VALUES
+                (3000, 'G5', '#FFE996');
+            INSERT INTO mapStars (starId, solarSystemId, locked, radius, starTypeId) VALUES
+                (60000001, 30000001, NULL, 696000000, 3000);
             ",
         )
         .expect("cannot populate fixture database");
@@ -152,7 +187,7 @@ impl Fixture {
     }
 
     fn manager(&self) -> SdeManager<'_> {
-        SdeManager::new(&self.path, FACTOR)
+        SdeManager::new(&self.path, FACTOR).unwrap()
     }
 }
 
@@ -187,9 +222,13 @@ fn systempoints_applies_factor_and_coordinate_inversion() {
     // (1000, 2000, 3000) / 100 = (10, 20, 30), inverted -> (-10, -20, -30)
     // coords holds (position2DX, position2DY, 0.0)
     assert_eq!(result.unwrap().coords, [-10.0, -30.0, 0.0]);
+    // same fixture row as the Star test in universe_with_empty_filters_returns_everything
+    assert_eq!(result.unwrap().color, Some(String::from("#FFE996")));
 
     let result = points.get(&30000002usize);
     assert!(result.is_some());
+    // Sys Two has no mapStars row -- color stays None, same as Star does
+    assert_eq!(result.unwrap().color, None);
     assert_eq!(result.unwrap().coords, [10.0, 30.0, 0.0]);
 }
 
@@ -350,6 +389,17 @@ fn universe_with_empty_filters_returns_everything() {
     assert!(sys_two.disallowed_anchor_categories.is_empty());
     assert!(sys_two.disallowed_anchor_groups.is_empty());
 
+    // star: populated only for the one system with a mapStars row
+    // (30000001), None elsewhere -- same "populated vs. genuinely
+    // absent" shape as disallowed_anchor_categories/groups above.
+    let star = sys_one.star.as_ref().expect("sys_one should have a star");
+    assert_eq!(star.id, 60000001);
+    assert_eq!(star.locked, None);
+    assert_eq!(star.radius, Some(696000000));
+    assert_eq!(star.spectral_class, "G5");
+    assert_eq!(star.color, "#FFE996");
+    assert!(sys_two.star.is_none());
+
     let const_one = &manager.universe.constellations[&20000001];
     assert_eq!(const_one.name, "Const One");
     assert_eq!(const_one.region, 10000001);
@@ -481,8 +531,11 @@ fn abstract_systems_without_filter_returns_all() {
     let result = points.get(&30000001usize);
     assert!(result.is_some());
     assert_eq!(result.unwrap().coords, [0.1, 0.2, 0.0]);
+    // same mapStars/typeStar fixture row the K-space get_systems() tests use
+    assert_eq!(result.unwrap().color, Some(String::from("#FFE996")));
     let result = points.get(&30000002usize);
     assert!(result.is_some());
+    assert_eq!(result.unwrap().color, None);
     assert_eq!(result.unwrap().coords, [0.3, 0.4, 0.0]);
     let result = points.get(&30000003usize);
     assert!(result.is_some());
@@ -635,4 +688,128 @@ fn region_coordinates_returns_bounding_box_per_region() {
     // (9000,9000); after inversion new_max = -old_min, new_min = -old_max.
     assert_eq!(beta.max, SdePoint::new(-5000.0, -5000.0, 0.0));
     assert_eq!(beta.min, SdePoint::new(-9000.0, -9000.0, 0.0));
+}
+
+// -------------------------------------------------------------------------
+// get_fingerprint
+// -------------------------------------------------------------------------
+
+fn sample_fingerprint() -> SdeFingerprint {
+    SdeFingerprint {
+        sde_build: Some("3458726".to_string()),
+        language: "en".to_string(),
+        force_isometric_position_2d: true,
+        isometric_projected_axis: ProjectedAxis::Y,
+        map_kspace: true,
+        map_wspace: true,
+        map_abyssal: true,
+        map_void: false,
+        with_gates: true,
+        with_moons: true,
+        with_third_party: false,
+        with_icebelts: None,
+        with_triglavian_status: None,
+        with_jove_observatories: None,
+        with_special_ore: None,
+    }
+}
+
+#[test]
+fn fingerprint_returns_none_when_no_row_written() {
+    let fixture = Fixture::new("fingerprint_none");
+    let manager = fixture.manager();
+    // The fixture creates sdeFingerprint (it's part of the standard
+    // schema) but never inserts into it -- simulates a database built
+    // by calling parse_data() directly, bypassing build_database().
+    assert_eq!(manager.get_fingerprint().unwrap(), None);
+}
+
+#[test]
+fn fingerprint_verifies_matching_hash() {
+    let fixture = Fixture::new("fingerprint_match");
+    let manager = fixture.manager();
+    let connection = Connection::open(&fixture.path).unwrap();
+
+    let fp = sample_fingerprint();
+    let hash = fp.hash();
+    connection
+        .execute(
+            "INSERT INTO sdeFingerprint (id, sdeBuild, language, \
+             forceIsometricPosition2d, isometricProjectedAxis, mapKspace, mapWspace, \
+             mapAbyssal, mapVoid, withGates, withMoons, withThirdParty, withIcebelts, \
+             withTriglavianStatus, withJoveObservatories, withSpecialOre, hash) \
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            rusqlite::params![
+                fp.sde_build,
+                fp.language,
+                fp.force_isometric_position_2d,
+                "Y",
+                fp.map_kspace,
+                fp.map_wspace,
+                fp.map_abyssal,
+                fp.map_void,
+                fp.with_gates,
+                fp.with_moons,
+                fp.with_third_party,
+                fp.with_icebelts,
+                fp.with_triglavian_status,
+                fp.with_jove_observatories,
+                fp.with_special_ore,
+                hash,
+            ],
+        )
+        .unwrap();
+
+    let result = manager.get_fingerprint().unwrap();
+    assert!(result.is_some());
+    let (read_back, matches) = result.unwrap();
+    assert_eq!(read_back, fp);
+    assert!(matches);
+}
+
+#[test]
+fn fingerprint_detects_a_hand_edited_row() {
+    let fixture = Fixture::new("fingerprint_tampered");
+    let manager = fixture.manager();
+    let connection = Connection::open(&fixture.path).unwrap();
+
+    let fp = sample_fingerprint();
+    let hash = fp.hash();
+    connection
+        .execute(
+            "INSERT INTO sdeFingerprint (id, sdeBuild, language, \
+             forceIsometricPosition2d, isometricProjectedAxis, mapKspace, mapWspace, \
+             mapAbyssal, mapVoid, withGates, withMoons, withThirdParty, withIcebelts, \
+             withTriglavianStatus, withJoveObservatories, withSpecialOre, hash) \
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            rusqlite::params![
+                fp.sde_build,
+                fp.language,
+                fp.force_isometric_position_2d,
+                "Y",
+                fp.map_kspace,
+                fp.map_wspace,
+                fp.map_abyssal,
+                fp.map_void,
+                fp.with_gates,
+                fp.with_moons,
+                fp.with_third_party,
+                fp.with_icebelts,
+                fp.with_triglavian_status,
+                fp.with_jove_observatories,
+                fp.with_special_ore,
+                hash,
+            ],
+        )
+        .unwrap();
+    // Someone hand-edits a flag after the fact, without recomputing the
+    // hash -- exactly the scenario this whole table exists to catch.
+    connection
+        .execute("UPDATE sdeFingerprint SET withGates = 0 WHERE id = 1", [])
+        .unwrap();
+
+    let result = manager.get_fingerprint().unwrap();
+    assert!(result.is_some());
+    let (_, matches) = result.unwrap();
+    assert!(!matches);
 }

@@ -85,16 +85,29 @@ async fn main() -> anyhow::Result<()> {
     // (`sde_index` -> `extract` -> `schema` -> `parser::Parser::build_database`,
     // which drives every `parse_*` table and, with `--with-third-party`,
     // `community::process`), so this is the natural place to do it.
+    //
+    // Every `tracing::info!`/`warn!`/etc. this crate's own library code
+    // (`parser`, `community`, `sde_index`, `http`, `manifest`) emits is
+    // silently dropped without a subscriber registered somewhere --
+    // `tracing` has no default "print to console" behavior unlike the
+    // `println!`/`eprintln!` calls those used to be. This binary always
+    // registers a console-printing one (`fmt::layer()`) so running
+    // `sde-builder` keeps showing the same progress output it always
+    // has; a library consumer that never runs this binary (e.g.
+    // `telescope`, calling `Parser::build_database` directly) registers
+    // its own subscriber instead, or none at all, and this crate's
+    // library code doesn't write to its console either way.
+    //
     // `TracyLayer::default()` starts the shared `tracy_client::Client`
     // itself (`Client::start()` is idempotent); open the Tracy desktop app
     // to connect, it auto-discovers the running process.
-    #[cfg(feature = "profile-with-tracy")]
     {
         use tracing_subscriber::layer::SubscriberExt as _;
-        tracing::subscriber::set_global_default(
-            tracing_subscriber::registry().with(tracing_tracy::TracyLayer::default()),
-        )
-        .expect("setting the global tracing subscriber");
+        let registry = tracing_subscriber::registry().with(tracing_subscriber::fmt::layer());
+        #[cfg(feature = "profile-with-tracy")]
+        let registry = registry.with(tracing_tracy::TracyLayer::default());
+        tracing::subscriber::set_global_default(registry)
+            .expect("setting the global tracing subscriber");
     }
 
     let cli = Cli::parse();
@@ -152,8 +165,18 @@ async fn main() -> anyhow::Result<()> {
         with_third_party,
     };
     let sde_parser = parser::Parser::new(&sde_dir, parser_config);
+    // Read back the build number update_as_needed() just wrote (or
+    // confirmed unchanged) to sde-{SDE_VARIANT}.build, purely to record
+    // it in sdeFingerprint -- build_database() doesn't otherwise need
+    // it. `Ok` and not `.context(...)`-wrapped into an early return: a
+    // database with no recorded build number (sdeFingerprint.sdeBuild
+    // = NULL) is still valid, so a read failure here shouldn't abort
+    // the whole build.
+    let build_number = std::fs::read_to_string(data_dir.join(format!("sde-{SDE_VARIANT}.build")))
+        .ok()
+        .map(|s| s.trim().to_string());
     let _summary = sde_parser
-        .build_database(&mut connection, &client, MAPS_URL)
+        .build_database(&mut connection, &client, MAPS_URL, build_number.as_deref())
         .await
         .context("building the database")?;
     println!("sde: Parse complete");

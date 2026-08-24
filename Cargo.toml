@@ -7,7 +7,7 @@ repository = "https://github.com/rafaga/sde/"
 keywords = ["sde", "eve-online"]
 categories = ["games", "value-formatting"]
 exclude = ["tests/",".github/",".gitignore"]
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 
@@ -57,6 +57,7 @@ builder = [
     "dep:serde_json",
     "dep:clap",
     "dep:anyhow",
+    "dep:tracing-subscriber",
 ]
 # Enables live profiling with the Tracy profiler (https://github.com/wolfpld/tracy)
 # for the `sde-builder` CLI: `cargo run --bin sde-builder --features builder,profile-with-tracy -- build`,
@@ -67,12 +68,13 @@ builder = [
 # database-construction pipeline) in the same trace for free, via Cargo's
 # feature unification on the shared `tracing` dependency -- no extra wiring
 # needed on either side.
-profile-with-tracy = ["dep:tracing-subscriber", "dep:tracing-tracy"]
+profile = ["dep:tracing-tracy"]
 
 [dependencies]
 kdtree = "0.8"
 rstar = "0.13"
 rusqlite = { version = "0.40", features = ["bundled", "backup", "blob", "array"] }
+sha2 = "0.11.0"
 tracing = "0.1"
 
 # --- Dependencias opcionales, solo activas con la feature "builder" ---

@@ -32,78 +32,22 @@ pub mod sde_index;
 // (which itself runs parse_data(), then community::process() only if
 // `--with-third-party` was passed).
 
-/// Build process errors. Deliberately without `thiserror`: same
-/// "no abstraction" pattern `SdeManager` already uses (propagates the
-/// underlying crates' errors as-is with `?`), except here we do need to
-/// unify several different error types (HTTP, IO, zip, JSON, sqlite).
-#[derive(Debug)]
-pub enum BuilderError {
-    Io(std::io::Error),
-    Json(serde_json::Error),
-    Http(reqwest::Error),
-    /// The server responded, but with a non-2xx HTTP status.
-    HttpStatus {
-        url: String,
-        status: u16,
-    },
-    /// Error running a SQL query (schema creation, parser inserts,
-    /// etc.).
-    Sqlite(rusqlite::Error),
-    /// Error reading/decompressing a zip file (`builder::extract`).
-    Zip(zip::result::ZipError),
-    /// An SDE record doesn't have the expected shape (a required field
-    /// is missing, or is of a different type than expected). This isn't
-    /// a JSON syntax error (`Json` already covers that, for when the
-    /// file doesn't even parse) nor an I/O error (`Io`) -- the file was
-    /// read and parsed fine, its content simply doesn't match what the
-    /// parser needs.
-    Data(String),
-}
-
-impl std::fmt::Display for BuilderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BuilderError::Io(err) => write!(f, "I/O error: {err}"),
-            BuilderError::Json(err) => write!(f, "JSON error: {err}"),
-            BuilderError::Http(err) => write!(f, "HTTP error: {err}"),
-            BuilderError::HttpStatus { url, status } => {
-                write!(f, "{url} responded with status {status}")
-            }
-            BuilderError::Sqlite(err) => write!(f, "SQLite error: {err}"),
-            BuilderError::Zip(err) => write!(f, "Zip error: {err}"),
-            BuilderError::Data(message) => write!(f, "malformed SDE record: {message}"),
-        }
-    }
-}
-
-impl std::error::Error for BuilderError {}
-
-impl From<std::io::Error> for BuilderError {
-    fn from(err: std::io::Error) -> Self {
-        BuilderError::Io(err)
-    }
-}
-
-impl From<rusqlite::Error> for BuilderError {
-    fn from(err: rusqlite::Error) -> Self {
-        BuilderError::Sqlite(err)
-    }
-}
-
-impl From<zip::result::ZipError> for BuilderError {
-    fn from(err: zip::result::ZipError) -> Self {
-        BuilderError::Zip(err)
-    }
-}
-
-impl From<serde_json::Error> for BuilderError {
-    fn from(err: serde_json::Error) -> Self {
-        BuilderError::Json(err)
-    }
-}
-
-impl From<reqwest::Error> for BuilderError {
-    fn from(err: reqwest::Error) -> Self {
-        BuilderError::Http(err)
-    }
-}
+/// Build process errors.
+///
+/// This used to be its own enum (`Io`/`Json`/`Http`/`HttpStatus`/
+/// `Sqlite`/`Zip`/`Data`), deliberately without `thiserror`, unifying
+/// the several error types the build pipeline touches (HTTP, IO, zip,
+/// JSON, sqlite). It's now a type alias for [`crate::Error`], the same
+/// crate-wide error type [`crate::SdeManager`]'s read methods return --
+/// see `src/error.rs` for why the two were merged and why the
+/// underlying representation is private now.
+///
+/// Kept (rather than removed outright) so downstream code that still
+/// does `use sde::builder::BuilderError` keeps compiling; new code
+/// should use [`crate::Error`] directly.
+#[deprecated(
+    since = "0.3.0",
+    note = "use `sde::Error` instead -- `BuilderError` and `SdeManager`'s \
+            read-path errors are the same type now"
+)]
+pub type BuilderError = crate::Error;

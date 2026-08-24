@@ -43,14 +43,12 @@ pub fn load(maps_dir: &Path) -> Manifest {
     let path = manifest_path(maps_dir);
     match std::fs::read_to_string(&path) {
         Ok(contents) => serde_json::from_str(&contents).unwrap_or_else(|err| {
-            eprintln!(
-                "http: manifest is not readable in {path:?} ({err}), rebuilding from scratch"
-            );
+            tracing::warn!("manifest is not readable in {path:?} ({err}), rebuilding from scratch");
             Manifest::new()
         }),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Manifest::new(),
         Err(err) => {
-            eprintln!("http: can't read the manifest file in {path:?} ({err})");
+            tracing::warn!("can't read the manifest file in {path:?} ({err})");
             Manifest::new()
         }
     }

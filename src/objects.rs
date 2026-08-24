@@ -1,4 +1,5 @@
 use rstar::{AABB, PointDistance, RTreeObject};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::ops::{Add, Div, DivAssign, Mul, MulAssign, Sub};
 
@@ -103,6 +104,18 @@ pub struct SdePoint {
     /// [`SdeSegment`] returned by [`crate::SdeManager::get_connections`]
     /// (or `get_abstract_connections`). Empty for a bare coordinate.
     pub connections: Vec<(usize, usize)>,
+    /// Hex RGB color of this system's star (`typeStar.color`, e.g.
+    /// `"#FFE996"`), shared by every star of the same spectral class --
+    /// see [`Star::color`](crate::objects::Star::color). `None` for a
+    /// bare coordinate, and for a real system with no `mapStars` row
+    /// (same 401-of-8490 gap noted on [`SolarSystem::star`]).
+    ///
+    /// Deliberately kept as the raw hex string rather than a parsed
+    /// color type: `sde` has no rendering-library dependency (not even
+    /// `egui-map`, see the crate-level notes) and shouldn't gain one
+    /// just for this field -- whoever paints the point decides how (or
+    /// whether) to parse it.
+    pub color: Option<String>,
 }
 
 impl SdePoint {
@@ -114,6 +127,7 @@ impl SdePoint {
             id: None,
             name: None,
             connections: Vec::new(),
+            color: None,
         }
     }
 
@@ -180,22 +194,6 @@ impl From<SdePoint> for [f64; 3] {
         val.coords
     }
 }
-
-/*impl DivAssign<i64> for SdePoint {
-    fn div_assign(&mut self, rhs: i64) {
-        self.coords[0] /= rhs as f64;
-        self.coords[1] /= rhs as f64;
-        self.coords[2] /= rhs as f64;
-    }
-}
-
-impl MulAssign<i64> for SdePoint {
-    fn mul_assign(&mut self, rhs: i64) {
-        self.coords[0] *= rhs as f64;
-        self.coords[1] *= rhs as f64;
-        self.coords[2] *= rhs as f64;
-    }
-}*/
 
 impl DivAssign<f64> for SdePoint {
     fn div_assign(&mut self, rhs: f64) {
@@ -445,6 +443,32 @@ impl Default for Planet {
     }
 }
 
+/// The star at the center of a solar system: its own data (from
+/// `mapStars`) plus the spectral-class properties shared by every star
+/// of its type (from `typeStar`, joined via `mapStars.starTypeId ->
+/// typeStar.typeId`).
+#[derive(PartialEq, Clone, Debug)]
+pub struct Star {
+    /// Star identifier (`mapStars.starId`)
+    pub id: u32,
+    /// Whether the star is tidally locked to its primary in a binary
+    /// system. `None` in practice for every real record checked
+    /// (August 2026): `mapStars.locked` never actually shows up in the
+    /// source data, so this column always reads back `NULL` -- kept as
+    /// `Option` rather than defaulting to `false` so "unlocked" and
+    /// "not recorded" stay distinguishable.
+    pub locked: Option<bool>,
+    /// Star radius in meters, if present in the source data.
+    pub radius: Option<u32>,
+    /// Spectral class (e.g. `"G5"`, `"K7"`) -- `typeStar.name`.
+    pub spectral_class: String,
+    /// RGB hex color for this spectral class (e.g. `"#FFE996"`), looked
+    /// up from the embedded `star_colors.json` at build time --
+    /// `typeStar.color`. Shared by every star of the same spectral
+    /// class, not unique per star.
+    pub color: String,
+}
+
 /// Abstraction for a Solar System. It store data relevant to this entity
 ///
 /// Note: no longer derives `Hash`/`Eq` (only `PartialEq`) -- same reason
@@ -482,6 +506,10 @@ pub struct SolarSystem {
     /// restriction above -- via
     /// `mapSolarSystemDisallowedAnchorableGroups`.
     pub disallowed_anchor_groups: Vec<u32>,
+    /// This system's star, if it has one -- `None` for the systems
+    /// that don't (confirmed against real data, August 2026: 401 of
+    /// 8490 real solar systems, 4.7%, have no `mapStars` row at all).
+    pub star: Option<Star>,
     /// The factor that we need to adjust the coordinates
     pub factor: f64,
 }
@@ -500,6 +528,7 @@ impl SolarSystem {
             projected_coords: SdePoint::default(),
             disallowed_anchor_categories: Vec::new(),
             disallowed_anchor_groups: Vec::new(),
+            star: None,
             factor,
         }
     }
@@ -623,6 +652,92 @@ impl Universe {
 impl Default for Universe {
     fn default() -> Self {
         Self::new(1.0)
+    }
+}
+
+/// A record of the settings used to build a specific `sde.db`, plus a
+/// SHA-256 hash over them and the SDE build number -- lets a consumer
+/// detect whether the database (or at least this one table) was
+/// hand-edited after `sde-builder` generated it.
+///
+/// This is tamper-**evidence**, not tamper-**proof**: the hash has no
+/// secret key, and `sde-builder` is a tool anyone can run themselves
+/// against their own database, so there's no party who holds a private
+/// key the way a code-signing certificate would. Anyone with access to
+/// this crate's source (public, on crates.io/GitHub) can recompute a
+/// valid hash for any values they want to write. It answers "does this
+/// table's content match what `sde-builder` actually produced", not
+/// "can I trust this database came from a specific, authorized build".
+/// If that stronger guarantee is ever needed, it requires a genuinely
+/// different mechanism (asymmetric signing, with the private key held
+/// only by a trusted build pipeline that end users never run
+/// themselves) -- not a variation on this one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SdeFingerprint {
+    /// SDE build number (from `latest.jsonl`/the local `.build` file),
+    /// if the caller that built this database had one available.
+    pub sde_build: Option<String>,
+    pub language: String,
+    pub force_isometric_position_2d: bool,
+    pub isometric_projected_axis: ProjectedAxis,
+    pub map_kspace: bool,
+    pub map_wspace: bool,
+    pub map_abyssal: bool,
+    pub map_void: bool,
+    pub with_gates: bool,
+    pub with_moons: bool,
+    pub with_third_party: bool,
+    /// `None` when `with_third_party` is `false` (the four
+    /// `CommunityConfig` flags below it are never consulted in that
+    /// case, so there's nothing meaningful to record).
+    pub with_icebelts: Option<bool>,
+    pub with_triglavian_status: Option<bool>,
+    pub with_jove_observatories: Option<bool>,
+    pub with_special_ore: Option<bool>,
+}
+
+impl SdeFingerprint {
+    /// Canonical string these fields hash to. Used both when writing the
+    /// fingerprint (`builder::parser::Parser::build_database`) and when
+    /// verifying it (`SdeManager::get_fingerprint`) -- kept in this one
+    /// place, in a crate location neither side is gated away from, so
+    /// the two can never drift out of sync with each other.
+    ///
+    /// Deliberately a plain `format!` with `|` separators instead of a
+    /// general-purpose serialization format (JSON, etc.): a
+    /// serialization library's exact byte output isn't part of its
+    /// documented contract and can change between versions without it
+    /// being considered a breaking change, which would silently change
+    /// every previously-computed hash's meaning. This has no such
+    /// external dependency, so it can only change here, deliberately.
+    fn to_hash_input(&self) -> String {
+        format!(
+            "{}|{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{}|{:?}|{:?}|{:?}|{:?}",
+            self.sde_build.as_deref().unwrap_or(""),
+            self.language,
+            self.force_isometric_position_2d,
+            self.isometric_projected_axis,
+            self.map_kspace,
+            self.map_wspace,
+            self.map_abyssal,
+            self.map_void,
+            self.with_gates,
+            self.with_moons,
+            self.with_third_party,
+            self.with_icebelts,
+            self.with_triglavian_status,
+            self.with_jove_observatories,
+            self.with_special_ore,
+        )
+    }
+
+    /// SHA-256 hex digest of [`Self::to_hash_input`].
+    pub fn hash(&self) -> String {
+        let digest = Sha256::digest(self.to_hash_input().as_bytes());
+        digest
+            .iter()
+            .map(|byte| format!("{:02x}", byte))
+            .collect::<String>()
     }
 }
 
@@ -868,5 +983,72 @@ mod tests {
     #[test]
     fn universe_default_factor_is_one() {
         assert_eq!(Universe::default().factor, 1.0);
+    }
+
+    fn sample_fingerprint() -> SdeFingerprint {
+        SdeFingerprint {
+            sde_build: Some("3458726".to_string()),
+            language: "en".to_string(),
+            force_isometric_position_2d: false,
+            isometric_projected_axis: ProjectedAxis::Y,
+            map_kspace: true,
+            map_wspace: true,
+            map_abyssal: true,
+            map_void: false,
+            with_gates: true,
+            with_moons: true,
+            with_third_party: false,
+            with_icebelts: None,
+            with_triglavian_status: None,
+            with_jove_observatories: None,
+            with_special_ore: None,
+        }
+    }
+
+    #[test]
+    fn fingerprint_hash_is_deterministic() {
+        assert_eq!(sample_fingerprint().hash(), sample_fingerprint().hash());
+    }
+
+    #[test]
+    fn fingerprint_hash_is_a_64_char_hex_string() {
+        let hash = sample_fingerprint().hash();
+        assert_eq!(hash.len(), 64);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn fingerprint_hash_changes_when_a_single_flag_changes() {
+        let base = sample_fingerprint();
+        let mut changed = sample_fingerprint();
+        changed.with_moons = false;
+        assert_ne!(base.hash(), changed.hash());
+    }
+
+    #[test]
+    fn fingerprint_hash_changes_when_sde_build_changes() {
+        let base = sample_fingerprint();
+        let mut changed = sample_fingerprint();
+        changed.sde_build = Some("9999999".to_string());
+        assert_ne!(base.hash(), changed.hash());
+    }
+
+    #[test]
+    fn fingerprint_hash_distinguishes_none_from_explicit_values() {
+        // A subtle case worth confirming directly: with_third_party's
+        // four dependent flags at None (not consulted) must hash
+        // differently than if they had been explicitly Some(false) --
+        // otherwise "third-party data was never attempted" and
+        // "third-party data was attempted with everything disabled"
+        // would be indistinguishable.
+        let mut none_case = sample_fingerprint();
+        none_case.with_third_party = true;
+        let mut false_case = sample_fingerprint();
+        false_case.with_third_party = true;
+        false_case.with_icebelts = Some(false);
+        false_case.with_triglavian_status = Some(false);
+        false_case.with_jove_observatories = Some(false);
+        false_case.with_special_ore = Some(false);
+        assert_ne!(none_case.hash(), false_case.hash());
     }
 }

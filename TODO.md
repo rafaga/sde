@@ -20,7 +20,7 @@ See [ERD.md](ERD.md) for the diagram of the tables already implemented.
 |---|---|---|---|---|
 | `categories.jsonl` | Core taxonomy | `invCategories` | ✅ | ❌ |
 | `groups.jsonl` | Core taxonomy | `invGroups` | ✅ | ❌ |
-| `types.jsonl` | Core taxonomy | `invTypes`, `typeStar` | ✅ | ❌ |
+| `types.jsonl` | Core taxonomy | `invTypes`, `typeStar` | ✅ | 🟡 |
 | `races.jsonl` | Core taxonomy | `races` | ✅ | ❌ |
 | `factions.jsonl` | Factions & NPC corporations | `factions`, `factionRace` | ✅ | ❌ |
 | `npcCorporations.jsonl` | Factions & NPC corporations | `npcCorporations`, `npcCorporationAllowedRaces`, `npcCorporationDivisionAssignments`, `npcCorporationTrades`, `npcCorporationInvestors` | ✅ | ❌ |
@@ -32,7 +32,7 @@ See [ERD.md](ERD.md) for the diagram of the tables already implemented.
 | `mapConstellations.jsonl` | Universe / map | `mapConstellations` | ✅ | 🟡 |
 | `mapSolarSystems.jsonl` | Universe / map | `mapSolarSystems`, `factionSolarSystem`, `mapSolarSystemDisallowedAnchorableCategories`, `mapSolarSystemDisallowedAnchorableGroups`, `mapSolarSystemSubType` | ✅ | 🟡 |
 | `mapStargates.jsonl` | Universe / map | `mapSystemGates`, `mapSystemConnections` | ✅ | 🟡 |
-| `mapStars.jsonl` | Universe / map | `mapStars` | ✅ | ❌ |
+| `mapStars.jsonl` | Universe / map | `mapStars` | ✅ | ✅ |
 | `mapPlanets.jsonl` | Universe / map | `mapPlanets` | ✅ | 🟡 |
 | `mapMoons.jsonl` | Universe / map | `mapMoons` | ✅ | 🟡 |
 | `mapAsteroidBelts.jsonl` | Universe / map | — | ❌ | ❌ |
@@ -98,12 +98,14 @@ See [ERD.md](ERD.md) for the diagram of the tables already implemented.
 
 **The central point of this whole document**: of the 17 files that are
 implemented, only the map-related ones
-(`mapRegions`/`mapConstellations`/`mapSolarSystems`/`mapStargates`(via
-its derived table)/`mapPlanets`/`mapMoons`) have *any* read coverage,
-and none of them have it complete except the dynamic table
-`mapAbstractSystems` (from `builder::community`, not from an SDE file).
-Everything else -- item taxonomy, races, factions, corporations, stars,
-stations -- gets written but can't be queried from `SdeManager` today.
+(`mapRegions`/`mapConstellations`/`mapSolarSystems`/`mapStars`/`mapStargates`(via
+its derived table)/`mapPlanets`/`mapMoons`) have *any* read coverage.
+Of those, `mapStars` and the dynamic table `mapAbstractSystems` (from
+`builder::community`, not from an SDE file) are the only ones with it
+complete. Everything else -- most of item taxonomy (`typeStar` is the
+one narrow exception, reachable through `mapStars`' join, not on its
+own), races, factions, corporations, stations -- gets written but
+can't be queried from `SdeManager` today.
 
 ## Known limitations, documented in the code
 
@@ -123,4 +125,25 @@ stations -- gets written but can't be queried from `SdeManager` today.
   default -- gated behind `ParserConfig.with_third_party` /
   `sde-builder build --with-third-party`, so a plain build produces a
   database containing canonical SDE data only.
+
+## Build fingerprint
+
+`sdeFingerprint` (one row, written by
+`builder::parser::Parser::build_database`) records the SDE build
+number and every `ParserConfig`/`CommunityConfig` flag that affects
+what ends up in the database, plus a SHA-256 hash over them --
+`SdeManager::get_fingerprint()` reads it back and reports whether the
+row still matches that hash.
+
+This is tamper-**evidence**, not tamper-**proof**: `sde-builder` is a
+tool anyone runs against their own copy, so there's no party who holds
+a private key the way a code-signing certificate would, and the hash
+has none either -- anyone with access to this crate's public source
+can compute a valid hash for any values they want to write. It answers
+"does this table's content match what `sde-builder` actually
+produced", not "can I trust this database came from a specific,
+authorized build". The latter would need a genuinely different
+mechanism (asymmetric signing, with the private key held only by a
+trusted build pipeline end users never run themselves), not a
+variation on this one.
 

@@ -9,7 +9,7 @@
 //! (preserving `maps/`, see [`super::manifest::manifest_path`]) is
 //! `builder::extract`'s job.
 
-use crate::builder::BuilderError;
+use crate::Error;
 use crate::builder::http;
 use reqwest::Client;
 use std::path::Path;
@@ -88,7 +88,7 @@ pub async fn update_as_needed(
     data_dir: &Path,
     sde_url_base: &str,
     variant: &str,
-) -> Result<bool, BuilderError> {
+) -> Result<bool, Error> {
     std::fs::create_dir_all(data_dir)?;
 
     let build_file = data_dir.join(format!("sde-{variant}.build"));
@@ -99,13 +99,13 @@ pub async fn update_as_needed(
     let index_contents = match http::fetch_text(client, &index_url).await {
         Ok(contents) => contents,
         Err(err) => {
-            eprintln!("sde_index: couldn't download {index_url} ({err})");
+            tracing::warn!("couldn't download {index_url} ({err})");
             return Ok(false);
         }
     };
 
     let Some(latest_build) = find_sde_build_number(&index_contents) else {
-        eprintln!("sde_index: couldn't determine the most recent build number in {index_url}");
+        tracing::warn!("couldn't determine the most recent build number in {index_url}");
         return Ok(false);
     };
 
@@ -114,12 +114,12 @@ pub async fn update_as_needed(
         .map(|s| s.trim().to_string());
 
     if current_build.as_deref() == Some(latest_build.as_str()) && zip_file.exists() {
-        println!("sde_index: {variant} data already up to date (build {latest_build})");
+        tracing::info!("{variant} data already up to date (build {latest_build})");
         return Ok(false);
     }
 
-    println!(
-        "sde_index: new build available ({} -> {latest_build}), downloading {variant} data",
+    tracing::info!(
+        "new build available ({} -> {latest_build}), downloading {variant} data",
         current_build.as_deref().unwrap_or("none")
     );
 
