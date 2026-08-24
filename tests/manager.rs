@@ -118,6 +118,18 @@ impl Fixture {
                 withSpecialOre INTEGER,
                 hash TEXT NOT NULL
             );
+            CREATE TABLE typeStar (
+                typeId INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                color TEXT NOT NULL
+            );
+            CREATE TABLE mapStars (
+                starId INTEGER PRIMARY KEY,
+                solarSystemId INTEGER NOT NULL,
+                locked INTEGER,
+                radius INTEGER,
+                starTypeId INTEGER NOT NULL
+            );
 
             INSERT INTO mapRegions (regionId, regionName) VALUES
                 (10000001, 'Region Alpha'),
@@ -147,6 +159,10 @@ impl Fixture {
                 (30000001, 65), (30000001, 22);
             INSERT INTO mapSolarSystemDisallowedAnchorableGroups (solarSystemId, groupId) VALUES
                 (30000001, 361);
+            INSERT INTO typeStar (typeId, name, color) VALUES
+                (3000, 'G5', '#FFE996');
+            INSERT INTO mapStars (starId, solarSystemId, locked, radius, starTypeId) VALUES
+                (60000001, 30000001, NULL, 696000000, 3000);
             ",
         )
         .expect("cannot populate fixture database");
@@ -368,6 +384,17 @@ fn universe_with_empty_filters_returns_everything() {
     let sys_two = &manager.universe.solar_systems[&30000002];
     assert!(sys_two.disallowed_anchor_categories.is_empty());
     assert!(sys_two.disallowed_anchor_groups.is_empty());
+
+    // star: populated only for the one system with a mapStars row
+    // (30000001), None elsewhere -- same "populated vs. genuinely
+    // absent" shape as disallowed_anchor_categories/groups above.
+    let star = sys_one.star.as_ref().expect("sys_one should have a star");
+    assert_eq!(star.id, 60000001);
+    assert_eq!(star.locked, None);
+    assert_eq!(star.radius, Some(696000000));
+    assert_eq!(star.spectral_class, "G5");
+    assert_eq!(star.color, "#FFE996");
+    assert!(sys_two.star.is_none());
 
     let const_one = &manager.universe.constellations[&20000001];
     assert_eq!(const_one.name, "Const One");

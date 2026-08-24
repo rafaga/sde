@@ -8,7 +8,7 @@
 //!
 use crate::objects::{
     Constellation, Moon, Planet, ProjectedAxis, Region, SdeFingerprint, SdePoint, SdeSegment,
-    SolarSystem, Universe,
+    SolarSystem, Star, Universe,
 };
 use objects::EveRegionArea;
 use rusqlite::ToSql;
@@ -745,12 +745,17 @@ impl<'a> SdeManager<'a> {
     /// `centerX`/`Y`/`Z`) and its 2D map position (`projected_coords`,
     /// from `position2DX`/`Y`, falling back to `(0.0, 0.0)` if the
     /// system has none) plus its stargate `connections`,
-    /// `disallowed_anchor_categories`, and `disallowed_anchor_groups`,
-    /// each populated by its own second query (over
+    /// `disallowed_anchor_categories`, `disallowed_anchor_groups`, and
+    /// `star`, each populated by its own second query (over
     /// `mapSystemConnections`/`mapSolarSystemDisallowedAnchorableCategories`/
-    /// `...Groups` respectively) -- empty for the (large majority of)
-    /// systems with no restrictions of that kind, populated for the
-    /// ones that do. Unlike
+    /// `...Groups`/`mapStars` joined with `typeStar` respectively).
+    /// `disallowed_anchor_categories`/`disallowed_anchor_groups` come
+    /// back empty for the (large majority of) systems with no
+    /// restrictions of that kind, populated for the ones that do.
+    /// `star` is `None` for the systems with no `mapStars` row (401 of
+    /// 8490 real solar systems, 4.7%, confirmed August 2026), populated
+    /// with both the star's own data and its spectral-class properties
+    /// for the rest. Unlike
     /// [`Self::get_systems`]/[`Self::get_connections`], systems
     /// without a 2D projection are kept (with that fallback position)
     /// rather than excluded -- this method feeds general system data,
@@ -861,6 +866,26 @@ impl<'a> SdeManager<'a> {
             let group_id = row.get::<usize, u32>(1)?;
             result.entry(system_id).and_modify(|point| {
                 point.disallowed_anchor_groups.push(group_id);
+            });
+        }
+
+        let query = String::from(
+            "SELECT ms.solarSystemId, ms.starId, ms.locked, ms.radius, ts.name, ts.color \
+             FROM mapStars AS ms INNER JOIN typeStar AS ts ON (ms.starTypeId = ts.typeId);",
+        );
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let system_id = row.get::<usize, u32>(0)?;
+            let star = Star {
+                id: row.get(1)?,
+                locked: row.get(2)?,
+                radius: row.get(3)?,
+                spectral_class: row.get(4)?,
+                color: row.get(5)?,
+            };
+            result.entry(system_id).and_modify(|point| {
+                point.star = Some(star);
             });
         }
 

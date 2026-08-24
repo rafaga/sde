@@ -20,7 +20,7 @@ See [ERD.md](ERD.md) for the diagram of the tables already implemented.
 |---|---|---|---|---|
 | `categories.jsonl` | Core taxonomy | `invCategories` | ✅ | ❌ |
 | `groups.jsonl` | Core taxonomy | `invGroups` | ✅ | ❌ |
-| `types.jsonl` | Core taxonomy | `invTypes`, `typeStar` | ✅ | ❌ |
+| `types.jsonl` | Core taxonomy | `invTypes`, `typeStar` | ✅ | 🟡 |
 | `races.jsonl` | Core taxonomy | `races` | ✅ | ❌ |
 | `factions.jsonl` | Factions & NPC corporations | `factions`, `factionRace` | ✅ | ❌ |
 | `npcCorporations.jsonl` | Factions & NPC corporations | `npcCorporations`, `npcCorporationAllowedRaces`, `npcCorporationDivisionAssignments`, `npcCorporationTrades`, `npcCorporationInvestors` | ✅ | ❌ |
@@ -32,7 +32,7 @@ See [ERD.md](ERD.md) for the diagram of the tables already implemented.
 | `mapConstellations.jsonl` | Universe / map | `mapConstellations` | ✅ | 🟡 |
 | `mapSolarSystems.jsonl` | Universe / map | `mapSolarSystems`, `factionSolarSystem`, `mapSolarSystemDisallowedAnchorableCategories`, `mapSolarSystemDisallowedAnchorableGroups`, `mapSolarSystemSubType` | ✅ | 🟡 |
 | `mapStargates.jsonl` | Universe / map | `mapSystemGates`, `mapSystemConnections` | ✅ | 🟡 |
-| `mapStars.jsonl` | Universe / map | `mapStars` | ✅ | ❌ |
+| `mapStars.jsonl` | Universe / map | `mapStars` | ✅ | ✅ |
 | `mapPlanets.jsonl` | Universe / map | `mapPlanets` | ✅ | 🟡 |
 | `mapMoons.jsonl` | Universe / map | `mapMoons` | ✅ | 🟡 |
 | `mapAsteroidBelts.jsonl` | Universe / map | — | ❌ | ❌ |
@@ -98,12 +98,14 @@ See [ERD.md](ERD.md) for the diagram of the tables already implemented.
 
 **The central point of this whole document**: of the 17 files that are
 implemented, only the map-related ones
-(`mapRegions`/`mapConstellations`/`mapSolarSystems`/`mapStargates`(via
-its derived table)/`mapPlanets`/`mapMoons`) have *any* read coverage,
-and none of them have it complete except the dynamic table
-`mapAbstractSystems` (from `builder::community`, not from an SDE file).
-Everything else -- item taxonomy, races, factions, corporations, stars,
-stations -- gets written but can't be queried from `SdeManager` today.
+(`mapRegions`/`mapConstellations`/`mapSolarSystems`/`mapStars`/`mapStargates`(via
+its derived table)/`mapPlanets`/`mapMoons`) have *any* read coverage.
+Of those, `mapStars` and the dynamic table `mapAbstractSystems` (from
+`builder::community`, not from an SDE file) are the only ones with it
+complete. Everything else -- most of item taxonomy (`typeStar` is the
+one narrow exception, reachable through `mapStars`' join, not on its
+own), races, factions, corporations, stations -- gets written but
+can't be queried from `SdeManager` today.
 
 ## Known limitations, documented in the code
 
