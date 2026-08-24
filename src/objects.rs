@@ -104,6 +104,18 @@ pub struct SdePoint {
     /// [`SdeSegment`] returned by [`crate::SdeManager::get_connections`]
     /// (or `get_abstract_connections`). Empty for a bare coordinate.
     pub connections: Vec<(usize, usize)>,
+    /// Hex RGB color of this system's star (`typeStar.color`, e.g.
+    /// `"#FFE996"`), shared by every star of the same spectral class --
+    /// see [`Star::color`](crate::objects::Star::color). `None` for a
+    /// bare coordinate, and for a real system with no `mapStars` row
+    /// (same 401-of-8490 gap noted on [`SolarSystem::star`]).
+    ///
+    /// Deliberately kept as the raw hex string rather than a parsed
+    /// color type: `sde` has no rendering-library dependency (not even
+    /// `egui-map`, see the crate-level notes) and shouldn't gain one
+    /// just for this field -- whoever paints the point decides how (or
+    /// whether) to parse it.
+    pub color: Option<String>,
 }
 
 impl SdePoint {
@@ -115,6 +127,7 @@ impl SdePoint {
             id: None,
             name: None,
             connections: Vec::new(),
+            color: None,
         }
     }
 

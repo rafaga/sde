@@ -200,6 +200,7 @@ impl<'a> SdeManager<'a> {
             name: None,
             coords: [0.0, 0.0, 0.0],
             connections: Vec::new(),
+            color: None,
         };
         while let Some(row) = rows.next()? {
             let id = row.get::<usize, isize>(0)?;
@@ -218,6 +219,7 @@ impl<'a> SdeManager<'a> {
                     name: Some(row.get::<usize, String>(3)?),
                     coords: [x, y, 0.0],
                     connections: Vec::new(),
+                    color: None,
                 };
             }
             point.connections.push((
@@ -228,6 +230,24 @@ impl<'a> SdeManager<'a> {
         if last_id != isize::MIN {
             result.insert(point.id.unwrap(), point);
         }
+
+        // Star color, joined in separately (like get_solarsystem does for
+        // SolarSystem.star): the main query above already depends on a
+        // JOIN against mapSystemConnections, so folding mapStars/typeStar
+        // into it directly would tie "has a color" to "has a stargate
+        // connection" for no reason. A second pass over `result` keeps the
+        // color purely additive -- systems with no mapStars row (~4.7%,
+        // see SolarSystem::star) simply keep color: None.
+        let query = "SELECT ms.solarSystemId, ts.color \
+                      FROM mapStars AS ms INNER JOIN typeStar AS ts ON (ms.starTypeId = ts.typeId);";
+        let mut statement = connection.prepare(query)?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let system_id = row.get::<usize, isize>(0)? as usize;
+            let color: String = row.get(1)?;
+            result.entry(system_id).and_modify(|p| p.color = Some(color));
+        }
+
         Ok(result)
     }
 
@@ -503,6 +523,7 @@ impl<'a> SdeManager<'a> {
             name: None,
             coords: [0.0, 0.0, 0.0],
             connections: Vec::new(),
+            color: None,
         };
         while let Some(row) = rows.next()? {
             let id = row.get::<usize, isize>(0)?;
@@ -520,6 +541,7 @@ impl<'a> SdeManager<'a> {
                             name: None,
                             coords: [0.0, 0.0, 0.0],
                             connections: Vec::new(),
+                            color: None,
                         },
                     );
                     result.insert(finished.id.unwrap(), finished);
@@ -536,6 +558,7 @@ impl<'a> SdeManager<'a> {
                     name: Some(row.get::<usize, String>(6)?),
                     coords: [x, y, 0.0],
                     connections: Vec::new(),
+                    color: None,
                 };
             }
             point.connections.push((
@@ -546,6 +569,22 @@ impl<'a> SdeManager<'a> {
         if current_index != isize::MIN {
             result.insert(point.id.unwrap(), point);
         }
+
+        // Star color, same second-pass approach as get_systems (see there
+        // for why it isn't folded into the main query): unscoped by
+        // region, but `.and_modify` is a no-op for any solarSystemId not
+        // already a key of `result`, so this is still effectively
+        // region-filtered.
+        let query = "SELECT ms.solarSystemId, ts.color \
+                      FROM mapStars AS ms INNER JOIN typeStar AS ts ON (ms.starTypeId = ts.typeId);";
+        let mut statement = connection.prepare(query)?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let system_id = row.get::<usize, isize>(0)? as usize;
+            let color: String = row.get(1)?;
+            result.entry(system_id).and_modify(|p| p.color = Some(color));
+        }
+
         Ok(result)
     }
 

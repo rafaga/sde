@@ -222,9 +222,13 @@ fn systempoints_applies_factor_and_coordinate_inversion() {
     // (1000, 2000, 3000) / 100 = (10, 20, 30), inverted -> (-10, -20, -30)
     // coords holds (position2DX, position2DY, 0.0)
     assert_eq!(result.unwrap().coords, [-10.0, -30.0, 0.0]);
+    // same fixture row as the Star test in universe_with_empty_filters_returns_everything
+    assert_eq!(result.unwrap().color, Some(String::from("#FFE996")));
 
     let result = points.get(&30000002usize);
     assert!(result.is_some());
+    // Sys Two has no mapStars row -- color stays None, same as Star does
+    assert_eq!(result.unwrap().color, None);
     assert_eq!(result.unwrap().coords, [10.0, 30.0, 0.0]);
 }
 
@@ -527,8 +531,11 @@ fn abstract_systems_without_filter_returns_all() {
     let result = points.get(&30000001usize);
     assert!(result.is_some());
     assert_eq!(result.unwrap().coords, [0.1, 0.2, 0.0]);
+    // same mapStars/typeStar fixture row the K-space get_systems() tests use
+    assert_eq!(result.unwrap().color, Some(String::from("#FFE996")));
     let result = points.get(&30000002usize);
     assert!(result.is_some());
+    assert_eq!(result.unwrap().color, None);
     assert_eq!(result.unwrap().coords, [0.3, 0.4, 0.0]);
     let result = points.get(&30000003usize);
     assert!(result.is_some());
