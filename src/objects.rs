@@ -182,22 +182,6 @@ impl From<SdePoint> for [f64; 3] {
     }
 }
 
-/*impl DivAssign<i64> for SdePoint {
-    fn div_assign(&mut self, rhs: i64) {
-        self.coords[0] /= rhs as f64;
-        self.coords[1] /= rhs as f64;
-        self.coords[2] /= rhs as f64;
-    }
-}
-
-impl MulAssign<i64> for SdePoint {
-    fn mul_assign(&mut self, rhs: i64) {
-        self.coords[0] *= rhs as f64;
-        self.coords[1] *= rhs as f64;
-        self.coords[2] *= rhs as f64;
-    }
-}*/
-
 impl DivAssign<f64> for SdePoint {
     fn div_assign(&mut self, rhs: f64) {
         self.coords[0] /= rhs;

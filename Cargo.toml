@@ -68,7 +68,7 @@ builder = [
 # database-construction pipeline) in the same trace for free, via Cargo's
 # feature unification on the shared `tracing` dependency -- no extra wiring
 # needed on either side.
-profile-with-tracy = ["dep:tracing-tracy"]
+profile = ["dep:tracing-tracy"]
 
 [dependencies]
 kdtree = "0.8"

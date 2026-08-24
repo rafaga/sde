@@ -46,10 +46,11 @@
 //!   space-separated tokens, that type simply isn't treated as a star
 //!   (it isn't inserted into `typeStar`) and the rest of the file keeps
 //!   processing normally.
-//! - Color extraction uses `strip_prefix('(')`/`strip_suffix(')')`,
-//!   tolerant of malformed data (a value without surrounding
-//!   parentheses is kept as-is rather than having its first/last
-//!   character blindly stripped).
+//! - Color extraction looks up the star's RGB code in the embedded
+//!   `star_colors.json` by the first two characters of `parts[1]` (the
+//!   spectral class, e.g. `"G5"`), not from the parenthesized token.
+//!   An unknown spectral class is an `Error::data`, failing the whole
+//!   parse.
 //! - **Transactions**: this file's individual `parse_*` functions,
 //!   called on their own, do NOT wrap their inserts in an explicit
 //!   transaction (autocommit per INSERT, SQLite's default mode) -- only
@@ -248,6 +249,20 @@ pub struct StarTypeState {
 #[derive(Debug, Default)]
 pub struct SystemScopeState {
     pub systems_in_scope: std::collections::HashSet<i64>,
+}
+
+/// Root of `star_colors.json`, embedded via `include_str!`: maps each
+/// spectral class (e.g. `"G5"`) to its color info.
+#[derive(Debug, serde::Deserialize)]
+struct StarColors {
+    spectral_classes: std::collections::HashMap<String, StarColorEntry>,
+}
+
+/// A single spectral class entry. Only `hex` is consumed (the RGB code
+/// stored in `typeStar.color`); `temperature_K`/`rgb` are ignored.
+#[derive(Debug, serde::Deserialize)]
+struct StarColorEntry {
+    hex: String,
 }
 
 // ---------------------------------------------------------------------
@@ -498,6 +513,9 @@ impl Parser {
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
 
+        let star_colors: StarColors =
+            serde_json::from_str(include_str!("star_colors.json"))?;
+
         let mut count = 0usize;
         for record in iter_jsonl_records(&self.sde_directory, "types")? {
             let record = record?;
@@ -516,11 +534,17 @@ impl Parser {
                 let parts: Vec<&str> = name.split(' ').collect();
                 if parts.len() >= 3 {
                     let star_name = parts[1];
-                    let color_token = parts[2];
-                    let color = color_token
-                        .strip_prefix('(')
-                        .and_then(|s| s.strip_suffix(')'))
-                        .unwrap_or(color_token);
+                    let spectral_class: String = star_name.chars().take(2).collect();
+                    let color = &star_colors
+                        .spectral_classes
+                        .get(&spectral_class)
+                        .ok_or_else(|| {
+                            Error::data(format!(
+                                "unknown spectral class `{spectral_class}` (from `{star_name}`) \
+                                 in star_colors.json"
+                            ))
+                        })?
+                        .hex;
                     let star_type_id = self.add_star_type(connection, id, star_name, color)?;
                     state.star_type_ids.insert(id, star_type_id);
                 }
@@ -2262,7 +2286,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(name, "G5");
-        assert_eq!(color, "ffcc00");
+        assert_eq!(color, "#FFE996");
 
         // "Rifter" (Frigate group, not Sun) shouldn't generate a row in typeStar.
         let total_star_types: i64 = connection
