@@ -211,7 +211,7 @@ pub fn setup_special_anomalies(connection: &Connection) -> Result<(), Error> {
     connection.execute(
         "UPDATE mapSolarSystems SET specialOreAnom = 1 WHERE solarSystemId IN ( \
             SELECT m.solarSystemId FROM typeStar AS ts \
-            INNER JOIN mapStars AS m ON (ts.starTypeId = m.starTypeId) \
+            INNER JOIN mapStars AS m ON (ts.typeId = m.starTypeId) \
             WHERE ts.name = ?1 \
          )",
         rusqlite::params!["A0"],
@@ -1153,7 +1153,7 @@ mod tests {
             .unwrap();
         let star_type_id: i64 = connection
             .query_row(
-                "SELECT starTypeId FROM typeStar WHERE typeId = 3000",
+                "SELECT typeId FROM typeStar WHERE typeId = 3000",
                 [],
                 |row| row.get(0),
             )
