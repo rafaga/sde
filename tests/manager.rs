@@ -11,7 +11,7 @@
 
 use rusqlite::Connection;
 use sde::SdeManager;
-use sde::objects::{ProjectedAxis, SdeFingerprint, SdePoint};
+use sde::objects::{Position2DMode, ProjectedAxis, SdeFingerprint, SdePoint};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -219,9 +219,9 @@ fn systempoints_applies_factor_and_coordinate_inversion() {
     let result = points.get(&30000001usize);
     assert!(result.is_some());
     assert_eq!(result.unwrap().name, Some(String::from("Sys One")));
-    // (1000, 2000, 3000) / 100 = (10, 20, 30), inverted -> (-10, -20, -30)
+    // (1000, 3000) / 100 = (10, 30), Y-only inversion -> (10, -30)
     // coords holds (position2DX, position2DY, 0.0)
-    assert_eq!(result.unwrap().coords, [-10.0, -30.0, 0.0]);
+    assert_eq!(result.unwrap().coords, [10.0, -30.0, 0.0]);
     // same fixture row as the Star test in universe_with_empty_filters_returns_everything
     assert_eq!(result.unwrap().color, Some(String::from("#FFE996")));
 
@@ -229,7 +229,8 @@ fn systempoints_applies_factor_and_coordinate_inversion() {
     assert!(result.is_some());
     // Sys Two has no mapStars row -- color stays None, same as Star does
     assert_eq!(result.unwrap().color, None);
-    assert_eq!(result.unwrap().coords, [10.0, 30.0, 0.0]);
+    // (-1000, -3000) / 100 = (-10, -30), Y-only inversion -> (-10, 30)
+    assert_eq!(result.unwrap().coords, [-10.0, 30.0, 0.0]);
 }
 
 #[test]
@@ -249,10 +250,10 @@ fn systempoints_with_negative_factor_multiplies() {
     let mut manager = fixture.manager();
     manager.factor = -100.0; // negative factor multiplies by its absolute value
     let points = manager.get_systems().unwrap();
-    // (1000 * 100) inverted -> -100000
+    // (1000 * 100, 3000 * 100) with Y-only inversion -> (100000, -300000)
     let result = points.get(&30000001usize);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().coords, [-100000.0, -300000.0, 0.0]);
+    assert_eq!(result.unwrap().coords, [100000.0, -300000.0, 0.0]);
 }
 
 #[test]
@@ -291,10 +292,10 @@ fn connections_returns_lines_with_scaled_inverted_coords() {
     assert_eq!(lines.len(), 2);
     let line = lines.get(&expected_id).expect("conn-1-2 not found");
     assert_eq!(line.id, expected_id);
-    // point1 = system A (30000001): (x, y) scaled and inverted
-    assert_eq!(line.point1, [-10.0, -30.0]);
+    // point1 = system A (30000001): (x, y) scaled, Y inverted
+    assert_eq!(line.point1, [10.0, -30.0]);
     // point2 = system B (30000002)
-    assert_eq!(line.point2, [10.0, 30.0]);
+    assert_eq!(line.point2, [-10.0, 30.0]);
 }
 
 // -------------------------------------------------------------------------
@@ -675,8 +676,8 @@ fn region_coordinates_returns_bounding_box_per_region() {
     assert_eq!(alpha.region_id, 10000001);
     assert_eq!(alpha.name, "Region Alpha");
     // Region Alpha's fixture systems are position2D (1000,3000) and
-    // (-1000,-3000); coordinate inversion (swap + negate) maps this
-    // symmetric bounding box back onto itself. Z is always 0 -- the
+    // (-1000,-3000); coordinate inversion (Y-only swap + negate) maps
+    // this symmetric bounding box back onto itself. Z is always 0 -- the
     // bounding box has been 2D since the migration from projX/Y/Z to position2DX/Y.
     assert_eq!(alpha.max, SdePoint::new(1000.0, 3000.0, 0.0));
     assert_eq!(alpha.min, SdePoint::new(-1000.0, -3000.0, 0.0));
@@ -685,9 +686,10 @@ fn region_coordinates_returns_bounding_box_per_region() {
     assert_eq!(beta.region_id, 10000002);
     assert_eq!(beta.name, "Region Beta");
     // Region Beta's fixture systems are position2D (5000,5000) and
-    // (9000,9000); after inversion new_max = -old_min, new_min = -old_max.
-    assert_eq!(beta.max, SdePoint::new(-5000.0, -5000.0, 0.0));
-    assert_eq!(beta.min, SdePoint::new(-9000.0, -9000.0, 0.0));
+    // (9000,9000); after the Y-only inversion X stays raw while
+    // new_max.y = -old_min.y and new_min.y = -old_max.y.
+    assert_eq!(beta.max, SdePoint::new(9000.0, -5000.0, 0.0));
+    assert_eq!(beta.min, SdePoint::new(5000.0, -9000.0, 0.0));
 }
 
 // -------------------------------------------------------------------------
@@ -698,8 +700,7 @@ fn sample_fingerprint() -> SdeFingerprint {
     SdeFingerprint {
         sde_build: Some("3458726".to_string()),
         language: "en".to_string(),
-        force_isometric_position_2d: true,
-        isometric_projected_axis: ProjectedAxis::Y,
+        position_2d: Position2DMode::Isometric(ProjectedAxis::Y),
         map_kspace: true,
         map_wspace: true,
         map_abyssal: true,
@@ -732,6 +733,7 @@ fn fingerprint_verifies_matching_hash() {
 
     let fp = sample_fingerprint();
     let hash = fp.hash();
+    let (force_column, axis_column) = fp.position_2d.fingerprint_columns();
     connection
         .execute(
             "INSERT INTO sdeFingerprint (id, sdeBuild, language, \
@@ -742,8 +744,8 @@ fn fingerprint_verifies_matching_hash() {
             rusqlite::params![
                 fp.sde_build,
                 fp.language,
-                fp.force_isometric_position_2d,
-                "Y",
+                force_column,
+                axis_column,
                 fp.map_kspace,
                 fp.map_wspace,
                 fp.map_abyssal,
@@ -775,6 +777,7 @@ fn fingerprint_detects_a_hand_edited_row() {
 
     let fp = sample_fingerprint();
     let hash = fp.hash();
+    let (force_column, axis_column) = fp.position_2d.fingerprint_columns();
     connection
         .execute(
             "INSERT INTO sdeFingerprint (id, sdeBuild, language, \
@@ -785,8 +788,8 @@ fn fingerprint_detects_a_hand_edited_row() {
             rusqlite::params![
                 fp.sde_build,
                 fp.language,
-                fp.force_isometric_position_2d,
-                "Y",
+                force_column,
+                axis_column,
                 fp.map_kspace,
                 fp.map_wspace,
                 fp.map_abyssal,

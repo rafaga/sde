@@ -7,7 +7,7 @@
 //!
 //!
 use crate::objects::{
-    Constellation, Moon, Planet, ProjectedAxis, Region, SdeFingerprint, SdePoint, SdeSegment,
+    Constellation, Moon, Planet, Position2DMode, Region, SdeFingerprint, SdePoint, SdeSegment,
     SolarSystem, Star, Universe,
 };
 use objects::EveRegionArea;
@@ -45,7 +45,16 @@ pub struct SdeManager<'a> {
     pub universe: Universe,
     /// Adjusting factor for coordinates (because are very large numbers)
     pub factor: f64,
-    /// Invert the sign of all coordinate values
+    /// Invert the sign of coordinate values for screen rendering.
+    ///
+    /// Not a uniform "negate everything": 2D map coordinates
+    /// (`get_systems`/`get_connections`/`get_region_coordinates`, and
+    /// `SolarSystem::projected_coords`) flip only their Y component --
+    /// screen space (egui/egui-map: `screen = map * zoom - origin`) has
+    /// +Y pointing down, so flipping Y keeps galactic north up, while
+    /// flipping X would mirror the universe east-west. Real 3D
+    /// coordinates (`get_system_coords`, `SolarSystem::real_coords`)
+    /// keep flipping all three components.
     pub invert_coordinates: bool,
 }
 
@@ -84,11 +93,14 @@ impl<'a> SdeManager<'a> {
     }
 
     /// Applies the adjustment factor (`self.factor`) and, if `invert` is
-    /// `true`, flips the sign of both components. Replaces the
+    /// `true`, flips the sign of the Y component only: screen space
+    /// (egui/egui-map: `screen = map * zoom - origin`) has +Y pointing
+    /// down, so negating Y keeps galactic north up, while negating X
+    /// would mirror the universe east-west. Replaces the
     /// `DivAssign`/`MulAssign` operators `egui_map::RawPoint` used to
     /// provide -- same logic as always (divide if the factor is > 1,
     /// multiply by its absolute value if it's < -1), now directly on
-    /// `[f32; 2]`. `invert` is a parameter (not always
+    /// `[f64; 2]`. `invert` is a parameter (not always
     /// `self.invert_coordinates`) because not every function calling
     /// this helper inverts: `get_systems`/`get_connections` do,
     /// `get_abstract_systems`/`get_abstract_connections` don't.
@@ -120,7 +132,6 @@ impl<'a> SdeManager<'a> {
             coords[1] *= f;
         }
         if invert {
-            coords[0] *= -1.0;
             coords[1] *= -1.0;
         }
         coords
@@ -166,7 +177,8 @@ impl<'a> SdeManager<'a> {
     /// this read-side method selects). Systems without a 2D projection
     /// (`position2DX`/`position2DY` both `NULL` -- CCP doesn't provide
     /// one for every system, and [`builder::parser`] only computes one
-    /// locally when `force_isometric_position_2d` is set) are excluded
+    /// locally under a local-projection
+    /// [`Position2DMode`](objects::Position2DMode)) are excluded
     /// entirely rather than appearing with a placeholder position.
     ///
     /// Each point also carries the ids of every solar system it has a
@@ -186,9 +198,9 @@ impl<'a> SdeManager<'a> {
         query += " WHERE sos.SolarSystemId BETWEEN ?1 AND ?2";
         // position2DX/Y are nullable (unlike the old projX/Y/Z, which
         // always carried a value via DEFAULT(0.0)): a system without a
-        // computed 2D projection (CCP doesn't provide one and local
-        // computation wasn't forced, see
-        // ParserConfig::force_isometric_position_2d) simply doesn't show
+        // computed 2D projection (CCP doesn't provide one and the
+        // database wasn't built with a local-projection
+        // Position2DMode) simply doesn't show
         // up on the map, instead of breaking the query.
         query += " AND sos.position2DX IS NOT NULL AND sos.position2DY IS NOT NULL";
         query += " ORDER BY sos.SolarSystemId ASC";
@@ -262,10 +274,11 @@ impl<'a> SdeManager<'a> {
     /// system still get a box even if others in it are missing one,
     /// since `MAX`/`MIN` ignore individual `NULL`s.
     ///
-    /// If `self.invert_coordinates`, both corners get their sign
-    /// flipped *and* swapped with each other -- flipping the sign alone
-    /// would leave what used to be the maximum corner with the smaller
-    /// (now negative) coordinates, so `max`/`min` would no longer
+    /// If `self.invert_coordinates`, the Y components of both corners get
+    /// their sign flipped *and* swapped with each other (X stays raw --
+    /// see [`Self::scale_coords`] for why only Y flips): flipping the
+    /// sign alone would leave what used to be the maximum corner with
+    /// the smaller (now negative) Y, so `max`/`min` would no longer
     /// actually describe the box's extremes without the swap.
     #[tracing::instrument(skip(self))]
     pub fn get_region_coordinates(&self) -> Result<Vec<EveRegionArea>, Error> {
@@ -316,11 +329,13 @@ impl<'a> SdeManager<'a> {
                 SdePoint::from([row.get::<usize, f64>(2)?, row.get::<usize, f64>(3)?, 0.0]);
             region.min =
                 SdePoint::from([row.get::<usize, f64>(4)?, row.get::<usize, f64>(5)?, 0.0]);
-            // we invert the coordinates and swap the min with the max
+            // we invert the Y coordinates and swap them between min and
+            // max; X stays raw (only Y flips for screen rendering, see
+            // `scale_coords`)
             if self.invert_coordinates {
-                std::mem::swap(&mut region.max, &mut region.min);
-                region.min *= -1.0;
-                region.max *= -1.0;
+                std::mem::swap(&mut region.max.coords[1], &mut region.min.coords[1]);
+                region.min.coords[1] *= -1.0;
+                region.max.coords[1] *= -1.0;
             }
             areas.push(region);
         }
@@ -365,7 +380,9 @@ impl<'a> SdeManager<'a> {
     /// The real 3D coordinates (`centerX`/`Y`/`Z`, always `NOT NULL` in
     /// the schema, unlike the nullable `position2DX`/`Y` used
     /// elsewhere) of the solar system with id `id_node`, scaled by
-    /// `self.factor` and sign-flipped if `self.invert_coordinates`.
+    /// `self.factor` and sign-flipped (all three components -- real 3D
+    /// data, not screen space; see [`Self::scale_coords`]) if
+    /// `self.invert_coordinates`.
     /// `Ok(None)` if no system has that id -- not an error. (The local
     /// variable holding the id as a string is misleadingly named
     /// `system_like_name`: despite the name, the query does an exact
@@ -787,7 +804,9 @@ impl<'a> SdeManager<'a> {
     /// real 3D position (`real_coords`, from its own
     /// `centerX`/`Y`/`Z`) and its 2D map position (`projected_coords`,
     /// from `position2DX`/`Y`, falling back to `(0.0, 0.0)` if the
-    /// system has none) plus its stargate `connections`,
+    /// system has none, and oriented like [`Self::get_systems`] output:
+    /// Y-only inversion when `self.invert_coordinates`) plus its
+    /// stargate `connections`,
     /// `disallowed_anchor_categories`, `disallowed_anchor_groups`, and
     /// `star`, each populated by its own second query (over
     /// `mapSystemConnections`/`mapSolarSystemDisallowedAnchorableCategories`/
@@ -847,15 +866,16 @@ impl<'a> SdeManager<'a> {
             // region, constellation, real coordinates), not just the
             // map, so a missing position2D falls back to (0.0, 0.0)
             // instead of excluding the system entirely.
-            let mut proj_x = row.get::<_, Option<f64>>(6)?.unwrap_or(0.0);
+            let proj_x = row.get::<_, Option<f64>>(6)?.unwrap_or(0.0);
             let mut proj_y = row.get::<_, Option<f64>>(7)?.unwrap_or(0.0);
 
-            // Invert coordinates if needed
+            // Invert coordinates if needed: real 3D coords flip all
+            // components, the 2D map projection flips only Y (same
+            // orientation `get_systems`/`scale_coords` produce)
             if self.invert_coordinates {
                 real_x *= -1.0;
                 real_y *= -1.0;
                 real_z *= -1.0;
-                proj_x *= -1.0;
                 proj_y *= -1.0;
             }
             object.real_coords = SdePoint::new(real_x, real_y, real_z);
@@ -1115,23 +1135,16 @@ impl<'a> SdeManager<'a> {
         };
 
         let axis_text: String = row.get(3)?;
-        let isometric_projected_axis = match axis_text.as_str() {
-            "X" => ProjectedAxis::X,
-            "Z" => ProjectedAxis::Z,
-            // "Y" and anything unrecognized both fall back to the
-            // default axis -- same tolerant-parsing spirit already used
-            // throughout builder::parser for optional/malformed fields,
-            // rather than failing the whole read over a single
-            // unexpected value in a column nothing but this code writes.
-            _ => ProjectedAxis::Y,
-        };
+        // `forceIsometricPosition2d` + `isometricProjectedAxis` encode
+        // `Position2DMode` (see `Position2DMode::fingerprint_columns`,
+        // shared with the write side so the two can never disagree).
+        let position_2d = Position2DMode::from_fingerprint_columns(row.get(2)?, axis_text.as_str());
         let stored_hash: String = row.get(15)?;
 
         let fingerprint = SdeFingerprint {
             sde_build: row.get(0)?,
             language: row.get(1)?,
-            force_isometric_position_2d: row.get(2)?,
-            isometric_projected_axis,
+            position_2d,
             map_kspace: row.get(4)?,
             map_wspace: row.get(5)?,
             map_abyssal: row.get(6)?,
