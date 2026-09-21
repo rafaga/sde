@@ -9,7 +9,7 @@ each tag; the **[Unreleased]** section covers commits that exist on the current 
 the `test` branch (origin/test) on top of the latest tag and that don't yet have a
 version bump in `Cargo.toml`.
 
-## [0.3.3] — 2026-09-21
+## [0.4.0] — 2026-09-21
 
 ### Added
 
@@ -48,6 +48,11 @@ version bump in `Cargo.toml`.
 - Coordinate inversion also flipped X on 2D projections, which mirrored the universe
   east-west on the map; it now flips only Y (the axis that points down in screen
   space), preserving the correct east/west orientation.
+
+## [0.3.3] — 2026-08-25
+
+### Fixed
+
 - `setup_special_anomalies` (`src/builder/community.rs`) joined `typeStar` to
   `mapStars` using the nonexistent `ts.starTypeId` column (that column lives on
   `mapStars`, not on `typeStar`, whose primary key is `typeId`) — a reference to an
