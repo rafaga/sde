@@ -49,7 +49,7 @@ version bump in `Cargo.toml`.
   east-west on the map; it now flips only Y (the axis that points down in screen
   space), preserving the correct east/west orientation.
 
-## [0.3.3] — 2026-08-25
+## [0.3.3] — 2026-08-21
 
 ### Fixed
 
