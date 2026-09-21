@@ -9,7 +9,7 @@ each tag; the **[Unreleased]** section covers commits that exist on the current 
 the `test` branch (origin/test) on top of the latest tag and that don't yet have a
 version bump in `Cargo.toml`.
 
-## [0.3.3] — 2026-09-21
+## [0.4.0] — 2026-09-21
 
 ### Added
 
