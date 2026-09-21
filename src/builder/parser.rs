@@ -75,9 +75,10 @@
 //!   (absent or present-but-not-an-integer) -- tolerant of either case,
 //!   same result with well-formed data.
 //! - `position2DX`/`position2DY` are how every 2D map projection is
-//!   stored -- either CCP's own precomputed value, or one computed
-//!   locally via [`isometric_projection_2d`] when
-//!   `config.force_isometric_position_2d` is on.
+//!   stored -- CCP's own precomputed value, or one computed locally
+//!   via [`isometric_projection_2d`]/
+//!   [`orthogonal_projection_2d`], depending on
+//!   [`ParserConfig::position_2d`] (see [`Position2DMode`]).
 
 use crate::Error;
 use crate::builder::community::{self, CommunityConfig};
@@ -89,9 +90,9 @@ use std::io::BufRead;
 use std::path::Path;
 
 /// Config for the parser. Covers what's needed for localizing names
-/// and the optional isometric computation of
-/// `position2DX`/`position2DY` (see [`ProjectedAxis`]/
-/// [`isometric_projection_2d`]), plus the solar-system scope flags
+/// and how `position2DX`/`position2DY` are produced (see
+/// [`Position2DMode`]/[`isometric_projection_2d`]/
+/// [`orthogonal_projection_2d`]), plus the solar-system scope flags
 /// (k-space/w-space/abyssal/void).
 #[derive(Debug, Clone)]
 pub struct ParserConfig {
@@ -99,16 +100,12 @@ pub struct ParserConfig {
     /// (e.g. `{"en": "Jita", "es": "Jita"}` -> `"Jita"`), falling back
     /// to `"en"` if the requested language isn't there. Default `"en"`.
     pub language: String,
-    /// If `true`, `position2DX`/`position2DY` are always computed
-    /// locally via [`isometric_projection_2d`], **ignoring** the
-    /// `position2D` field CCP already provides in the reworked SDE --
-    /// instead of directly using the precomputed value CCP provides
-    /// (which is the default behavior, `false`).
-    pub force_isometric_position_2d: bool,
-    /// Axis collapsed in [`isometric_projection_2d`]'s computation when
-    /// `force_isometric_position_2d` is on (no effect if it isn't).
-    /// Default [`ProjectedAxis::Y`].
-    pub isometric_projected_axis: ProjectedAxis,
+    /// How `position2DX`/`position2DY` are produced for every solar
+    /// system: CCP's precomputed value as-is ([`Position2DMode::Ccp`]),
+    /// or a locally-computed projection that **ignores** it
+    /// ([`Position2DMode::Isometric`]/[`Position2DMode::Orthogonal`]).
+    /// Default [`Position2DMode::Ccp`].
+    pub position_2d: Position2DMode,
     /// Include k-space systems (no `wormholeClassID`). Default `true`.
     pub map_kspace: bool,
     /// Include wormhole space systems. Default `true`.
@@ -148,8 +145,7 @@ impl Default for ParserConfig {
     fn default() -> Self {
         Self {
             language: "en".to_string(),
-            force_isometric_position_2d: false,
-            isometric_projected_axis: ProjectedAxis::default(),
+            position_2d: Position2DMode::default(),
             map_kspace: true,
             map_wspace: true,
             map_abyssal: true,
@@ -207,6 +203,7 @@ impl ParserConfig {
     }
 }
 
+pub use crate::objects::Position2DMode;
 /// Axis choice used by [`crate::objects::SdePoint::to_2d`] and
 /// [`isometric_projection_2d`] -- moved to `crate::objects` (core, not
 /// gated by the `builder` feature) since `SdePoint` needs it too, on
@@ -226,6 +223,29 @@ pub fn isometric_projection_2d(x: f64, y: f64, z: f64, axis: ProjectedAxis) -> (
         ProjectedAxis::Z => (x - z, y + (x + z) / 2.0),
         ProjectedAxis::Y => (x - y, z + (x + y) / 2.0),
         ProjectedAxis::X => (y - x, z + (y + x) / 2.0),
+    }
+}
+
+/// 2D orthographic projection of a 3D point that simply drops `axis`'s
+/// component, keeping the other two as-is -- the same drop semantics
+/// [`crate::objects::SdePoint::to_2d`] uses on the read side. Returns
+/// `(x2d, y2d)`.
+///
+/// - Z axis dropped: `(x, y)`
+/// - Y axis dropped: `(x, z)` -- the "north-up top-down": east = +x =
+///   screen right, north = +z = screen up, matching the
+///   community-canonical map orientation (EVE's galactic plane is the
+///   X-Z plane; `y` is the vertical axis)
+/// - X axis dropped: `(y, z)`
+///
+/// Unlike CCP's own precomputed `position2D` (a hand-adjusted
+/// schematic, k-space only), this is a true projection of the real 3D
+/// coordinates, so it covers every system in scope.
+pub fn orthogonal_projection_2d(x: f64, y: f64, z: f64, axis: ProjectedAxis) -> (f64, f64) {
+    match axis {
+        ProjectedAxis::Z => (x, y),
+        ProjectedAxis::Y => (x, z),
+        ProjectedAxis::X => (y, z),
     }
 }
 
@@ -1017,13 +1037,12 @@ impl Parser {
     /// The schema has no `projX`/`projY`/`projZ` columns: a system's 2D
     /// map position lives entirely in `position2DX`/`position2DY`.
     ///
-    /// `position2DX`/`position2DY` use the `position2D` CCP already
-    /// provides precomputed, unless `config.force_isometric_position_2d`
-    /// is on -- in which case they're always recomputed via
-    /// [`isometric_projection_2d`] (per
-    /// `config.isometric_projected_axis`), **ignoring** CCP's value, as was
-    /// explicitly decided for this flag (see its docstring in
-    /// [`ParserConfig`]).
+    /// `position2DX`/`position2DY` follow
+    /// [`ParserConfig::position_2d`]: CCP's precomputed value as-is
+    /// ([`Position2DMode::Ccp`], `NULL` where the record carries none),
+    /// or a locally-computed projection that ignores it --
+    /// [`isometric_projection_2d`] or [`orthogonal_projection_2d`] per
+    /// [`Position2DMode::Isometric`]/[`Position2DMode::Orthogonal`].
     ///
     /// `wormholeClassID` is read (it's needed for the scope filter above)
     /// and persisted as `wormholeClassId`.
@@ -1126,19 +1145,19 @@ impl Parser {
             let security_class = self.optional_str(&record, "securityClass");
             let faction_id = self.optional_i64(&record, "factionID");
 
-            let (position_2d_x, position_2d_y) = if self.config.force_isometric_position_2d {
-                let (x2d, y2d) = isometric_projection_2d(
-                    center_x,
-                    center_y,
-                    center_z,
-                    self.config.isometric_projected_axis,
-                );
-                (Some(x2d), Some(y2d))
-            } else {
-                (
+            let (position_2d_x, position_2d_y) = match self.config.position_2d {
+                Position2DMode::Ccp => (
                     self.optional_nested_f64(&record, "position2D", "x"),
                     self.optional_nested_f64(&record, "position2D", "y"),
-                )
+                ),
+                Position2DMode::Isometric(axis) => {
+                    let (x2d, y2d) = isometric_projection_2d(center_x, center_y, center_z, axis);
+                    (Some(x2d), Some(y2d))
+                }
+                Position2DMode::Orthogonal(axis) => {
+                    let (x2d, y2d) = orthogonal_projection_2d(center_x, center_y, center_z, axis);
+                    (Some(x2d), Some(y2d))
+                }
             };
 
             insert_system.execute(rusqlite::params![
@@ -2061,8 +2080,7 @@ impl Parser {
         let fingerprint = SdeFingerprint {
             sde_build: sde_build.map(str::to_string),
             language: self.config.language.clone(),
-            force_isometric_position_2d: self.config.force_isometric_position_2d,
-            isometric_projected_axis: self.config.isometric_projected_axis,
+            position_2d: self.config.position_2d,
             map_kspace: self.config.map_kspace,
             map_wspace: self.config.map_wspace,
             map_abyssal: self.config.map_abyssal,
@@ -2076,6 +2094,11 @@ impl Parser {
             with_special_ore: community_config.map(|c| c.with_special_ore),
         };
         let hash = fingerprint.hash();
+        // `forceIsometricPosition2d`/`isometricProjectedAxis` encode
+        // `Position2DMode` via `Position2DMode::fingerprint_columns`
+        // (shared with `SdeManager::get_fingerprint`'s decode, so the
+        // two can never disagree).
+        let (force_column, axis_column) = fingerprint.position_2d.fingerprint_columns();
         connection.execute(
             "INSERT INTO sdeFingerprint (id, sdeBuild, language, \
             forceIsometricPosition2d, isometricProjectedAxis, mapKspace, mapWspace, \
@@ -2085,8 +2108,8 @@ impl Parser {
             rusqlite::params![
                 fingerprint.sde_build,
                 fingerprint.language,
-                fingerprint.force_isometric_position_2d,
-                format!("{:?}", fingerprint.isometric_projected_axis),
+                force_column,
+                axis_column,
                 fingerprint.map_kspace,
                 fingerprint.map_wspace,
                 fingerprint.map_abyssal,
@@ -2383,14 +2406,33 @@ mod tests {
     }
 
     #[test]
-    fn parser_config_default_uses_y_axis_and_does_not_force_isometric() {
-        // Real defaults: projection_algorithm='isometric', projected_axis=1
-        // (Y) -- but here the "forcing" is off by default, since normal
-        // behavior is to trust the position2D CCP already provides when
-        // it's present.
+    fn orthogonal_projection_2d_drops_the_given_axis() {
+        // Known-correct reference values for x=100.0, y=200.0, z=300.0:
+        // the dropped axis's component simply doesn't appear.
+        let (x, y, z) = (100.0, 200.0, 300.0);
+
+        assert_eq!(
+            orthogonal_projection_2d(x, y, z, ProjectedAxis::X),
+            (200.0, 300.0)
+        );
+        // The north-up top-down the map uses: (x, z).
+        assert_eq!(
+            orthogonal_projection_2d(x, y, z, ProjectedAxis::Y),
+            (100.0, 300.0)
+        );
+        assert_eq!(
+            orthogonal_projection_2d(x, y, z, ProjectedAxis::Z),
+            (100.0, 200.0)
+        );
+    }
+
+    #[test]
+    fn parser_config_default_trusts_ccp_position_2d() {
+        // Real defaults: trust the position2D CCP already provides
+        // when it's present (`Position2DMode::Ccp`), no local
+        // projection.
         let config = ParserConfig::default();
-        assert!(!config.force_isometric_position_2d);
-        assert_eq!(config.isometric_projected_axis, ProjectedAxis::Y);
+        assert_eq!(config.position_2d, Position2DMode::Ccp);
     }
 
     #[test]
@@ -3131,7 +3173,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_solar_systems_force_isometric_ignores_ccp_position2d() {
+    fn parse_solar_systems_isometric_mode_ignores_ccp_position2d() {
         let dir = TempSdeDir::new(
             "solar_systems_force_isometric",
             &[(
@@ -3160,7 +3202,7 @@ mod tests {
             )
             .unwrap();
         let config = ParserConfig {
-            force_isometric_position_2d: true,
+            position_2d: Position2DMode::Isometric(ProjectedAxis::Y),
             ..Default::default()
         };
         let parser = Parser::new(&dir.path, config);
@@ -3178,6 +3220,59 @@ mod tests {
         // Forced: should be the computed value (-300, -250), NOT the
         // (12.5, -7.25) the record carries.
         assert_eq!((p2dx, p2dy), (-300.0, -250.0));
+    }
+
+    #[test]
+    fn parse_solar_systems_orthogonal_drops_y_for_north_up_top_down() {
+        // Same fixture as the isometric force test, with the mode the
+        // map actually uses: Orthogonal(Y) keeps (x, z) -- the
+        // north-up top-down -- and still ignores CCP's position2D.
+        let dir = TempSdeDir::new(
+            "solar_systems_orthogonal",
+            &[(
+                "mapSolarSystems.jsonl",
+                "{\"_key\": 30000142, \"name\": {\"en\": \"Jita\"}, \"constellationID\": 20000020, \
+                 \"radius\": 1.0, \"position\": {\"x\": -100.0, \"y\": 200.0, \"z\": -300.0}, \
+                 \"securityStatus\": 0.9459, \"position2D\": {\"x\": 12.5, \"y\": -7.25}}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapRegions \
+                 (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
+                 VALUES (10000002, 'The Forge', NULL, 0, 0, 0, 5, NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapConstellations \
+                 (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
+                 VALUES (20000020, 'Kimotoro', 10000002, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        let config = ParserConfig {
+            position_2d: Position2DMode::Orthogonal(ProjectedAxis::Y),
+            ..Default::default()
+        };
+        let parser = Parser::new(&dir.path, config);
+        let mut scope = SystemScopeState::default();
+
+        parser.parse_solar_systems(&connection, &mut scope).unwrap();
+
+        let (p2dx, p2dy): (f64, f64) = connection
+            .query_row(
+                "SELECT position2DX, position2DY FROM mapSolarSystems WHERE solarSystemId = 30000142",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        // (x, z) = (-100, -300): y (the vertical axis) dropped, NOT the
+        // (12.5, -7.25) the record carries.
+        assert_eq!((p2dx, p2dy), (-100.0, -300.0));
     }
 
     #[test]
@@ -4363,8 +4458,7 @@ mod tests {
         crate::builder::schema::create_schema(&connection).unwrap();
         let mut config = ParserConfig::default();
         config.language = "en".to_string();
-        config.force_isometric_position_2d = true;
-        config.isometric_projected_axis = ProjectedAxis::Z;
+        config.position_2d = Position2DMode::Isometric(ProjectedAxis::Z);
         config.map_kspace = true;
         config.map_wspace = false;
         config.map_abyssal = false;
