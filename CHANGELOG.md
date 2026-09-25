@@ -9,6 +9,17 @@ each tag; the **[Unreleased]** section covers commits that exist on the current 
 the `test` branch (origin/test) on top of the latest tag and that don't yet have a
 version bump in `Cargo.toml`.
 
+## [0.5.0] — 2026-09-24
+
+### Added
+
+- `BuildUrls` struct (`src/builder/mod.rs`), with a `Default` implementation providing
+  the crate's default network endpoints (CCP's own SDE export and dotlan's map data).
+  Previously these were three private `const`s in `src/bin/cli.rs`; a library consumer
+  assembling their own build pipeline around `Parser::build_database`/
+  `sde_index::update_as_needed` can now construct and override them too, not just the
+  `sde-builder` binary.
+
 ## [0.4.0] — 2026-09-21
 
 ### Added

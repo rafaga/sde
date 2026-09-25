@@ -3,13 +3,10 @@
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use sde::builder::BuildUrls;
 use sde::builder::parser::{ParserConfig, Position2DMode, ProjectedAxis};
 use sde::builder::{extract, http, parser, schema, sde_index};
 use std::path::PathBuf;
-
-const SDE_URL: &str = "https://developers.eveonline.com/static-data/tranquility/";
-const MAPS_URL: &str = "http://evemaps.dotlan.net/svg/";
-const SDE_VARIANT: &str = "jsonl";
 
 #[derive(Parser)]
 #[command(
@@ -121,8 +118,9 @@ async fn main() -> anyhow::Result<()> {
     let client = http::build_client().context("building the HTTP client")?;
     let data_dir = PathBuf::from("data");
     let sde_dir = PathBuf::from("sde");
+    let urls = BuildUrls::default();
 
-    let changed = sde_index::update_as_needed(&client, &data_dir, SDE_URL, SDE_VARIANT)
+    let changed = sde_index::update_as_needed(&client, &data_dir, &urls.sde_url, &urls.sde_variant)
         .await
         .context("checking for a new SDE build")?;
 
@@ -142,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let zip_path = data_dir.join(format!("sde-{SDE_VARIANT}.zip"));
+    let zip_path = data_dir.join(format!("sde-{}.zip", urls.sde_variant));
     extract::prepare_sde_directory(&zip_path, &sde_dir).context("decompressing the SDE zip")?;
 
     let mut connection = rusqlite::Connection::open(&output).context("creating the database")?;
@@ -170,17 +168,23 @@ async fn main() -> anyhow::Result<()> {
     };
     let sde_parser = parser::Parser::new(&sde_dir, parser_config);
     // Read back the build number update_as_needed() just wrote (or
-    // confirmed unchanged) to sde-{SDE_VARIANT}.build, purely to record
-    // it in sdeFingerprint -- build_database() doesn't otherwise need
-    // it. `Ok` and not `.context(...)`-wrapped into an early return: a
-    // database with no recorded build number (sdeFingerprint.sdeBuild
-    // = NULL) is still valid, so a read failure here shouldn't abort
-    // the whole build.
-    let build_number = std::fs::read_to_string(data_dir.join(format!("sde-{SDE_VARIANT}.build")))
-        .ok()
-        .map(|s| s.trim().to_string());
+    // confirmed unchanged) to sde-{urls.sde_variant}.build, purely to
+    // record it in sdeFingerprint -- build_database() doesn't otherwise
+    // need it. `Ok` and not `.context(...)`-wrapped into an early
+    // return: a database with no recorded build number
+    // (sdeFingerprint.sdeBuild = NULL) is still valid, so a read
+    // failure here shouldn't abort the whole build.
+    let build_number =
+        std::fs::read_to_string(data_dir.join(format!("sde-{}.build", urls.sde_variant)))
+            .ok()
+            .map(|s| s.trim().to_string());
     let _summary = sde_parser
-        .build_database(&mut connection, &client, MAPS_URL, build_number.as_deref())
+        .build_database(
+            &mut connection,
+            &client,
+            &urls.maps_url,
+            build_number.as_deref(),
+        )
         .await
         .context("building the database")?;
     println!("sde: Parse complete");
