@@ -101,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
     {
         use tracing_subscriber::layer::SubscriberExt as _;
         let registry = tracing_subscriber::registry().with(tracing_subscriber::fmt::layer());
-        #[cfg(feature = "profile-with-tracy")]
+        #[cfg(feature = "profile")]
         let registry = registry.with(tracing_tracy::TracyLayer::default());
         tracing::subscriber::set_global_default(registry)
             .expect("setting the global tracing subscriber");
