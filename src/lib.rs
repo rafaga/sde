@@ -221,18 +221,7 @@ impl<'a> SdeManager<'a> {
                     result.insert(point.id.unwrap(), point.clone());
                 }
                 last_id = id;
-                let x = row.get::<usize, f64>(1)?;
-                let y = row.get::<usize, f64>(2)?;
-
-                //we get the coordinate point and multiply with the adjust factor
-                let [x, y] = self.scale_coords([x, y], self.invert_coordinates);
-                point = SdePoint {
-                    id: Some(id.try_into().unwrap()),
-                    name: Some(row.get::<usize, String>(3)?),
-                    coords: [x, y, 0.0],
-                    connections: Vec::new(),
-                    color: None,
-                };
+                point = self.system_point(row, id)?;
             }
             point.connections.push((
                 row.get::<usize, i64>(4)? as usize,
@@ -243,13 +232,23 @@ impl<'a> SdeManager<'a> {
             result.insert(point.id.unwrap(), point);
         }
 
-        // Star color, joined in separately (like get_solarsystem does for
-        // SolarSystem.star): the main query above already depends on a
-        // JOIN against mapSystemConnections, so folding mapStars/typeStar
-        // into it directly would tie "has a color" to "has a stargate
-        // connection" for no reason. A second pass over `result` keeps the
-        // color purely additive -- systems with no mapStars row (~4.7%,
-        // see SolarSystem::star) simply keep color: None.
+        self.add_star_colors(&connection, &mut result)?;
+
+        Ok(result)
+    }
+
+    /// Star color, joined in separately (like get_solarsystem does for
+    /// SolarSystem.star): the main query above already depends on a
+    /// JOIN against mapSystemConnections, so folding mapStars/typeStar
+    /// into it directly would tie "has a color" to "has a stargate
+    /// connection" for no reason. A second pass over `result` keeps the
+    /// color purely additive -- systems with no mapStars row (~4.7%,
+    /// see SolarSystem::star) simply keep color: None.
+    fn add_star_colors(
+        &self,
+        connection: &Connection,
+        result: &mut HashMap<usize, SdePoint>,
+    ) -> Result<(), Error> {
         let query = "SELECT ms.solarSystemId, ts.color \
                       FROM mapStars AS ms INNER JOIN typeStar AS ts ON (ms.starTypeId = ts.typeId);";
         let mut statement = connection.prepare(query)?;
@@ -261,8 +260,24 @@ impl<'a> SdeManager<'a> {
                 .entry(system_id)
                 .and_modify(|p| p.color = Some(color));
         }
+        Ok(())
+    }
 
-        Ok(result)
+    /// The point of a system from the first row of its group in the
+    /// `get_systems` query (the scaled 2D position, no connections yet).
+    fn system_point(&self, row: &rusqlite::Row, id: isize) -> Result<SdePoint, Error> {
+        let x = row.get::<usize, f64>(1)?;
+        let y = row.get::<usize, f64>(2)?;
+
+        //we get the coordinate point and multiply with the adjust factor
+        let [x, y] = self.scale_coords([x, y], self.invert_coordinates);
+        Ok(SdePoint {
+            id: Some(id.try_into().unwrap()),
+            name: Some(row.get::<usize, String>(3)?),
+            coords: [x, y, 0.0],
+            connections: Vec::new(),
+            color: None,
+        })
     }
 
     /// The 2D bounding box (`EveRegionArea.max`/`.min`) of every
@@ -494,12 +509,45 @@ impl<'a> SdeManager<'a> {
     ) -> Result<HashMap<usize, SdePoint>, Error> {
         let connection = self.get_standart_connection()?;
 
-        let filter = if regions.is_empty() {
-            ""
+        let query = Self::abstract_systems_sql(!regions.is_empty());
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = if regions.is_empty() {
+            statement.query([])?
         } else {
-            " WHERE mas.regionId IN rarray(?1) "
+            let id_list: array::Array = Rc::new(
+                regions
+                    .into_iter()
+                    .map(rusqlite::types::Value::from)
+                    .collect::<Vec<rusqlite::types::Value>>(),
+            );
+            // `?1` appears twice (once per UNION ALL branch, for the same
+            // region filter) but is bound once: SQLite reuses the same
+            // bound value for every occurrence of a given numbered
+            // parameter in a statement.
+            statement.query([id_list])?
         };
-        let query = format!(
+
+        let mut result = self.collect_abstract_points(&mut rows)?;
+
+        // Star color, same second-pass approach as get_systems (see there
+        // for why it isn't folded into the main query): unscoped by
+        // region, but `.and_modify` is a no-op for any solarSystemId not
+        // already a key of `result`, so this is still effectively
+        // region-filtered.
+        self.add_star_colors(&connection, &mut result)?;
+
+        Ok(result)
+    }
+
+    /// The `get_abstract_systems` query, with the region filter when `filtered`.
+    fn abstract_systems_sql(filtered: bool) -> String {
+        let filter = if filtered {
+            " WHERE mas.regionId IN rarray(?1) "
+        } else {
+            ""
+        };
+        format!(
             "SELECT mas.solarSystemId AS solarSystemId, mas.x, mas.y, mas.regionId, \
                 msc.systemA, msc.systemB, mss.solarSystemName \
              FROM mapSystemConnections AS msc \
@@ -514,99 +562,54 @@ impl<'a> SdeManager<'a> {
              INNER JOIN mapSolarSystems AS mss ON mss.solarSystemId = mas.solarSystemId \
              {filter} \
              ORDER BY solarSystemId ASC;"
-        );
+        )
+    }
 
-        let mut statement = connection.prepare(query.as_str())?;
-        let mut rows;
+    /// Groups the rows of the `get_abstract_systems` query (ordered by
+    /// system) into one point per system, with its connections.
+    fn collect_abstract_points(
+        &self,
+        rows: &mut rusqlite::Rows,
+    ) -> Result<HashMap<usize, SdePoint>, Error> {
         let mut result = HashMap::new();
-
-        if regions.is_empty() {
-            rows = statement.query([])?;
-        } else {
-            let id_list: array::Array = Rc::new(
-                regions
-                    .into_iter()
-                    .map(rusqlite::types::Value::from)
-                    .collect::<Vec<rusqlite::types::Value>>(),
-            );
-            // `?1` appears twice (once per UNION ALL branch, for the same
-            // region filter) but is bound once: SQLite reuses the same
-            // bound value for every occurrence of a given numbered
-            // parameter in a statement.
-            rows = statement.query([id_list])?;
-        }
-
-        let mut current_index = isize::MIN;
-        let mut point = SdePoint {
-            id: None,
-            name: None,
-            coords: [0.0, 0.0, 0.0],
-            connections: Vec::new(),
-            color: None,
-        };
+        let mut current: Option<SdePoint> = None;
         while let Some(row) = rows.next()? {
             let id = row.get::<usize, isize>(0)?;
-            if current_index != id {
-                if current_index != isize::MIN {
-                    // `mem::replace` instead of `point.clone()`: the old
-                    // point is being moved into `result` anyway, so there's
-                    // no need to pay for a deep clone (heap allocation for
-                    // `name` and `connections`) just to keep `point` a valid
-                    // place to write the new row's data into.
-                    let finished = std::mem::replace(
-                        &mut point,
-                        SdePoint {
-                            id: None,
-                            name: None,
-                            coords: [0.0, 0.0, 0.0],
-                            connections: Vec::new(),
-                            color: None,
-                        },
-                    );
+            if current.as_ref().and_then(|point| point.id) != Some(id as usize) {
+                // The finished point moves into `result` (no clone).
+                if let Some(finished) = current.take() {
                     result.insert(finished.id.unwrap(), finished);
                 }
-                current_index = id;
-                // get_abstract_systems doesn't invert coordinates, unlike
-                // get_systems/get_connections, which do.
-                let [x, y] = self.scale_coords(
-                    [row.get::<usize, f64>(1)?, row.get::<usize, f64>(2)?],
-                    false,
-                );
-                point = SdePoint {
-                    id: Some(id.try_into().unwrap()),
-                    name: Some(row.get::<usize, String>(6)?),
-                    coords: [x, y, 0.0],
-                    connections: Vec::new(),
-                    color: None,
-                };
+                current = Some(self.abstract_system_point(row, id)?);
             }
-            point.connections.push((
-                row.get::<usize, i64>(4)? as usize,
-                row.get::<usize, i64>(5)? as usize,
-            ));
+            if let Some(point) = current.as_mut() {
+                point.connections.push((
+                    row.get::<usize, i64>(4)? as usize,
+                    row.get::<usize, i64>(5)? as usize,
+                ));
+            }
         }
-        if current_index != isize::MIN {
+        if let Some(point) = current {
             result.insert(point.id.unwrap(), point);
         }
-
-        // Star color, same second-pass approach as get_systems (see there
-        // for why it isn't folded into the main query): unscoped by
-        // region, but `.and_modify` is a no-op for any solarSystemId not
-        // already a key of `result`, so this is still effectively
-        // region-filtered.
-        let query = "SELECT ms.solarSystemId, ts.color \
-                      FROM mapStars AS ms INNER JOIN typeStar AS ts ON (ms.starTypeId = ts.typeId);";
-        let mut statement = connection.prepare(query)?;
-        let mut rows = statement.query([])?;
-        while let Some(row) = rows.next()? {
-            let system_id = row.get::<usize, isize>(0)? as usize;
-            let color: String = row.get(1)?;
-            result
-                .entry(system_id)
-                .and_modify(|p| p.color = Some(color));
-        }
-
         Ok(result)
+    }
+
+    /// The point of an abstract system from the first row of its group in
+    /// the `get_abstract_systems` query (no connections yet).
+    /// Coordinates are not inverted here, unlike get_systems/get_connections.
+    fn abstract_system_point(&self, row: &rusqlite::Row, id: isize) -> Result<SdePoint, Error> {
+        let [x, y] = self.scale_coords(
+            [row.get::<usize, f64>(1)?, row.get::<usize, f64>(2)?],
+            false,
+        );
+        Ok(SdePoint {
+            id: Some(id.try_into().unwrap()),
+            name: Some(row.get::<usize, String>(6)?),
+            coords: [x, y, 0.0],
+            connections: Vec::new(),
+            color: None,
+        })
     }
 
     /// Same as [`Self::get_connections`], but for the abstract map
@@ -715,87 +718,85 @@ impl<'a> SdeManager<'a> {
         regions: Vec<u32>,
         region_name: Option<String>,
     ) -> Result<HashMap<u32, Region>, Error> {
-        let mut id_list: array::Array;
-        let mut params: Vec<&dyn ToSql> = Vec::new();
-        let mut _temp_value = String::new();
-        let mut region_ids: Vec<u32> = Vec::new();
-
         let connection = self.get_standart_connection()?;
-        let mut result = HashMap::new();
+        let mut result = Self::select_regions(&connection, &regions, region_name.as_deref())?;
+        let filtered = !regions.is_empty() || region_name.is_some();
+        // Only the regions the first query matched get their constellations.
+        let region_ids: Vec<u32> = result.keys().copied().collect();
+        Self::add_region_constellations(&connection, &mut result, filtered.then_some(region_ids))?;
+        Ok(result)
+    }
+
+    /// An `rarray` value to bind to a `... IN rarray(?)` parameter.
+    fn id_array(ids: Vec<u32>) -> array::Array {
+        Rc::new(
+            ids.into_iter()
+                .map(rusqlite::types::Value::from)
+                .collect::<Vec<rusqlite::types::Value>>(),
+        )
+    }
+
+    /// The first query of [`Self::get_region`]: the regions themselves,
+    /// without constellations.
+    fn select_regions(
+        connection: &Connection,
+        regions: &[u32],
+        region_name: Option<&str>,
+    ) -> Result<HashMap<u32, Region>, Error> {
+        let mut conditions: Vec<&str> = Vec::new();
+        let mut params: Vec<Box<dyn ToSql>> = Vec::new();
+        if !regions.is_empty() {
+            conditions.push("regionId IN rarray(?) ");
+            params.push(Box::new(Self::id_array(regions.to_vec())));
+        }
+        if let Some(name) = region_name {
+            conditions.push("LOWER(regionName) LIKE ? ");
+            params.push(Box::new(format!("%{name}%")));
+        }
 
         let mut query = String::from("SELECT regionId, regionName FROM mapRegions ");
-        if !regions.is_empty() || region_name.is_some() {
-            let mut query_p = String::new();
-
-            if !regions.is_empty() {
-                query_p += "regionId IN rarray(?) ";
-                id_list = Rc::new(
-                    regions
-                        .clone()
-                        .into_iter()
-                        .map(rusqlite::types::Value::from)
-                        .collect::<Vec<rusqlite::types::Value>>(),
-                );
-                params.push(&id_list);
-            }
-            if region_name.is_some() {
-                if !query_p.is_empty() {
-                    query_p += " AND ";
-                }
-                query_p += "LOWER(regionName) LIKE ? ";
-                _temp_value
-                    .clone_from(&("%".to_string() + region_name.clone().unwrap().as_str() + "%"));
-                params.push(&_temp_value);
-            }
-            if !query_p.is_empty() {
-                query += &(" WHERE ".to_owned() + &query_p);
-            }
+        if !conditions.is_empty() {
+            query += &format!(" WHERE {}", conditions.join(" AND "));
         }
         query += "ORDER BY regionName ";
 
         let mut statement = connection.prepare(query.as_str())?;
-        let mut rows;
-        if params.is_empty() {
-            rows = statement.query([])?;
-        } else {
-            rows = statement.query(params.as_slice())?;
-        }
-
+        let mut rows = statement.query(rusqlite::params_from_iter(params.iter()))?;
+        let mut result = HashMap::new();
         while let Some(row) = rows.next()? {
             let mut region = Region::new();
             region.id = row.get(0)?;
             region.name = row.get(1)?;
-            region_ids.push(row.get(0)?);
-            result.insert(row.get(0)?, region);
+            result.insert(region.id, region);
         }
+        Ok(result)
+    }
 
+    /// The second query of [`Self::get_region`]: fills in the
+    /// `constellations` of the regions in `result`, restricted to
+    /// `region_ids` when given.
+    fn add_region_constellations(
+        connection: &Connection,
+        result: &mut HashMap<u32, Region>,
+        region_ids: Option<Vec<u32>>,
+    ) -> Result<(), Error> {
         let mut query = String::from("SELECT regionId,constellationId FROM mapConstellations");
-        if !regions.is_empty() || region_name.is_some() {
+        if region_ids.is_some() {
             query += " WHERE regionId IN rarray(?1) ";
         }
 
         let mut statement = connection.prepare(query.as_str())?;
-        let mut rows;
-
-        if regions.is_empty() && region_name.is_none() {
-            rows = statement.query([])?;
-        } else {
-            id_list = Rc::new(
-                region_ids
-                    .clone()
-                    .into_iter()
-                    .map(rusqlite::types::Value::from)
-                    .collect::<Vec<rusqlite::types::Value>>(),
-            );
-            rows = statement.query([id_list])?;
-        }
-
+        let mut rows = match region_ids {
+            None => statement.query([])?,
+            Some(ids) => statement.query([Self::id_array(ids)])?,
+        };
         while let Some(row) = rows.next()? {
+            let constellation = row.get(1)?;
             result
                 .entry(row.get(0)?)
-                .and_modify(|xregion| xregion.constellations.push(row.get(1).unwrap()));
+                .and_modify(|region| region.constellations.push(constellation));
         }
-        Ok(result)
+        Ok(())
     }
 
     /// Every solar system, optionally narrowed to just the given
@@ -825,8 +826,53 @@ impl<'a> SdeManager<'a> {
     fn get_solarsystem(&self, constellation: Vec<u32>) -> Result<HashMap<u32, SolarSystem>, Error> {
         // preparing the connections that will be shared between threads
         let connection = self.get_standart_connection()?;
-        let mut result = HashMap::new();
+        let mut result = self.select_solar_systems(&connection, constellation)?;
 
+        // Optimization: to avoid printing twice the same line, we are just skipping coordinates
+        // for SolarSystems that has an Id less than the current one printed. with the exception
+        // of the lowest ID
+        Self::for_each_id_pair(
+            &connection,
+            "SELECT systemA, systemB FROM mapSystemConnections;",
+            |system_a, system_b| {
+                result.entry(system_a).and_modify(|point| {
+                    point.connections.push(system_b);
+                });
+                result.entry(system_b).and_modify(|point| {
+                    point.connections.push(system_a);
+                });
+            },
+        )?;
+        Self::for_each_id_pair(
+            &connection,
+            "SELECT solarSystemId, categoryId FROM mapSolarSystemDisallowedAnchorableCategories;",
+            |system_id, category_id| {
+                result.entry(system_id).and_modify(|point| {
+                    point.disallowed_anchor_categories.push(category_id);
+                });
+            },
+        )?;
+        Self::for_each_id_pair(
+            &connection,
+            "SELECT solarSystemId, groupId FROM mapSolarSystemDisallowedAnchorableGroups;",
+            |system_id, group_id| {
+                result.entry(system_id).and_modify(|point| {
+                    point.disallowed_anchor_groups.push(group_id);
+                });
+            },
+        )?;
+        Self::add_solar_system_stars(&connection, &mut result)?;
+
+        Ok(result)
+    }
+
+    /// The first query of [`Self::get_solarsystem`]: the systems with their
+    /// coordinates, restricted to `constellation` when it isn't empty.
+    fn select_solar_systems(
+        &self,
+        connection: &Connection,
+        constellation: Vec<u32>,
+    ) -> Result<HashMap<u32, SolarSystem>, Error> {
         let mut query =
             String::from("SELECT mss.solarSystemId, mss.solarSystemName, mc.regionId, ");
         query += " mss.centerX, mss.centerY, mss.centerZ, mss.position2DX, mss.position2DY, ";
@@ -838,105 +884,79 @@ impl<'a> SdeManager<'a> {
         }
         let mut statement = connection.prepare(query.as_str())?;
 
-        let mut rows;
-        if constellation.is_empty() {
-            rows = statement.query([])?;
+        let mut rows = if constellation.is_empty() {
+            statement.query([])?
         } else {
-            let id_list: array::Array = Rc::new(
-                constellation
-                    .into_iter()
-                    .map(rusqlite::types::Value::from)
-                    .collect::<Vec<rusqlite::types::Value>>(),
-            );
-            rows = statement.query([id_list])?;
-        }
+            statement.query([Self::id_array(constellation)])?
+        };
 
+        let mut result = HashMap::new();
         while let Some(row) = rows.next()? {
-            let mut object = SolarSystem::new(self.factor);
-            object.id = row.get(0)?;
-            object.name = row.get(1)?;
-            object.constellation = row.get(8)?;
-
-            let mut real_x = row.get::<_, f64>(3)?;
-            let mut real_y = row.get::<_, f64>(4)?;
-            let mut real_z = row.get::<_, f64>(5)?;
-            // Unlike get_systems()/get_connections() (which filter
-            // out systems without a 2D projection), the row is kept
-            // as-is here: this method feeds general system data (name,
-            // region, constellation, real coordinates), not just the
-            // map, so a missing position2D falls back to (0.0, 0.0)
-            // instead of excluding the system entirely.
-            let proj_x = row.get::<_, Option<f64>>(6)?.unwrap_or(0.0);
-            let mut proj_y = row.get::<_, Option<f64>>(7)?.unwrap_or(0.0);
-
-            // Invert coordinates if needed: real 3D coords flip all
-            // components, the 2D map projection flips only Y (same
-            // orientation `get_systems`/`scale_coords` produce)
-            if self.invert_coordinates {
-                real_x *= -1.0;
-                real_y *= -1.0;
-                real_z *= -1.0;
-                proj_y *= -1.0;
-            }
-            object.real_coords = SdePoint::new(real_x, real_y, real_z);
-            object.projected_coords = SdePoint::new(proj_x, proj_y, 0.0);
-
-            object.region = row.get(2)?;
-            result.insert(row.get(0)?, object);
+            let object = self.solar_system_from_row(row)?;
+            result.insert(object.id, object);
         }
+        Ok(result)
+    }
 
-        let query = String::from("SELECT systemA, systemB FROM mapSystemConnections;");
+    /// One row of the query in [`Self::select_solar_systems`] as a system
+    /// (no connections, anchor restrictions or star yet).
+    fn solar_system_from_row(&self, row: &rusqlite::Row) -> Result<SolarSystem, Error> {
+        let mut object = SolarSystem::new(self.factor);
+        object.id = row.get(0)?;
+        object.name = row.get(1)?;
+        object.constellation = row.get(8)?;
 
-        let mut statement = connection.prepare(query.as_str())?;
+        let mut real_x = row.get::<_, f64>(3)?;
+        let mut real_y = row.get::<_, f64>(4)?;
+        let mut real_z = row.get::<_, f64>(5)?;
+        // Unlike get_systems()/get_connections() (which filter
+        // out systems without a 2D projection), the row is kept
+        // as-is here: this method feeds general system data (name,
+        // region, constellation, real coordinates), not just the
+        // map, so a missing position2D falls back to (0.0, 0.0)
+        // instead of excluding the system entirely.
+        let proj_x = row.get::<_, Option<f64>>(6)?.unwrap_or(0.0);
+        let mut proj_y = row.get::<_, Option<f64>>(7)?.unwrap_or(0.0);
+
+        // Invert coordinates if needed: real 3D coords flip all
+        // components, the 2D map projection flips only Y (same
+        // orientation `get_systems`/`scale_coords` produce)
+        if self.invert_coordinates {
+            real_x *= -1.0;
+            real_y *= -1.0;
+            real_z *= -1.0;
+            proj_y *= -1.0;
+        }
+        object.real_coords = SdePoint::new(real_x, real_y, real_z);
+        object.projected_coords = SdePoint::new(proj_x, proj_y, 0.0);
+
+        object.region = row.get(2)?;
+        Ok(object)
+    }
+
+    /// Runs `sql` (two `u32` columns) and calls `apply` with each row's pair.
+    fn for_each_id_pair(
+        connection: &Connection,
+        sql: &str,
+        mut apply: impl FnMut(u32, u32),
+    ) -> Result<(), Error> {
+        let mut statement = connection.prepare(sql)?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
-            // Optimization: to avoid printing twice the same line, we are just skipping coordinates
-            // for SolarSystems that has an Id less than the current one printed. with the exception
-            // of the lowest ID
-            let system_a = row.get::<usize, u32>(0)?;
-            let system_b = row.get::<usize, u32>(1)?;
-
-            //we compare the current system with the first, if not the same then we add the coordinates to hashmap
-            result.entry(system_a).and_modify(|point| {
-                point.connections.push(system_b);
-            });
-
-            result.entry(system_b).and_modify(|point| {
-                point.connections.push(system_a);
-            });
+            apply(row.get::<usize, u32>(0)?, row.get::<usize, u32>(1)?);
         }
+        Ok(())
+    }
 
-        let query = String::from(
-            "SELECT solarSystemId, categoryId FROM mapSolarSystemDisallowedAnchorableCategories;",
-        );
-        let mut statement = connection.prepare(query.as_str())?;
-        let mut rows = statement.query([])?;
-        while let Some(row) = rows.next()? {
-            let system_id = row.get::<usize, u32>(0)?;
-            let category_id = row.get::<usize, u32>(1)?;
-            result.entry(system_id).and_modify(|point| {
-                point.disallowed_anchor_categories.push(category_id);
-            });
-        }
-
-        let query = String::from(
-            "SELECT solarSystemId, groupId FROM mapSolarSystemDisallowedAnchorableGroups;",
-        );
-        let mut statement = connection.prepare(query.as_str())?;
-        let mut rows = statement.query([])?;
-        while let Some(row) = rows.next()? {
-            let system_id = row.get::<usize, u32>(0)?;
-            let group_id = row.get::<usize, u32>(1)?;
-            result.entry(system_id).and_modify(|point| {
-                point.disallowed_anchor_groups.push(group_id);
-            });
-        }
-
-        let query = String::from(
-            "SELECT ms.solarSystemId, ms.starId, ms.locked, ms.radius, ts.name, ts.color \
-             FROM mapStars AS ms INNER JOIN typeStar AS ts ON (ms.starTypeId = ts.typeId);",
-        );
-        let mut statement = connection.prepare(query.as_str())?;
+    /// Fills in the `star` of each system in `result` (`mapStars` joined
+    /// with `typeStar`); systems without a star keep `None`.
+    fn add_solar_system_stars(
+        connection: &Connection,
+        result: &mut HashMap<u32, SolarSystem>,
+    ) -> Result<(), Error> {
+        let query = "SELECT ms.solarSystemId, ms.starId, ms.locked, ms.radius, ts.name, ts.color \
+             FROM mapStars AS ms INNER JOIN typeStar AS ts ON (ms.starTypeId = ts.typeId);";
+        let mut statement = connection.prepare(query)?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
             let system_id = row.get::<usize, u32>(0)?;
@@ -951,8 +971,7 @@ impl<'a> SdeManager<'a> {
                 point.star = Some(star);
             });
         }
-
-        Ok(result)
+        Ok(())
     }
 
     /// Every constellation, optionally narrowed to just the given
@@ -963,8 +982,6 @@ impl<'a> SdeManager<'a> {
     fn get_constellation(&self, regions: Vec<u32>) -> Result<HashMap<u32, Constellation>, Error> {
         // preparing the connections that will be shared between threads
         let connection = self.get_standart_connection()?;
-        let mut result = HashMap::new();
-        let mut constellations = Vec::new();
 
         let mut query = String::from("SELECT constellationId, constellationName, regionId ");
         query += "FROM mapConstellations ";
@@ -973,48 +990,47 @@ impl<'a> SdeManager<'a> {
         }
 
         let mut statement = connection.prepare(query.as_str())?;
-        let mut rows;
-        if regions.is_empty() {
-            rows = statement.query([])?;
+        let mut rows = if regions.is_empty() {
+            statement.query([])?
         } else {
-            let id_list: array::Array = Rc::new(
-                regions
-                    .into_iter()
-                    .map(rusqlite::types::Value::from)
-                    .collect::<Vec<rusqlite::types::Value>>(),
-            );
-            rows = statement.query([id_list])?;
-        }
+            statement.query([Self::id_array(regions)])?
+        };
 
         //while there are regions left to consume
+        let mut result = HashMap::new();
         while let Some(row) = rows.next()? {
             let mut object = Constellation::new();
             object.id = row.get(0)?;
             object.name = row.get(1)?;
             object.region = row.get(2)?;
-            constellations.push(row.get::<usize, u32>(0)?);
-            result.insert(row.get(0)?, object);
+            result.insert(object.id, object);
         }
 
+        Self::add_constellation_systems(&connection, &mut result)?;
+
+        Ok(result)
+    }
+
+    /// The second query of `get_constellation`: fills in the
+    /// `solar_systems` of the constellations in `result`.
+    fn add_constellation_systems(
+        connection: &Connection,
+        result: &mut HashMap<u32, Constellation>,
+    ) -> Result<(), Error> {
         let mut query = String::from("SELECT constellationId, solarSystemId FROM mapSolarSystems");
         query += " WHERE constellationId IN rarray(?1);";
 
         let mut statement = connection.prepare(query.as_str())?;
-        let id_list = Rc::new(
-            constellations
-                .into_iter()
-                .map(rusqlite::types::Value::from)
-                .collect::<Vec<rusqlite::types::Value>>(),
-        );
-        let mut rows = statement.query(params![id_list])?;
+        let constellations: Vec<u32> = result.keys().copied().collect();
+        let mut rows = statement.query(params![Self::id_array(constellations)])?;
 
         while let Some(row) = rows.next()? {
+            let solar_system = row.get(1)?;
             result
                 .entry(row.get(0)?)
-                .and_modify(|constel| constel.solar_systems.push(row.get(1).unwrap()));
+                .and_modify(|constel| constel.solar_systems.push(solar_system));
         }
-
-        Ok(result)
+        Ok(())
     }
 
     /// Every planet, optionally narrowed to just the given
@@ -1134,30 +1150,61 @@ impl<'a> SdeManager<'a> {
             return Ok(None);
         };
 
+        let (fingerprint, stored_hash) = Self::fingerprint_from_row(row)?;
+        let matches = fingerprint.hash() == stored_hash;
+        Ok(Some((fingerprint, matches)))
+    }
+
+    /// One row of the `sdeFingerprint` query as the fingerprint plus the
+    /// hash stored next to it.
+    fn fingerprint_from_row(row: &rusqlite::Row) -> Result<(SdeFingerprint, String), Error> {
         let axis_text: String = row.get(3)?;
         // `forceIsometricPosition2d` + `isometricProjectedAxis` encode
         // `Position2DMode` (see `Position2DMode::fingerprint_columns`,
         // shared with the write side so the two can never disagree).
         let position_2d = Position2DMode::from_fingerprint_columns(row.get(2)?, axis_text.as_str());
-        let stored_hash: String = row.get(15)?;
+        // Columns 4..=10 are the seven boolean flags, 11..=14 the four
+        // nullable ones, in table order.
+        let mut flags = [false; 7];
+        for (offset, flag) in flags.iter_mut().enumerate() {
+            *flag = row.get(4 + offset)?;
+        }
+        let [
+            map_kspace,
+            map_wspace,
+            map_abyssal,
+            map_void,
+            with_gates,
+            with_moons,
+            with_third_party,
+        ] = flags;
+        let mut optional_flags = [None; 4];
+        for (offset, flag) in optional_flags.iter_mut().enumerate() {
+            *flag = row.get(11 + offset)?;
+        }
+        let [
+            with_icebelts,
+            with_triglavian_status,
+            with_jove_observatories,
+            with_special_ore,
+        ] = optional_flags;
 
         let fingerprint = SdeFingerprint {
             sde_build: row.get(0)?,
             language: row.get(1)?,
             position_2d,
-            map_kspace: row.get(4)?,
-            map_wspace: row.get(5)?,
-            map_abyssal: row.get(6)?,
-            map_void: row.get(7)?,
-            with_gates: row.get(8)?,
-            with_moons: row.get(9)?,
-            with_third_party: row.get(10)?,
-            with_icebelts: row.get(11)?,
-            with_triglavian_status: row.get(12)?,
-            with_jove_observatories: row.get(13)?,
-            with_special_ore: row.get(14)?,
+            map_kspace,
+            map_wspace,
+            map_abyssal,
+            map_void,
+            with_gates,
+            with_moons,
+            with_third_party,
+            with_icebelts,
+            with_triglavian_status,
+            with_jove_observatories,
+            with_special_ore,
         };
-        let matches = fingerprint.hash() == stored_hash;
-        Ok(Some((fingerprint, matches)))
+        Ok((fingerprint, row.get(15)?))
     }
 }
