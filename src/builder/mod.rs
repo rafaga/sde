@@ -2,10 +2,9 @@
 //! maps.
 //!
 //! This whole module lives behind the `builder` feature (disabled by
-//! default) so that a consumer that only *reads* `sde.db` -- like the
-//! project's main egui app -- doesn't drag in reqwest/tokio/zip/etc.
-//! The `sde` (CLI) and `sde-gui` binaries enable this feature and call
-//! into this module's functions.
+//! default) so that a consumer that only *reads* `sde.db` doesn't drag
+//! in reqwest/tokio/zip/etc. The `sde-builder` binary enables this
+//! feature and calls into this module's functions.
 
 pub mod community;
 pub mod extract;
@@ -30,7 +29,43 @@ pub mod sde_index;
 // src/bin/cli.rs's `main()`: sde_index::update_as_needed() ->
 // extract::prepare_sde_directory() -> parser::Parser::build_database()
 // (which itself runs parse_data(), then community::process() only if
-// `--with-third-party` was passed).
+// `--with-third-party` was passed). [`BuildUrls`] holds the default
+// endpoints that orchestration fetches from.
+
+/// Default network endpoints for a full build: CCP's own SDE export
+/// (`sde_url`/`sde_variant`, consumed by
+/// [`sde_index::update_as_needed`]) and the third-party map data used
+/// when `ParserConfig.with_third_party` is set (`maps_url`, consumed
+/// by [`parser::Parser::build_database`]).
+///
+/// A plain struct with a [`Default`] impl rather than free-standing
+/// constants, so any caller assembling a build pipeline around this
+/// crate -- this crate's own `sde-builder` binary included, not just
+/// external library consumers -- has something to construct and
+/// override piecemeal (a private SDE mirror, a different map source)
+/// instead of three separate constants with no shared identity.
+///
+/// ```
+/// # use sde::builder::BuildUrls;
+/// let urls = BuildUrls::default();
+/// assert_eq!(urls.sde_variant, "jsonl");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildUrls {
+    pub sde_variant: String,
+    pub sde_url: String,
+    pub maps_url: String,
+}
+
+impl Default for BuildUrls {
+    fn default() -> Self {
+        Self {
+            sde_variant: "jsonl".to_string(),
+            sde_url: "https://developers.eveonline.com/static-data/tranquility/".to_string(),
+            maps_url: "http://evemaps.dotlan.net/svg/".to_string(),
+        }
+    }
+}
 
 /// Build process errors.
 ///

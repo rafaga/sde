@@ -7,7 +7,7 @@ repository = "https://github.com/rafaga/sde/"
 keywords = ["sde", "eve-online"]
 categories = ["games", "value-formatting"]
 exclude = ["tests/",".github/",".gitignore"]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 license = "MIT"
 
@@ -60,10 +60,10 @@ builder = [
     "dep:tracing-subscriber",
 ]
 # Enables live profiling with the Tracy profiler (https://github.com/wolfpld/tracy)
-# for the `sde-builder` CLI: `cargo run --bin sde-builder --features builder,profile-with-tracy -- build`,
+# for the `sde-builder` CLI: `cargo run --bin sde-builder --features builder,profile -- build`,
 # then open the Tracy desktop app and connect (it auto-discovers the running
 # process on the local network). A consumer of this crate as a library (e.g.
-# telescope) that also enables `profile-with-tracy` on its own binary gets
+# telescope) that also enables `profile` on its own binary gets
 # `sde`'s spans (the `SdeManager` read path and, with `builder`, the whole
 # database-construction pipeline) in the same trace for free, via Cargo's
 # feature unification on the shared `tracing` dependency -- no extra wiring
@@ -88,7 +88,7 @@ serde_json = { version = "1", optional = true }
 clap = { version = "4.6.6", features = ["derive"], optional = true }
 anyhow = { version = "1", optional = true }
 
-# --- Dependencias opcionales, solo activas con la feature "profile-with-tracy" ---
+# --- Dependencias opcionales, solo activas con la feature "profile" ---
 tracing-subscriber = { version = "0.3", features = ["registry"], optional = true }
 tracing-tracy = { version = "0.12", optional = true }
 
