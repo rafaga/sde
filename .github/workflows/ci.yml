@@ -50,6 +50,8 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # Every system: some code is platform-specific, so a library is checked
+  # natively on each one (the browser target has its own job below).
   test:
     name: clippy and test on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -78,11 +80,29 @@ jobs:
       - run: cargo test
       - run: cargo test --features builder
 
+  # The browser target: only the library, without the `builder` feature (it
+  # downloads and unzips the SDE, which has no place in a browser).
+  wasm:
+    name: check wasm32
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+          cache-on-failure: true
+      - run: cargo check --lib --target wasm32-unknown-unknown
+
   # The one check to require if branch protection is turned on.
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [fmt, test]
+    needs: [fmt, test, wasm]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if a job failed or was cancelled
