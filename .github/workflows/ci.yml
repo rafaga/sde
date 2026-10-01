@@ -1,8 +1,8 @@
 name: CI
 
-# One workflow for the three operating systems. Per system a single job runs
-# clippy, the all-features check and the tests one after the other, so the
-# expensive part of the build (bundled SQLite, reqwest/rustls for the builder)
+# One workflow. A single native job runs clippy, the all-features check and
+# the tests one after the other, so the expensive part of the build
+# (bundled SQLite, reqwest/rustls for the builder)
 # is compiled once and shared. Pull requests only read the build cache; it is
 # written by pushes to master.
 #
@@ -50,14 +50,12 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # Libraries: the platform-specific code is thin, so Linux is enough for the
+  # native build; the browser target is checked separately.
   test:
-    name: clippy and test on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: clippy and test
+    runs-on: ubuntu-latest
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -78,11 +76,29 @@ jobs:
       - run: cargo test
       - run: cargo test --features builder
 
+  # The browser target: only the library, without the `builder` feature (it
+  # downloads and unzips the SDE, which has no place in a browser).
+  wasm:
+    name: check wasm32
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+          cache-on-failure: true
+      - run: cargo check --lib --target wasm32-unknown-unknown
+
   # The one check to require if branch protection is turned on.
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [fmt, test]
+    needs: [fmt, test, wasm]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if a job failed or was cancelled
