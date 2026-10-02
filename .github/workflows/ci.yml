@@ -1,83 +1,149 @@
-on: [push, pull_request]
+name: CI
 
-name: Windows
+# One workflow for the three operating systems. Per system a single job runs
+# clippy, the all-features check and the tests one after the other, so the
+# expensive part of the build (bundled SQLite, reqwest/rustls for the builder)
+# is compiled once and shared. Pull requests only read the build cache; it is
+# written by pushes to master.
+#
+# `Cargo.lock` is not versioned (this is a library), so there is no `--locked`:
+# CI builds against the newest dependencies that `Cargo.toml` allows, which is
+# what a consumer of the crate gets.
+on:
+  pull_request:
+    branches: [master, dev]
+    paths-ignore:
+      - "**.md"
+  push:
+    branches: [master]
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # A new push to a pull request replaces the run in progress; a run on master
+  # always finishes.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 env:
-  # This is required to enable the web_sys clipboard API which egui_web uses
-  # https://rustwasm.github.io/wasm-bindgen/api/web_sys/struct.Clipboard.html
-  # https://rustwasm.github.io/docs/wasm-bindgen/web-sys/unstable-apis.html
-  # RUSTFLAGS: --cfg=web_sys_unstable_apis
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  CARGO_TERM_COLOR: always
   CARGO_HTTP_MULTIPLEXING: false
+  # Backtraces with line numbers only: smaller artifacts and a faster build.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  RUST_BACKTRACE: 1
 
 jobs:
-  check_windows:
-    name: check
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo check --all-features
-
-  # check_wasm:
-  #   name: Check wasm32
-  #   runs-on: macos-latest
-  #   steps:
-  #     - uses: actions/checkout@v2
-  #     - uses: actions-rs/toolchain@v1
-  #       with:
-  #         profile: minimal
-  #         toolchain: stable
-  #         target: wasm32-unknown-unknown
-  #         override: true
-  #     - uses: actions-rs/cargo@v1
-  #       with:
-  #         command: check
-  #         args: --all-features --lib --target wasm32-unknown-unknown
-
-  # test:
-  #   name: Test Suite
-  #   runs-on: macos-latest
-  #   steps:
-  #     - uses: actions/checkout@v2
-  #     - uses: actions-rs/toolchain@v1
-  #       with:
-  #         profile: minimal
-  #         toolchain: stable
-  #         override: true
-  #     - run: sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
-  #     - uses: actions-rs/cargo@v1
-  #       with:
-  #         command: test
-  #         args: --lib
-
   fmt:
     name: fmt
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - run: cargo fmt --all -- --check
 
-  clippy:
-    name: clippy
-    runs-on: windows-latest
+  # Every system: some code is platform-specific, so a library is checked
+  # natively on each one (the browser target has its own job below).
+  test:
+    name: clippy and test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo clippy -- -D warnings
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+          # A failed run still leaves the dependencies compiled for the next one.
+          cache-on-failure: true
+      # The library alone and then with the `builder` feature (the
+      # `sde-builder` binary and the download pipeline), tests included.
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --features builder -- -D warnings
+      # All features (Tracy profiling included): compiled, not run.
+      - run: cargo check --all-targets --all-features
+      # Tests and doc tests, with and without the builder.
+      - run: cargo test
+      - run: cargo test --features builder
 
-  # trunk:
-  #   name: trunk
-  #   runs-on: macos-latest
-  #   steps:
-  #     - uses: actions/checkout@v2
-  #     - uses: actions-rs/toolchain@v1
-  #       with:
-  #         profile: minimal
-  #         toolchain: 1.75
-  #         target: wasm32-unknown-unknown
-  #         override: true
-  #     - name: Download and install Trunk binary
-  #       run: wget -qO- https://github.com/thedodd/trunk/releases/latest/download/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xzf-
-  #     - name: Build
-  #       run: ./trunk build
+  # The browser target: only the library, without the `builder` feature (it
+  # downloads and unzips the SDE, which has no place in a browser).
+  wasm:
+    name: check wasm32
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+          cache-on-failure: true
+      - run: cargo check --lib --target wasm32-unknown-unknown
+
+  # The one check to require if branch protection is turned on.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [fmt, test, wasm]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if a job failed or was cancelled
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "::error::a CI job did not pass"
+            exit 1
+          fi
+
+  # Line coverage; kept as an artifact, no external service.
+  coverage:
+    name: coverage
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: coverage
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+          cache-on-failure: true
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Run the tests with coverage
+        run: cargo llvm-cov --features builder --no-report
+      - name: Write the report
+        env:
+          IGNORE: '(cargo/registry|rustc)'
+        run: |
+          cargo llvm-cov report --ignore-filename-regex "$IGNORE" --lcov --output-path lcov.info
+          {
+            echo '## Line coverage'
+            echo '```'
+            cargo llvm-cov report --ignore-filename-regex "$IGNORE" --summary-only
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: error

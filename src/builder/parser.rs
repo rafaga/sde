@@ -85,6 +85,7 @@ use crate::builder::community::{self, CommunityConfig};
 use crate::objects::SdeFingerprint;
 use reqwest::Client;
 use rusqlite::Connection;
+use rusqlite::types::Value as SqlValue;
 use serde_json::Value;
 use std::io::BufRead;
 use std::path::Path;
@@ -313,6 +314,79 @@ fn iter_jsonl_records(
     }))
 }
 
+/// The prepared `INSERT` statements of [`Parser::parse_npc_corporations`].
+struct CorporationStatements<'c> {
+    corp: rusqlite::Statement<'c>,
+    allowed_race: rusqlite::Statement<'c>,
+    division: rusqlite::Statement<'c>,
+    trade: rusqlite::Statement<'c>,
+    investor: rusqlite::Statement<'c>,
+}
+
+impl<'c> CorporationStatements<'c> {
+    fn prepare(connection: &'c Connection) -> Result<Self, Error> {
+        Ok(Self {
+            corp: connection.prepare(
+            "INSERT INTO npcCorporations \
+            (corporationId, corporationName, tickerName, deleted, description, extent, \
+            hasPlayerPersonnelManager, initialPrice, memberLimit, minSecurity, minimumJoinStanding, \
+            sendCharTerminationMessage, shares, size, sizeFactor, taxRate, uniqueName, ceoId, \
+            mainActivityId, secondaryActivityId, iconId, raceId, enemyId, friendId, factionId, \
+            solarSystemId, stationId) \
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, \
+                    ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+        )?,
+            allowed_race: connection.prepare(
+            "INSERT INTO npcCorporationAllowedRaces (corporationId, raceId) VALUES (?1, ?2)",
+        )?,
+            division: connection.prepare(
+            "INSERT INTO npcCorporationDivisionAssignments \
+            (corporationId, divisionId, divisionNumber, leaderId, size) \
+            VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?,
+            trade: connection.prepare(
+            "INSERT INTO npcCorporationTrades (corporationId, typeId, affinity) VALUES (?1, ?2, ?3)",
+        )?,
+            investor: connection.prepare(
+            "INSERT INTO npcCorporationInvestors (corporationId, investorId, shares) VALUES (?1, ?2, ?3)",
+        )?,
+        })
+    }
+}
+
+/// The prepared `INSERT` statements of [`Parser::parse_solar_systems`].
+struct SolarSystemStatements<'c> {
+    system: rusqlite::Statement<'c>,
+    subtype: rusqlite::Statement<'c>,
+    disallowed_category: rusqlite::Statement<'c>,
+    disallowed_group: rusqlite::Statement<'c>,
+}
+
+impl<'c> SolarSystemStatements<'c> {
+    fn prepare(connection: &'c Connection) -> Result<Self, Error> {
+        Ok(Self {
+            system: connection.prepare(
+            "INSERT INTO mapSolarSystems (solarSystemId, solarSystemName, constellationId, \
+            type, luminosity, radius, centerX, centerY, centerZ, \
+            security, securityClass, position2DX, position2DY, wormholeClassId, \
+            factionId) \
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+        )?,
+            subtype: connection.prepare(
+            "INSERT INTO mapSolarSystemSubType (solarSystemId, subType) VALUES (?1, ?2)",
+        )?,
+            disallowed_category: connection.prepare(
+            "INSERT INTO mapSolarSystemDisallowedAnchorableCategories (solarSystemId, categoryId) \
+            VALUES (?1, ?2)",
+        )?,
+            disallowed_group: connection.prepare(
+            "INSERT INTO mapSolarSystemDisallowedAnchorableGroups (solarSystemId, groupId) \
+            VALUES (?1, ?2)",
+        )?,
+        })
+    }
+}
+
 // `Debug` (not derived before): needed so `#[tracing::instrument]` can
 // capture `self` on `Parser`'s methods below -- both fields are cheap and
 // meaningful to see on a span (which SDE directory, which config flags),
@@ -353,6 +427,27 @@ impl Parser {
             rusqlite::params![type_id, name, color],
         )?;
         Ok(())
+    }
+
+    /// Runs `handle` on every record of `<sde_directory>/<stem>.jsonl` and
+    /// returns how many it counted (`Ok(true)`); `Ok(false)` skips a record
+    /// without counting it.
+    fn for_each_record(
+        &self,
+        stem: &str,
+        label: &str,
+        mut handle: impl FnMut(&Value) -> Result<bool, Error>,
+    ) -> Result<usize, Error> {
+        let mut count = 0usize;
+        for record in iter_jsonl_records(&self.sde_directory, stem)? {
+            if handle(&record?)? {
+                count += 1;
+            }
+        }
+        if self.config.verbose {
+            tracing::info!("Parsed {count} {label}");
+        }
+        Ok(count)
     }
 
     /// Extracts a required integer field from the record: if the field
@@ -537,15 +632,13 @@ impl Parser {
 
         let star_colors: StarColors = serde_json::from_str(include_str!("star_colors.json"))?;
 
-        let mut count = 0usize;
-        for record in iter_jsonl_records(&self.sde_directory, "types")? {
-            let record = record?;
-            let id = self.required_i64(&record, "_key")?;
-            let group_id = self.required_i64(&record, "groupID")?;
-            let name = self.config.required_localized(&record, "name")?.to_string();
-            let icon_id = self.optional_i64(&record, "iconID");
-            let published = self.optional_bool(&record, "published");
-            let volume = self.optional_f64(&record, "volume");
+        self.for_each_record("types", "types", |record| {
+            let id = self.required_i64(record, "_key")?;
+            let group_id = self.required_i64(record, "groupID")?;
+            let name = self.config.required_localized(record, "name")?.to_string();
+            let icon_id = self.optional_i64(record, "iconID");
+            let published = self.optional_bool(record, "published");
+            let volume = self.optional_f64(record, "volume");
 
             insert_type.execute(rusqlite::params![
                 id, group_id, name, icon_id, published, volume
@@ -573,12 +666,8 @@ impl Parser {
                 // "Notable behavior" in the module's docstring.
             }
 
-            count += 1;
-        }
-        if self.config.verbose {
-            tracing::info!("Parsed {count} types");
-        }
-        Ok(count)
+            Ok(true)
+        })
     }
 
     // ---------------------------------------------------------------------
@@ -593,20 +682,14 @@ impl Parser {
             "INSERT INTO invCategories (categoryId, categoryName, published) VALUES (?1, ?2, ?3)",
         )?;
 
-        let mut count = 0usize;
-        for record in iter_jsonl_records(&self.sde_directory, "categories")? {
-            let record = record?;
-            let id = self.required_i64(&record, "_key")?;
-            let name = self.config.required_localized(&record, "name")?;
-            let published = self.optional_bool(&record, "published");
+        self.for_each_record("categories", "categories", |record| {
+            let id = self.required_i64(record, "_key")?;
+            let name = self.config.required_localized(record, "name")?;
+            let published = self.optional_bool(record, "published");
 
             insert_category.execute(rusqlite::params![id, name, published])?;
-            count += 1;
-        }
-        if self.config.verbose {
-            tracing::info!("Parsed {count} categories");
-        }
-        Ok(count)
+            Ok(true)
+        })
     }
 
     // ---------------------------------------------------------------------
@@ -628,13 +711,11 @@ impl Parser {
             VALUES (?1, ?2, ?3, ?4)",
         )?;
 
-        let mut count = 0usize;
-        for record in iter_jsonl_records(&self.sde_directory, "groups")? {
-            let record = record?;
-            let id = self.required_i64(&record, "_key")?;
-            let category_id = self.required_i64(&record, "categoryID")?;
-            let name = self.config.required_localized(&record, "name")?;
-            let anchorable = self.optional_bool(&record, "anchorable");
+        self.for_each_record("groups", "groups", |record| {
+            let id = self.required_i64(record, "_key")?;
+            let category_id = self.required_i64(record, "categoryID")?;
+            let name = self.config.required_localized(record, "name")?;
+            let anchorable = self.optional_bool(record, "anchorable");
 
             insert_group.execute(rusqlite::params![id, category_id, name, anchorable])?;
 
@@ -642,12 +723,8 @@ impl Parser {
                 state.sun_group_id = Some(id);
             }
 
-            count += 1;
-        }
-        if self.config.verbose {
-            tracing::info!("Parsed {count} groups");
-        }
-        Ok(count)
+            Ok(true)
+        })
     }
 
     // ---------------------------------------------------------------------
@@ -661,19 +738,13 @@ impl Parser {
         let mut insert_race =
             connection.prepare("INSERT INTO races (raceId, raceName) VALUES (?1, ?2)")?;
 
-        let mut count = 0usize;
-        for record in iter_jsonl_records(&self.sde_directory, "races")? {
-            let record = record?;
-            let id = self.required_i64(&record, "_key")?;
-            let name = self.config.required_localized(&record, "name")?;
+        self.for_each_record("races", "races", |record| {
+            let id = self.required_i64(record, "_key")?;
+            let name = self.config.required_localized(record, "name")?;
 
             insert_race.execute(rusqlite::params![id, name])?;
-            count += 1;
-        }
-        if self.config.verbose {
-            tracing::info!("Parsed {count} races");
-        }
-        Ok(count)
+            Ok(true)
+        })
     }
 
     // ---------------------------------------------------------------------
@@ -690,19 +761,17 @@ impl Parser {
             VALUES (?1, ?2, ?3)",
         )?;
 
-        let mut count = 0usize;
-        for record in iter_jsonl_records(&self.sde_directory, "npcCorporationDivisions")? {
-            let record = record?;
-            let id = self.required_i64(&record, "_key")?;
-            let internal_name = self.required_str(&record, "internalName")?;
-            let leader_type_name = self.config.required_localized(&record, "leaderTypeName")?;
-            insert.execute(rusqlite::params![id, internal_name, leader_type_name])?;
-            count += 1;
-        }
-        if self.config.verbose {
-            tracing::info!("Parsed {count} npcCorporationDivisions");
-        }
-        Ok(count)
+        self.for_each_record(
+            "npcCorporationDivisions",
+            "npcCorporationDivisions",
+            |record| {
+                let id = self.required_i64(record, "_key")?;
+                let internal_name = self.required_str(record, "internalName")?;
+                let leader_type_name = self.config.required_localized(record, "leaderTypeName")?;
+                insert.execute(rusqlite::params![id, internal_name, leader_type_name])?;
+                Ok(true)
+            },
+        )
     }
 
     // ---------------------------------------------------------------------
@@ -733,136 +802,115 @@ impl Parser {
     /// integers (no character table exists to reference).
     #[tracing::instrument]
     pub fn parse_npc_corporations(&self, connection: &Connection) -> Result<usize, Error> {
-        let mut insert_corp = connection.prepare(
-            "INSERT INTO npcCorporations \
-            (corporationId, corporationName, tickerName, deleted, description, extent, \
-            hasPlayerPersonnelManager, initialPrice, memberLimit, minSecurity, minimumJoinStanding, \
-            sendCharTerminationMessage, shares, size, sizeFactor, taxRate, uniqueName, ceoId, \
-            mainActivityId, secondaryActivityId, iconId, raceId, enemyId, friendId, factionId, \
-            solarSystemId, stationId) \
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, \
-                    ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
-        )?;
-        let mut insert_allowed_race = connection.prepare(
-            "INSERT INTO npcCorporationAllowedRaces (corporationId, raceId) VALUES (?1, ?2)",
-        )?;
-        let mut insert_division = connection.prepare(
-            "INSERT INTO npcCorporationDivisionAssignments \
-            (corporationId, divisionId, divisionNumber, leaderId, size) \
-            VALUES (?1, ?2, ?3, ?4, ?5)",
-        )?;
-        let mut insert_trade = connection.prepare(
-            "INSERT INTO npcCorporationTrades (corporationId, typeId, affinity) VALUES (?1, ?2, ?3)",
-        )?;
-        let mut insert_investor = connection.prepare(
-            "INSERT INTO npcCorporationInvestors (corporationId, investorId, shares) VALUES (?1, ?2, ?3)",
-        )?;
+        let mut statements = CorporationStatements::prepare(connection)?;
+        self.for_each_record("npcCorporations", "npcCorporations", |record| {
+            self.insert_corporation(&mut statements, record)
+        })
+    }
 
-        let mut count = 0usize;
-        for record in iter_jsonl_records(&self.sde_directory, "npcCorporations")? {
-            let record = record?;
-            let id = self.required_i64(&record, "_key")?;
-            let name = self.config.required_localized(&record, "name")?;
-            let ticker = self.required_str(&record, "tickerName")?;
-            let deleted = self.required_bool(&record, "deleted")?;
-            let description = self.config.localized(&record, "description");
-            let extent = self.required_str(&record, "extent")?;
-            let has_player_personnel_manager =
-                self.required_bool(&record, "hasPlayerPersonnelManager")?;
-            let initial_price = self.required_i64(&record, "initialPrice")?;
-            let member_limit = self.required_i64(&record, "memberLimit")?;
-            let min_security = self.required_f64(&record, "minSecurity")?;
-            let minimum_join_standing = self.required_f64(&record, "minimumJoinStanding")?;
-            let send_char_termination_message =
-                self.required_bool(&record, "sendCharTerminationMessage")?;
-            let shares = self.required_i64(&record, "shares")?;
-            let size = self.required_str(&record, "size")?;
-            let size_factor = self.optional_f64(&record, "sizeFactor");
-            let tax_rate = self.required_f64(&record, "taxRate")?;
-            let unique_name = self.required_bool(&record, "uniqueName")?;
-            let ceo_id = self.optional_i64(&record, "ceoID");
-            let main_activity_id = self.optional_i64(&record, "mainActivityID");
-            let secondary_activity_id = self.optional_i64(&record, "secondaryActivityID");
-            let icon_id = self.optional_i64(&record, "iconID");
-            let race_id = self.optional_i64(&record, "raceID");
-            let enemy_id = self.optional_i64(&record, "enemyID");
-            let friend_id = self.optional_i64(&record, "friendID");
-            let faction_id = self.optional_i64(&record, "factionID");
-            let solar_system_id = self.optional_i64(&record, "solarSystemID");
-            let station_id = self.optional_i64(&record, "stationID");
+    /// Inserts one `npcCorporations` record and its child rows.
+    fn insert_corporation(
+        &self,
+        statements: &mut CorporationStatements,
+        record: &Value,
+    ) -> Result<bool, Error> {
+        let id = self.required_i64(record, "_key")?;
+        let mut values = self.corporation_head_values(record, id)?;
+        values.extend(self.corporation_tail_values(record)?);
+        statements
+            .corp
+            .execute(rusqlite::params_from_iter(values))?;
 
-            insert_corp.execute(rusqlite::params![
-                id,
-                name,
-                ticker,
-                deleted,
-                description,
-                extent,
-                has_player_personnel_manager,
-                initial_price,
-                member_limit,
-                min_security,
-                minimum_join_standing,
-                send_char_termination_message,
-                shares,
-                size,
-                size_factor,
-                tax_rate,
-                unique_name,
-                ceo_id,
-                main_activity_id,
-                secondary_activity_id,
-                icon_id,
-                race_id,
-                enemy_id,
-                friend_id,
-                faction_id,
-                solar_system_id,
-                station_id
-            ])?;
-
-            for allowed_race_id in self.optional_i64_array(&record, "allowedMemberRaces")? {
-                insert_allowed_race.execute(rusqlite::params![id, allowed_race_id])?;
-            }
-
-            if let Some(Value::Array(divisions)) = record.get("divisions") {
-                for entry in divisions {
-                    let division_id = self.required_i64(entry, "_key")?;
-                    let division_number = self.required_i64(entry, "divisionNumber")?;
-                    let leader_id = self.required_i64(entry, "leaderID")?;
-                    let division_size = self.required_i64(entry, "size")?;
-                    insert_division.execute(rusqlite::params![
-                        id,
-                        division_id,
-                        division_number,
-                        leader_id,
-                        division_size
-                    ])?;
-                }
-            }
-
-            if let Some(Value::Array(trades)) = record.get("corporationTrades") {
-                for entry in trades {
-                    let type_id = self.required_i64(entry, "_key")?;
-                    let affinity = self.required_f64(entry, "_value")?;
-                    insert_trade.execute(rusqlite::params![id, type_id, affinity])?;
-                }
-            }
-
-            if let Some(Value::Array(investors)) = record.get("investors") {
-                for entry in investors {
-                    let investor_id = self.required_i64(entry, "_key")?;
-                    let investor_shares = self.required_f64(entry, "_value")?;
-                    insert_investor.execute(rusqlite::params![id, investor_id, investor_shares])?;
-                }
-            }
-
-            count += 1;
+        for allowed_race_id in self.optional_i64_array(record, "allowedMemberRaces")? {
+            statements
+                .allowed_race
+                .execute(rusqlite::params![id, allowed_race_id])?;
         }
-        if self.config.verbose {
-            tracing::info!("Parsed {count} npcCorporations");
+        self.insert_corporation_pairs(&mut statements.division, record, id, "divisions")?;
+        self.insert_corporation_pairs(&mut statements.trade, record, id, "corporationTrades")?;
+        self.insert_corporation_pairs(&mut statements.investor, record, id, "investors")?;
+        Ok(true)
+    }
+
+    /// First half of the `npcCorporations` columns, in table order.
+    fn corporation_head_values(&self, record: &Value, id: i64) -> Result<Vec<SqlValue>, Error> {
+        Ok(vec![
+            id.into(),
+            self.config
+                .required_localized(record, "name")?
+                .to_owned()
+                .into(),
+            self.required_str(record, "tickerName")?.to_owned().into(),
+            self.required_bool(record, "deleted")?.into(),
+            self.config
+                .localized(record, "description")
+                .map(str::to_owned)
+                .into(),
+            self.required_str(record, "extent")?.to_owned().into(),
+            self.required_bool(record, "hasPlayerPersonnelManager")?
+                .into(),
+            self.required_i64(record, "initialPrice")?.into(),
+            self.required_i64(record, "memberLimit")?.into(),
+        ])
+    }
+
+    /// Second half of the `npcCorporations` columns, in table order.
+    fn corporation_tail_values(&self, record: &Value) -> Result<Vec<SqlValue>, Error> {
+        Ok(vec![
+            self.required_f64(record, "minSecurity")?.into(),
+            self.required_f64(record, "minimumJoinStanding")?.into(),
+            self.required_bool(record, "sendCharTerminationMessage")?
+                .into(),
+            self.required_i64(record, "shares")?.into(),
+            self.required_str(record, "size")?.to_owned().into(),
+            self.optional_f64(record, "sizeFactor").into(),
+            self.required_f64(record, "taxRate")?.into(),
+            self.required_bool(record, "uniqueName")?.into(),
+            self.optional_i64(record, "ceoID").into(),
+            self.optional_i64(record, "mainActivityID").into(),
+            self.optional_i64(record, "secondaryActivityID").into(),
+            self.optional_i64(record, "iconID").into(),
+            self.optional_i64(record, "raceID").into(),
+            self.optional_i64(record, "enemyID").into(),
+            self.optional_i64(record, "friendID").into(),
+            self.optional_i64(record, "factionID").into(),
+            self.optional_i64(record, "solarSystemID").into(),
+            self.optional_i64(record, "stationID").into(),
+        ])
+    }
+
+    /// Inserts the child rows of a corporation held in the array `field`
+    /// (`divisions`, `corporationTrades` or `investors`); a missing array is
+    /// simply no rows.
+    fn insert_corporation_pairs(
+        &self,
+        statement: &mut rusqlite::Statement,
+        record: &Value,
+        corporation_id: i64,
+        field: &str,
+    ) -> Result<(), Error> {
+        let Some(Value::Array(entries)) = record.get(field) else {
+            return Ok(());
+        };
+        for entry in entries {
+            let key = self.required_i64(entry, "_key")?;
+            if field == "divisions" {
+                statement.execute(rusqlite::params![
+                    corporation_id,
+                    key,
+                    self.required_i64(entry, "divisionNumber")?,
+                    self.required_i64(entry, "leaderID")?,
+                    self.required_i64(entry, "size")?
+                ])?;
+            } else {
+                statement.execute(rusqlite::params![
+                    corporation_id,
+                    key,
+                    self.required_f64(entry, "_value")?
+                ])?;
+            }
         }
-        Ok(count)
+        Ok(())
     }
 
     // ---------------------------------------------------------------------
@@ -894,22 +942,20 @@ impl Parser {
         let mut insert_faction_race =
             connection.prepare("INSERT INTO factionRace (factionId, raceId) VALUES (?1, ?2)")?;
 
-        let mut count = 0usize;
-        for record in iter_jsonl_records(&self.sde_directory, "factions")? {
-            let record = record?;
-            let id = self.required_i64(&record, "_key")?;
-            let name = self.config.required_localized(&record, "name")?;
-            let icon_id = self.required_i64(&record, "iconID")?;
-            let size_factor = self.required_f64(&record, "sizeFactor")?;
-            let unique_name = self.required_bool(&record, "uniqueName")?;
-            let description = self.config.required_localized(&record, "description")?;
-            let short_description = self.config.localized(&record, "shortDescription");
-            let flat_logo = self.optional_str(&record, "flatLogo");
-            let flat_logo_with_name = self.optional_str(&record, "flatLogoWithName");
-            let corporation_id = self.optional_i64(&record, "corporationID");
-            let militia_corporation_id = self.optional_i64(&record, "militiaCorporationID");
-            let solar_system_id = self.optional_i64(&record, "solarSystemID");
-            let member_races = self.optional_i64_array(&record, "memberRaces")?;
+        self.for_each_record("factions", "factions", |record| {
+            let id = self.required_i64(record, "_key")?;
+            let name = self.config.required_localized(record, "name")?;
+            let icon_id = self.required_i64(record, "iconID")?;
+            let size_factor = self.required_f64(record, "sizeFactor")?;
+            let unique_name = self.required_bool(record, "uniqueName")?;
+            let description = self.config.required_localized(record, "description")?;
+            let short_description = self.config.localized(record, "shortDescription");
+            let flat_logo = self.optional_str(record, "flatLogo");
+            let flat_logo_with_name = self.optional_str(record, "flatLogoWithName");
+            let corporation_id = self.optional_i64(record, "corporationID");
+            let militia_corporation_id = self.optional_i64(record, "militiaCorporationID");
+            let solar_system_id = self.optional_i64(record, "solarSystemID");
+            let member_races = self.optional_i64_array(record, "memberRaces")?;
 
             insert_faction.execute(rusqlite::params![
                 id,
@@ -930,12 +976,8 @@ impl Parser {
                 insert_faction_race.execute(rusqlite::params![id, race_id])?;
             }
 
-            count += 1;
-        }
-        if self.config.verbose {
-            tracing::info!("Parsed {count} factions");
-        }
-        Ok(count)
+            Ok(true)
+        })
     }
 
     // ---------------------------------------------------------------------
@@ -954,15 +996,13 @@ impl Parser {
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )?;
 
-        let mut count = 0usize;
-        for record in iter_jsonl_records(&self.sde_directory, "mapRegions")? {
-            let record = record?;
-            let id = self.required_i64(&record, "_key")?;
-            let name = self.config.required_localized(&record, "name")?;
-            let faction_id = self.optional_i64(&record, "factionID");
-            let nebula = self.required_i64(&record, "nebulaID")?;
-            let wormhole_class_id = self.optional_i64(&record, "wormholeClassID");
-            let (center_x, center_y, center_z) = self.required_position(&record)?;
+        self.for_each_record("mapRegions", "regions", |record| {
+            let id = self.required_i64(record, "_key")?;
+            let name = self.config.required_localized(record, "name")?;
+            let faction_id = self.optional_i64(record, "factionID");
+            let nebula = self.required_i64(record, "nebulaID")?;
+            let wormhole_class_id = self.optional_i64(record, "wormholeClassID");
+            let (center_x, center_y, center_z) = self.required_position(record)?;
 
             insert_region.execute(rusqlite::params![
                 id,
@@ -974,12 +1014,8 @@ impl Parser {
                 nebula,
                 wormhole_class_id
             ])?;
-            count += 1;
-        }
-        if self.config.verbose {
-            tracing::info!("Parsed {count} regions");
-        }
-        Ok(count)
+            Ok(true)
+        })
     }
 
     // ---------------------------------------------------------------------
@@ -1000,26 +1036,20 @@ impl Parser {
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
 
-        let mut count = 0usize;
-        for record in iter_jsonl_records(&self.sde_directory, "mapConstellations")? {
-            let record = record?;
-            let id = match self.optional_i64(&record, "constellationID") {
+        self.for_each_record("mapConstellations", "constellations", |record| {
+            let id = match self.optional_i64(record, "constellationID") {
                 Some(id) => id,
-                None => self.required_i64(&record, "_key")?,
+                None => self.required_i64(record, "_key")?,
             };
-            let name = self.config.required_localized(&record, "name")?;
-            let region_id = self.required_i64(&record, "regionID")?;
-            let (center_x, center_y, center_z) = self.required_position(&record)?;
+            let name = self.config.required_localized(record, "name")?;
+            let region_id = self.required_i64(record, "regionID")?;
+            let (center_x, center_y, center_z) = self.required_position(record)?;
 
             insert_constellation.execute(rusqlite::params![
                 id, name, region_id, center_x, center_y, center_z
             ])?;
-            count += 1;
-        }
-        if self.config.verbose {
-            tracing::info!("Parsed {count} constellations");
-        }
-        Ok(count)
+            Ok(true)
+        })
     }
 
     // ---------------------------------------------------------------------
@@ -1092,121 +1122,130 @@ impl Parser {
         connection: &Connection,
         state: &mut SystemScopeState,
     ) -> Result<usize, Error> {
-        let mut insert_system = connection.prepare(
-            "INSERT INTO mapSolarSystems (solarSystemId, solarSystemName, constellationId, \
-            type, luminosity, radius, centerX, centerY, centerZ, \
-            security, securityClass, position2DX, position2DY, wormholeClassId, \
-            factionId) \
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-        )?;
-        let mut insert_subtype = connection.prepare(
-            "INSERT INTO mapSolarSystemSubType (solarSystemId, subType) VALUES (?1, ?2)",
-        )?;
-        let mut insert_disallowed_category = connection.prepare(
-            "INSERT INTO mapSolarSystemDisallowedAnchorableCategories (solarSystemId, categoryId) \
-            VALUES (?1, ?2)",
-        )?;
-        let mut insert_disallowed_group = connection.prepare(
-            "INSERT INTO mapSolarSystemDisallowedAnchorableGroups (solarSystemId, groupId) \
-            VALUES (?1, ?2)",
-        )?;
+        let mut statements = SolarSystemStatements::prepare(connection)?;
+        self.for_each_record("mapSolarSystems", "solar systems", |record| {
+            self.insert_solar_system(&mut statements, state, record)
+        })
+    }
 
-        let mut count = 0usize;
-        for record in iter_jsonl_records(&self.sde_directory, "mapSolarSystems")? {
-            let record = record?;
-            let system_id = self.required_i64(&record, "_key")?;
-            let wormhole_class_id = self.optional_i64(&record, "wormholeClassID");
-            if !self.config.system_in_scope(wormhole_class_id) {
-                continue;
-            }
-            state.systems_in_scope.insert(system_id);
-
-            let name = self.config.required_localized(&record, "name")?;
-            let constellation_id = self.required_i64(&record, "constellationID")?;
-            // hub/corridor/fringe are confirmed mutually exclusive against
-            // real data (never two at once across 8490 real records) --
-            // collapsed into a single `type` column instead of three
-            // separate booleans. Order doesn't matter here precisely
-            // because they never co-occur.
-            let system_type = if self.optional_bool(&record, "hub") == Some(true) {
-                Some("hub")
-            } else if self.optional_bool(&record, "corridor") == Some(true) {
-                Some("corridor")
-            } else if self.optional_bool(&record, "fringe") == Some(true) {
-                Some("fringe")
-            } else {
-                None
-            };
-            let luminosity = self.optional_f64(&record, "luminosity");
-            let radius = self.required_f64(&record, "radius")?;
-            let (center_x, center_y, center_z) = self.required_position(&record)?;
-
-            let security = self.required_f64(&record, "securityStatus")?;
-            let security_class = self.optional_str(&record, "securityClass");
-            let faction_id = self.optional_i64(&record, "factionID");
-
-            let (position_2d_x, position_2d_y) = match self.config.position_2d {
-                Position2DMode::Ccp => (
-                    self.optional_nested_f64(&record, "position2D", "x"),
-                    self.optional_nested_f64(&record, "position2D", "y"),
-                ),
-                Position2DMode::Isometric(axis) => {
-                    let (x2d, y2d) = isometric_projection_2d(center_x, center_y, center_z, axis);
-                    (Some(x2d), Some(y2d))
-                }
-                Position2DMode::Orthogonal(axis) => {
-                    let (x2d, y2d) = orthogonal_projection_2d(center_x, center_y, center_z, axis);
-                    (Some(x2d), Some(y2d))
-                }
-            };
-
-            insert_system.execute(rusqlite::params![
-                system_id,
-                name,
-                constellation_id,
-                system_type,
-                luminosity,
-                radius,
-                center_x,
-                center_y,
-                center_z,
-                security,
-                security_class,
-                position_2d_x,
-                position_2d_y,
-                wormhole_class_id,
-                faction_id,
-            ])?;
-
-            // Unlike hub/corridor/fringe, border/regional/international
-            // are NOT mutually exclusive (confirmed: 104 real systems
-            // carry two or all three at once) -- each one that's true
-            // gets its own row in mapSolarSystemSubType, instead of
-            // collapsing into a single column the way `type` does.
-            for subtype in ["border", "regional", "international"] {
-                if self.optional_bool(&record, subtype) == Some(true) {
-                    insert_subtype.execute(rusqlite::params![system_id, subtype])?;
-                }
-            }
-
-            // disallowedAnchorCategories/disallowedAnchorGroups are
-            // independent arrays (confirmed: neither can be derived
-            // from the other via invGroups.categoryId), so each gets
-            // its own junction table, populated the same way as
-            // subType above -- one row per id present.
-            for category_id in self.optional_i64_array(&record, "disallowedAnchorCategories")? {
-                insert_disallowed_category.execute(rusqlite::params![system_id, category_id])?;
-            }
-            for group_id in self.optional_i64_array(&record, "disallowedAnchorGroups")? {
-                insert_disallowed_group.execute(rusqlite::params![system_id, group_id])?;
-            }
-
-            count += 1;
+    /// Inserts one `mapSolarSystems` record and its junction rows; `false`
+    /// if the system is out of scope.
+    fn insert_solar_system(
+        &self,
+        statements: &mut SolarSystemStatements,
+        state: &mut SystemScopeState,
+        record: &Value,
+    ) -> Result<bool, Error> {
+        let system_id = self.required_i64(record, "_key")?;
+        let wormhole_class_id = self.optional_i64(record, "wormholeClassID");
+        if !self.config.system_in_scope(wormhole_class_id) {
+            return Ok(false);
         }
-        if self.config.verbose {
-            tracing::info!("Parsed {count} solar systems");
+        state.systems_in_scope.insert(system_id);
+
+        let values = self.solar_system_values(record, system_id, wormhole_class_id)?;
+        statements
+            .system
+            .execute(rusqlite::params_from_iter(values))?;
+
+        // Unlike hub/corridor/fringe, border/regional/international
+        // are NOT mutually exclusive (confirmed: 104 real systems
+        // carry two or all three at once) -- each one that's true
+        // gets its own row in mapSolarSystemSubType, instead of
+        // collapsing into a single column the way `type` does.
+        for subtype in ["border", "regional", "international"] {
+            if self.optional_bool(record, subtype) == Some(true) {
+                statements
+                    .subtype
+                    .execute(rusqlite::params![system_id, subtype])?;
+            }
         }
-        Ok(count)
+
+        // disallowedAnchorCategories/disallowedAnchorGroups are
+        // independent arrays (confirmed: neither can be derived
+        // from the other via invGroups.categoryId), so each gets
+        // its own junction table, populated the same way as
+        // subType above -- one row per id present.
+        for category_id in self.optional_i64_array(record, "disallowedAnchorCategories")? {
+            statements
+                .disallowed_category
+                .execute(rusqlite::params![system_id, category_id])?;
+        }
+        for group_id in self.optional_i64_array(record, "disallowedAnchorGroups")? {
+            statements
+                .disallowed_group
+                .execute(rusqlite::params![system_id, group_id])?;
+        }
+        Ok(true)
+    }
+
+    /// The `mapSolarSystems` columns of one record, in table order.
+    fn solar_system_values(
+        &self,
+        record: &Value,
+        system_id: i64,
+        wormhole_class_id: Option<i64>,
+    ) -> Result<Vec<SqlValue>, Error> {
+        let name = self.config.required_localized(record, "name")?.to_owned();
+        let constellation_id = self.required_i64(record, "constellationID")?;
+        let luminosity = self.optional_f64(record, "luminosity");
+        let radius = self.required_f64(record, "radius")?;
+        let center @ (center_x, center_y, center_z) = self.required_position(record)?;
+        let security = self.required_f64(record, "securityStatus")?;
+        let security_class = self
+            .optional_str(record, "securityClass")
+            .map(str::to_owned);
+        let (position_2d_x, position_2d_y) = self.system_position_2d(record, center);
+        Ok(vec![
+            system_id.into(),
+            name.into(),
+            constellation_id.into(),
+            self.system_type(record).map(str::to_owned).into(),
+            luminosity.into(),
+            radius.into(),
+            center_x.into(),
+            center_y.into(),
+            center_z.into(),
+            security.into(),
+            security_class.into(),
+            position_2d_x.into(),
+            position_2d_y.into(),
+            wormhole_class_id.into(),
+            self.optional_i64(record, "factionID").into(),
+        ])
+    }
+
+    /// hub/corridor/fringe are confirmed mutually exclusive against
+    /// real data (never two at once across 8490 real records) --
+    /// collapsed into a single `type` column instead of three
+    /// separate booleans. Order doesn't matter here precisely
+    /// because they never co-occur.
+    fn system_type(&self, record: &Value) -> Option<&'static str> {
+        ["hub", "corridor", "fringe"]
+            .into_iter()
+            .find(|flag| self.optional_bool(record, flag) == Some(true))
+    }
+
+    /// The 2D map position of a system, according to `config.position_2d`.
+    fn system_position_2d(
+        &self,
+        record: &Value,
+        (x, y, z): (f64, f64, f64),
+    ) -> (Option<f64>, Option<f64>) {
+        match self.config.position_2d {
+            Position2DMode::Ccp => (
+                self.optional_nested_f64(record, "position2D", "x"),
+                self.optional_nested_f64(record, "position2D", "y"),
+            ),
+            Position2DMode::Isometric(axis) => {
+                let (x2d, y2d) = isometric_projection_2d(x, y, z, axis);
+                (Some(x2d), Some(y2d))
+            }
+            Position2DMode::Orthogonal(axis) => {
+                let (x2d, y2d) = orthogonal_projection_2d(x, y, z, axis);
+                (Some(x2d), Some(y2d))
+            }
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -1262,21 +1301,19 @@ impl Parser {
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )?;
 
-        let mut count = 0usize;
-        for record in iter_jsonl_records(&self.sde_directory, "mapStargates")? {
-            let record = record?;
-            let solar_system_id = self.required_i64(&record, "solarSystemID")?;
+        self.for_each_record("mapStargates", "stargates", |record| {
+            let solar_system_id = self.required_i64(record, "solarSystemID")?;
             if !state.systems_in_scope.contains(&solar_system_id) {
-                continue;
+                return Ok(false);
             }
 
-            let id = self.required_i64(&record, "_key")?;
-            let type_id = self.required_i64(&record, "typeID")?;
-            let (pos_x, pos_y, pos_z) = self.required_position(&record)?;
+            let id = self.required_i64(record, "_key")?;
+            let type_id = self.required_i64(record, "typeID")?;
+            let (pos_x, pos_y, pos_z) = self.required_position(record)?;
             let destination_gate_id =
-                self.required_nested_i64(&record, "destination", "stargateID")?;
+                self.required_nested_i64(record, "destination", "stargateID")?;
             let destination_system_id =
-                self.required_nested_i64(&record, "destination", "solarSystemID")?;
+                self.required_nested_i64(record, "destination", "solarSystemID")?;
 
             insert_gate.execute(rusqlite::params![
                 id,
@@ -1288,12 +1325,8 @@ impl Parser {
                 destination_gate_id,
                 destination_system_id,
             ])?;
-            count += 1;
-        }
-        if self.config.verbose {
-            tracing::info!("Parsed {count} stargates");
-        }
-        Ok(count)
+            Ok(true)
+        })
     }
 
     // ---------------------------------------------------------------------
@@ -1339,18 +1372,16 @@ impl Parser {
             VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
 
-        let mut count = 0usize;
-        for record in iter_jsonl_records(&self.sde_directory, "mapStars")? {
-            let record = record?;
-            let solar_system_id = self.required_i64(&record, "solarSystemID")?;
+        self.for_each_record("mapStars", "stars", |record| {
+            let solar_system_id = self.required_i64(record, "solarSystemID")?;
             if !state.systems_in_scope.contains(&solar_system_id) {
-                continue;
+                return Ok(false);
             }
 
-            let star_id = self.required_i64(&record, "_key")?;
-            let locked = self.optional_bool_with_nested_fallback(&record, "locked", "statistics");
-            let radius = self.optional_i64_with_nested_fallback(&record, "radius", "statistics");
-            let type_id = self.required_i64(&record, "typeID")?;
+            let star_id = self.required_i64(record, "_key")?;
+            let locked = self.optional_bool_with_nested_fallback(record, "locked", "statistics");
+            let radius = self.optional_i64_with_nested_fallback(record, "radius", "statistics");
+            let type_id = self.required_i64(record, "typeID")?;
             // typeStar's primary key *is* typeId (no separate,
             // self-assigned id to translate into), so the only thing
             // left to check is that this typeId was actually recognized
@@ -1371,12 +1402,8 @@ impl Parser {
                 radius,
                 star_type_id
             ])?;
-            count += 1;
-        }
-        if self.config.verbose {
-            tracing::info!("Parsed {count} stars");
-        }
-        Ok(count)
+            Ok(true)
+        })
     }
 
     // ---------------------------------------------------------------------
@@ -1421,22 +1448,20 @@ impl Parser {
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )?;
 
-        let mut count = 0usize;
-        for record in iter_jsonl_records(&self.sde_directory, "mapPlanets")? {
-            let record = record?;
-            let solar_system_id = self.required_i64(&record, "solarSystemID")?;
+        self.for_each_record("mapPlanets", "planets", |record| {
+            let solar_system_id = self.required_i64(record, "solarSystemID")?;
             if !state.systems_in_scope.contains(&solar_system_id) {
-                continue;
+                return Ok(false);
             }
 
-            let id = self.required_i64(&record, "_key")?;
-            let planet_index = self.required_i64(&record, "celestialIndex")?;
+            let id = self.required_i64(record, "_key")?;
+            let planet_index = self.required_i64(record, "celestialIndex")?;
             let fragmented =
-                self.optional_bool_with_nested_fallback(&record, "fragmented", "statistics");
-            let radius = self.optional_f64_with_nested_fallback(&record, "radius", "statistics");
-            let locked = self.optional_bool_with_nested_fallback(&record, "locked", "statistics");
-            let type_id = self.required_i64(&record, "typeID")?;
-            let (pos_x, pos_y, pos_z) = self.required_position(&record)?;
+                self.optional_bool_with_nested_fallback(record, "fragmented", "statistics");
+            let radius = self.optional_f64_with_nested_fallback(record, "radius", "statistics");
+            let locked = self.optional_bool_with_nested_fallback(record, "locked", "statistics");
+            let type_id = self.required_i64(record, "typeID")?;
+            let (pos_x, pos_y, pos_z) = self.required_position(record)?;
 
             insert_planet.execute(rusqlite::params![
                 id,
@@ -1450,12 +1475,8 @@ impl Parser {
                 pos_y,
                 pos_z,
             ])?;
-            count += 1;
-        }
-        if self.config.verbose {
-            tracing::info!("Parsed {count} planets");
-        }
-        Ok(count)
+            Ok(true)
+        })
     }
 
     // ---------------------------------------------------------------------
@@ -1506,20 +1527,18 @@ impl Parser {
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )?;
 
-        let mut count = 0usize;
-        for record in iter_jsonl_records(&self.sde_directory, "mapMoons")? {
-            let record = record?;
-            let solar_system_id = self.required_i64(&record, "solarSystemID")?;
+        self.for_each_record("mapMoons", "moons", |record| {
+            let solar_system_id = self.required_i64(record, "solarSystemID")?;
             if !state.systems_in_scope.contains(&solar_system_id) {
-                continue;
+                return Ok(false);
             }
 
-            let id = self.required_i64(&record, "_key")?;
-            let moon_index = self.required_i64(&record, "orbitIndex")?;
-            let planet_id = self.optional_i64(&record, "orbitID");
-            let type_id = self.required_i64(&record, "typeID")?;
-            let radius = self.optional_i64_with_nested_fallback(&record, "radius", "statistics");
-            let (pos_x, pos_y, pos_z) = self.required_position(&record)?;
+            let id = self.required_i64(record, "_key")?;
+            let moon_index = self.required_i64(record, "orbitIndex")?;
+            let planet_id = self.optional_i64(record, "orbitID");
+            let type_id = self.required_i64(record, "typeID")?;
+            let radius = self.optional_i64_with_nested_fallback(record, "radius", "statistics");
+            let (pos_x, pos_y, pos_z) = self.required_position(record)?;
 
             insert_moon.execute(rusqlite::params![
                 id,
@@ -1532,12 +1551,8 @@ impl Parser {
                 pos_y,
                 pos_z,
             ])?;
-            count += 1;
-        }
-        if self.config.verbose {
-            tracing::info!("Parsed {count} moons");
-        }
-        Ok(count)
+            Ok(true)
+        })
     }
 
     // ---------------------------------------------------------------------
@@ -1599,18 +1614,12 @@ impl Parser {
         let mut insert = connection
             .prepare("INSERT INTO stationServices (serviceId, serviceName) VALUES (?1, ?2)")?;
 
-        let mut count = 0usize;
-        for record in iter_jsonl_records(&self.sde_directory, "stationServices")? {
-            let record = record?;
-            let id = self.required_i64(&record, "_key")?;
-            let name = self.config.required_localized(&record, "serviceName")?;
+        self.for_each_record("stationServices", "station services", |record| {
+            let id = self.required_i64(record, "_key")?;
+            let name = self.config.required_localized(record, "serviceName")?;
             insert.execute(rusqlite::params![id, name])?;
-            count += 1;
-        }
-        if self.config.verbose {
-            tracing::info!("Parsed {count} station services");
-        }
-        Ok(count)
+            Ok(true)
+        })
     }
 
     /// Populates `stationOperations`, `stationOperationServices`, and
@@ -1651,53 +1660,60 @@ impl Parser {
             "INSERT INTO stationOperationTypes (operationId, sizeKey, typeId) VALUES (?1, ?2, ?3)",
         )?;
 
-        let mut count = 0usize;
-        for record in iter_jsonl_records(&self.sde_directory, "stationOperations")? {
-            let record = record?;
-            let id = self.required_i64(&record, "_key")?;
-            let activity_id = self.required_i64(&record, "activityID")?;
-            let name = self.config.required_localized(&record, "operationName")?;
-            let description = self.config.localized(&record, "description");
-            let border = self.required_f64(&record, "border")?;
-            let corridor = self.required_f64(&record, "corridor")?;
-            let fringe = self.required_f64(&record, "fringe")?;
-            let hub = self.required_f64(&record, "hub")?;
-            let ratio = self.required_f64(&record, "ratio")?;
-            let manufacturing_factor = self.required_f64(&record, "manufacturingFactor")?;
-            let research_factor = self.required_f64(&record, "researchFactor")?;
+        self.for_each_record("stationOperations", "station operations", |record| {
+            let id = self.required_i64(record, "_key")?;
+            let values = self.station_operation_values(record, id)?;
+            insert_operation.execute(rusqlite::params_from_iter(values))?;
 
-            insert_operation.execute(rusqlite::params![
-                id,
-                activity_id,
-                name,
-                description,
-                border,
-                corridor,
-                fringe,
-                hub,
-                ratio,
-                manufacturing_factor,
-                research_factor
-            ])?;
-
-            for service_id in self.optional_i64_array(&record, "services")? {
+            for service_id in self.optional_i64_array(record, "services")? {
                 insert_service.execute(rusqlite::params![id, service_id])?;
             }
+            self.insert_station_operation_types(&mut insert_type, record, id)?;
 
-            if let Some(Value::Array(station_types)) = record.get("stationTypes") {
-                for entry in station_types {
-                    let size_key = self.required_i64(entry, "_key")?;
-                    let type_id = self.required_i64(entry, "_value")?;
-                    insert_type.execute(rusqlite::params![id, size_key, type_id])?;
-                }
-            }
+            Ok(true)
+        })
+    }
 
-            count += 1;
+    /// The `stationOperations` columns of one record, in table order.
+    fn station_operation_values(&self, record: &Value, id: i64) -> Result<Vec<SqlValue>, Error> {
+        Ok(vec![
+            id.into(),
+            self.required_i64(record, "activityID")?.into(),
+            self.config
+                .required_localized(record, "operationName")?
+                .to_owned()
+                .into(),
+            self.config
+                .localized(record, "description")
+                .map(str::to_owned)
+                .into(),
+            self.required_f64(record, "border")?.into(),
+            self.required_f64(record, "corridor")?.into(),
+            self.required_f64(record, "fringe")?.into(),
+            self.required_f64(record, "hub")?.into(),
+            self.required_f64(record, "ratio")?.into(),
+            self.required_f64(record, "manufacturingFactor")?.into(),
+            self.required_f64(record, "researchFactor")?.into(),
+        ])
+    }
+
+    /// Inserts the `stationOperationTypes` rows of an operation; a missing
+    /// `stationTypes` array is simply no rows.
+    fn insert_station_operation_types(
+        &self,
+        statement: &mut rusqlite::Statement,
+        record: &Value,
+        operation_id: i64,
+    ) -> Result<(), Error> {
+        let Some(Value::Array(station_types)) = record.get("stationTypes") else {
+            return Ok(());
+        };
+        for entry in station_types {
+            let size_key = self.required_i64(entry, "_key")?;
+            let type_id = self.required_i64(entry, "_value")?;
+            statement.execute(rusqlite::params![operation_id, size_key, type_id])?;
         }
-        if self.config.verbose {
-            tracing::info!("Parsed {count} station operations");
-        }
-        Ok(count)
+        Ok(())
     }
 
     /// Populates `npcStations` from `<sde_directory>/npcStations.jsonl`
@@ -1735,22 +1751,8 @@ impl Parser {
     /// assumption.
     #[tracing::instrument]
     pub fn parse_npc_stations(&self, connection: &Connection) -> Result<usize, Error> {
-        let mut moon_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
-        {
-            let mut statement = connection.prepare("SELECT moonId FROM mapMoons")?;
-            let mut rows = statement.query([])?;
-            while let Some(row) = rows.next()? {
-                moon_ids.insert(row.get(0)?);
-            }
-        }
-        let mut planet_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
-        {
-            let mut statement = connection.prepare("SELECT planetId FROM mapPlanets")?;
-            let mut rows = statement.query([])?;
-            while let Some(row) = rows.next()? {
-                planet_ids.insert(row.get(0)?);
-            }
-        }
+        let moon_ids = Self::load_id_set(connection, "SELECT moonId FROM mapMoons")?;
+        let planet_ids = Self::load_id_set(connection, "SELECT planetId FROM mapPlanets")?;
 
         let mut insert = connection.prepare(
             "INSERT INTO npcStations \
@@ -1761,55 +1763,76 @@ impl Parser {
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         )?;
 
-        let mut count = 0usize;
-        for record in iter_jsonl_records(&self.sde_directory, "npcStations")? {
-            let record = record?;
-            let id = self.required_i64(&record, "_key")?;
-            let celestial_index = self.optional_i64(&record, "celestialIndex");
-            let operation_id = self.required_i64(&record, "operationID")?;
-            let orbit_id = self.required_i64(&record, "orbitID")?;
-            let (orbit_moon_id, orbit_planet_id) = if moon_ids.contains(&orbit_id) {
-                (Some(orbit_id), None)
-            } else if planet_ids.contains(&orbit_id) {
-                (None, Some(orbit_id))
-            } else {
-                (None, None)
-            };
-            let orbit_index = self.optional_i64(&record, "orbitIndex");
-            let owner_id = self.required_i64(&record, "ownerID")?;
-            let (x, y, z) = self.required_position(&record)?;
-            let reprocessing_efficiency = self.required_f64(&record, "reprocessingEfficiency")?;
-            let reprocessing_hangar_flag = self.required_i64(&record, "reprocessingHangarFlag")?;
-            let reprocessing_stations_take =
-                self.required_f64(&record, "reprocessingStationsTake")?;
-            let solar_system_id = self.required_i64(&record, "solarSystemID")?;
-            let type_id = self.required_i64(&record, "typeID")?;
-            let use_operation_name = self.required_bool(&record, "useOperationName")?;
+        self.for_each_record("npcStations", "NPC stations", |record| {
+            let id = self.required_i64(record, "_key")?;
+            let values = self.npc_station_values(record, id, &moon_ids, &planet_ids)?;
+            insert.execute(rusqlite::params_from_iter(values))?;
+            Ok(true)
+        })
+    }
 
-            insert.execute(rusqlite::params![
-                id,
-                celestial_index,
-                operation_id,
-                orbit_moon_id,
-                orbit_planet_id,
-                orbit_index,
-                owner_id,
-                x,
-                y,
-                z,
-                reprocessing_efficiency,
-                reprocessing_hangar_flag,
-                reprocessing_stations_take,
-                solar_system_id,
-                type_id,
-                use_operation_name
-            ])?;
-            count += 1;
+    /// Every id returned by `sql` (a single-column query), as a set.
+    fn load_id_set(
+        connection: &Connection,
+        sql: &str,
+    ) -> Result<std::collections::HashSet<i64>, Error> {
+        let mut statement = connection.prepare(sql)?;
+        let mut rows = statement.query([])?;
+        let mut ids = std::collections::HashSet::new();
+        while let Some(row) = rows.next()? {
+            ids.insert(row.get(0)?);
         }
-        if self.config.verbose {
-            tracing::info!("Parsed {count} NPC stations");
+        Ok(ids)
+    }
+
+    /// Splits an `orbitID` into the `(orbitMoonId, orbitPlanetId)` pair by
+    /// checking which of the already-inserted moons/planets it belongs to.
+    fn orbit_columns(
+        orbit_id: i64,
+        moon_ids: &std::collections::HashSet<i64>,
+        planet_ids: &std::collections::HashSet<i64>,
+    ) -> (Option<i64>, Option<i64>) {
+        if moon_ids.contains(&orbit_id) {
+            (Some(orbit_id), None)
+        } else if planet_ids.contains(&orbit_id) {
+            (None, Some(orbit_id))
+        } else {
+            (None, None)
         }
-        Ok(count)
+    }
+
+    /// The `npcStations` columns of one record, in table order.
+    fn npc_station_values(
+        &self,
+        record: &Value,
+        id: i64,
+        moon_ids: &std::collections::HashSet<i64>,
+        planet_ids: &std::collections::HashSet<i64>,
+    ) -> Result<Vec<SqlValue>, Error> {
+        let celestial_index = self.optional_i64(record, "celestialIndex");
+        let operation_id = self.required_i64(record, "operationID")?;
+        let orbit_id = self.required_i64(record, "orbitID")?;
+        let (orbit_moon_id, orbit_planet_id) = Self::orbit_columns(orbit_id, moon_ids, planet_ids);
+        let (x, y, z) = self.required_position(record)?;
+        Ok(vec![
+            id.into(),
+            celestial_index.into(),
+            operation_id.into(),
+            orbit_moon_id.into(),
+            orbit_planet_id.into(),
+            self.optional_i64(record, "orbitIndex").into(),
+            self.required_i64(record, "ownerID")?.into(),
+            x.into(),
+            y.into(),
+            z.into(),
+            self.required_f64(record, "reprocessingEfficiency")?.into(),
+            self.required_i64(record, "reprocessingHangarFlag")?.into(),
+            self.required_f64(record, "reprocessingStationsTake")?
+                .into(),
+            self.required_i64(record, "solarSystemID")?.into(),
+            self.required_i64(record, "typeID")?.into(),
+            self.required_bool(record, "useOperationName")?.into(),
+        ])
     }
 
     /// Runs the full parsing pipeline over `sde_directory`, in dependency
@@ -1848,160 +1871,195 @@ impl Parser {
     pub fn parse_data(&self, connection: &mut Connection) -> Result<ParseSummary, Error> {
         let tx = connection.transaction()?;
 
-        let categories = self.parse_categories(&tx)?;
+        let mut summary = ParseSummary::default();
         let mut state = StarTypeState::default();
-        let groups = self.parse_groups(&tx, &mut state)?;
-        let types = self.parse_types(&tx, &mut state)?;
-        let races = self.parse_races(&tx)?;
-        let npc_corporation_divisions = self.parse_npc_corporation_divisions(&tx)?;
-        let npc_corporations = self.parse_npc_corporations(&tx)?;
-        let factions = self.parse_factions(&tx)?;
-        let regions = self.parse_regions(&tx)?;
-        let constellations = self.parse_constellations(&tx)?;
-        let mut scope = SystemScopeState::default();
-        let solar_systems = self.parse_solar_systems(&tx, &mut scope)?;
-        let stargates = if self.config.with_gates {
-            self.parse_stargates(&tx, &scope)?
-        } else {
-            0
-        };
-        let stars = self.parse_stars(&tx, &scope, &state)?;
-        let planets = self.parse_planets(&tx, &scope)?;
-        let moons = if self.config.with_moons {
-            self.parse_moons(&tx, &scope)?
-        } else {
-            0
-        };
-        let connections = self.parse_connections(&tx)?;
+        self.parse_catalog(&tx, &mut summary, &mut state)?;
+        self.parse_universe(&tx, &mut summary, &state)?;
+        self.parse_stations(&tx, &mut summary)?;
 
-        let station_services = self.parse_station_services(&tx)?;
-        let station_operations = self.parse_station_operations(&tx)?;
-        let station_operation_services: usize =
-            tx.query_row("SELECT COUNT(*) FROM stationOperationServices", [], |row| {
-                row.get::<usize, i64>(0)
-            })? as usize;
-        let station_operation_types: usize =
-            tx.query_row("SELECT COUNT(*) FROM stationOperationTypes", [], |row| {
-                row.get::<usize, i64>(0)
-            })? as usize;
-        let npc_stations = self.parse_npc_stations(&tx)?;
-
-        // Diagnostic: PRAGMA foreign_key_check runs within this transaction,
-        // before COMMIT, so it can point at exactly which row/table/FK is
-        // unsatisfied -- instead of letting a bare `tx.commit()` fail with
-        // SQLite's generic "FOREIGN KEY constraint failed" (no indication of
-        // which of this crate's several DEFERRABLE constraints -- across
-        // npcCorporations/npcStations/factions -- is the actual culprit).
-        // Real EVE data is large enough (thousands of NPC corporations) that
-        // guessing at the cause from the generic message alone isn't
-        // reliable; this turns a silent COMMIT failure into a precise,
-        // actionable one. foreign_key_check only gives a numeric fk index
-        // (not a column name), so foreign_key_list(<table>) is queried too
-        // (cached per table, since multiple violations often share one) to
-        // translate that index into the actual column.
-        //
-        // One specific violation is known and expected, not a bug: real SDE
-        // data (confirmed against a real npcCorporations.jsonl/
-        // npcStations.jsonl sample, and again against a real user's full SDE
-        // build, August 2026) has exactly two corporations -- Doomheim
-        // (1000001, the sink corporation characters get moved to when
-        // deleted) and InterBus (1000148, an NPC courier service) -- whose
-        // `stationID` (60000001) matches no real station in npcStations.
-        // Neither corporation operates out of an actual station, so this
-        // isn't a parsing bug to fix; the FK is cleared to NULL for exactly
-        // this (table, column, parent) combination, right here, instead of
-        // failing the whole build over two corporations that were never
-        // going to resolve. No other DEFERRABLE column in this crate has any
-        // confirmed real instance of this -- every other violation still
-        // fails loudly below, since silently nulling out a column with no
-        // real-data evidence that it can legitimately be unresolved would
-        // risk masking an actual bug instead of a known data quirk.
-        {
-            let mut fk_list_cache: std::collections::HashMap<
-                String,
-                std::collections::HashMap<i64, String>,
-            > = std::collections::HashMap::new();
-            let mut check = tx.prepare("PRAGMA foreign_key_check")?;
-            let mut rows = check.query([])?;
-            let mut violations = Vec::new();
-            let mut to_null: Vec<i64> = Vec::new();
-            while let Some(row) = rows.next()? {
-                let table: String = row.get(0)?;
-                let rowid: Option<i64> = row.get(1)?;
-                let parent: String = row.get(2)?;
-                let fkid: i64 = row.get(3)?;
-
-                if !fk_list_cache.contains_key(&table) {
-                    let mut column_by_fkid = std::collections::HashMap::new();
-                    let mut fk_list = tx.prepare(&format!("PRAGMA foreign_key_list({table})"))?;
-                    let mut fk_rows = fk_list.query([])?;
-                    while let Some(fk_row) = fk_rows.next()? {
-                        let id: i64 = fk_row.get(0)?;
-                        let from_column: String = fk_row.get(3)?;
-                        column_by_fkid.insert(id, from_column);
-                    }
-                    fk_list_cache.insert(table.clone(), column_by_fkid);
-                }
-                let column = fk_list_cache
-                    .get(&table)
-                    .and_then(|m| m.get(&fkid))
-                    .map(String::as_str)
-                    .unwrap_or("<unknown column>");
-
-                if table == "npcCorporations" && column == "stationId" && parent == "npcStations" {
-                    if let Some(rowid) = rowid {
-                        to_null.push(rowid);
-                        continue;
-                    }
-                }
-
-                let rowid_str = rowid
-                    .map(|r| r.to_string())
-                    .unwrap_or_else(|| "N/A".to_string());
-                violations.push(format!(
-                    "table {table}, rowid {rowid_str}, column {column} references {parent}"
-                ));
-            }
-            for rowid in to_null {
-                tx.execute(
-                    "UPDATE npcCorporations SET stationId = NULL WHERE rowid = ?1",
-                    [rowid],
-                )?;
-            }
-            if !violations.is_empty() {
-                return Err(Error::data(format!(
-                    "foreign_key_check found {} unsatisfied constraint(s) before commit:\n  {}",
-                    violations.len(),
-                    violations.join("\n  ")
-                )));
-            }
-        }
+        Self::resolve_foreign_key_violations(&tx)?;
 
         tx.commit()?;
 
-        Ok(ParseSummary {
-            categories,
-            groups,
-            types,
-            races,
-            npc_corporation_divisions,
-            npc_corporations,
-            factions,
-            star_types: state.star_type_ids.len(),
-            regions,
-            constellations,
-            solar_systems,
-            stargates,
-            stars,
-            planets,
-            moons,
-            connections,
-            station_services,
-            station_operations,
-            station_operation_services,
-            station_operation_types,
-            npc_stations,
-        })
+        summary.star_types = state.star_type_ids.len();
+        Ok(summary)
+    }
+
+    /// Item types, races, corporations and factions.
+    fn parse_catalog(
+        &self,
+        tx: &rusqlite::Transaction,
+        summary: &mut ParseSummary,
+        state: &mut StarTypeState,
+    ) -> Result<(), Error> {
+        summary.categories = self.parse_categories(tx)?;
+        summary.groups = self.parse_groups(tx, state)?;
+        summary.types = self.parse_types(tx, state)?;
+        summary.races = self.parse_races(tx)?;
+        summary.npc_corporation_divisions = self.parse_npc_corporation_divisions(tx)?;
+        summary.npc_corporations = self.parse_npc_corporations(tx)?;
+        summary.factions = self.parse_factions(tx)?;
+        Ok(())
+    }
+
+    /// Regions down to moons, and the connections between systems.
+    fn parse_universe(
+        &self,
+        tx: &rusqlite::Transaction,
+        summary: &mut ParseSummary,
+        state: &StarTypeState,
+    ) -> Result<(), Error> {
+        summary.regions = self.parse_regions(tx)?;
+        summary.constellations = self.parse_constellations(tx)?;
+        let mut scope = SystemScopeState::default();
+        summary.solar_systems = self.parse_solar_systems(tx, &mut scope)?;
+        if self.config.with_gates {
+            summary.stargates = self.parse_stargates(tx, &scope)?;
+        }
+        summary.stars = self.parse_stars(tx, &scope, state)?;
+        summary.planets = self.parse_planets(tx, &scope)?;
+        if self.config.with_moons {
+            summary.moons = self.parse_moons(tx, &scope)?;
+        }
+        summary.connections = self.parse_connections(tx)?;
+        Ok(())
+    }
+
+    /// Station services, operations and the NPC stations themselves.
+    fn parse_stations(
+        &self,
+        tx: &rusqlite::Transaction,
+        summary: &mut ParseSummary,
+    ) -> Result<(), Error> {
+        summary.station_services = self.parse_station_services(tx)?;
+        summary.station_operations = self.parse_station_operations(tx)?;
+        summary.station_operation_services = Self::count_rows(tx, "stationOperationServices")?;
+        summary.station_operation_types = Self::count_rows(tx, "stationOperationTypes")?;
+        summary.npc_stations = self.parse_npc_stations(tx)?;
+        Ok(())
+    }
+
+    /// Diagnostic: PRAGMA foreign_key_check runs within this transaction,
+    /// before COMMIT, so it can point at exactly which row/table/FK is
+    /// unsatisfied -- instead of letting a bare `tx.commit()` fail with
+    /// SQLite's generic "FOREIGN KEY constraint failed" (no indication of
+    /// which of this crate's several DEFERRABLE constraints -- across
+    /// npcCorporations/npcStations/factions -- is the actual culprit).
+    /// Real EVE data is large enough (thousands of NPC corporations) that
+    /// guessing at the cause from the generic message alone isn't
+    /// reliable; this turns a silent COMMIT failure into a precise,
+    /// actionable one. foreign_key_check only gives a numeric fk index
+    /// (not a column name), so foreign_key_list(<table>) is queried too
+    /// (cached per table, since multiple violations often share one) to
+    /// translate that index into the actual column.
+    ///
+    /// One specific violation is known and expected, not a bug: real SDE
+    /// data (confirmed against a real npcCorporations.jsonl/
+    /// npcStations.jsonl sample, and again against a real user's full SDE
+    /// build, August 2026) has exactly two corporations -- Doomheim
+    /// (1000001, the sink corporation characters get moved to when
+    /// deleted) and InterBus (1000148, an NPC courier service) -- whose
+    /// `stationID` (60000001) matches no real station in npcStations.
+    /// Neither corporation operates out of an actual station, so this
+    /// isn't a parsing bug to fix; the FK is cleared to NULL for exactly
+    /// this (table, column, parent) combination, right here, instead of
+    /// failing the whole build over two corporations that were never
+    /// going to resolve. No other DEFERRABLE column in this crate has any
+    /// confirmed real instance of this -- every other violation still
+    /// fails loudly below, since silently nulling out a column with no
+    /// real-data evidence that it can legitimately be unresolved would
+    /// risk masking an actual bug instead of a known data quirk.
+    fn resolve_foreign_key_violations(tx: &rusqlite::Transaction) -> Result<(), Error> {
+        let (violations, to_null) = Self::find_foreign_key_violations(tx)?;
+        for rowid in to_null {
+            tx.execute(
+                "UPDATE npcCorporations SET stationId = NULL WHERE rowid = ?1",
+                [rowid],
+            )?;
+        }
+        if !violations.is_empty() {
+            return Err(Error::data(format!(
+                "foreign_key_check found {} unsatisfied constraint(s) before commit:\n  {}",
+                violations.len(),
+                violations.join("\n  ")
+            )));
+        }
+        Ok(())
+    }
+
+    /// Runs `foreign_key_check` and sorts what it finds into the violations
+    /// to report and the rowids of the known, expected ones to clear.
+    fn find_foreign_key_violations(
+        tx: &rusqlite::Transaction,
+    ) -> Result<(Vec<String>, Vec<i64>), Error> {
+        let mut fk_list_cache: std::collections::HashMap<
+            String,
+            std::collections::HashMap<i64, String>,
+        > = std::collections::HashMap::new();
+        let mut check = tx.prepare("PRAGMA foreign_key_check")?;
+        let mut rows = check.query([])?;
+        let mut violations = Vec::new();
+        let mut to_null: Vec<i64> = Vec::new();
+        while let Some(row) = rows.next()? {
+            let table: String = row.get(0)?;
+            let rowid: Option<i64> = row.get(1)?;
+            let parent: String = row.get(2)?;
+            let fkid: i64 = row.get(3)?;
+
+            if !fk_list_cache.contains_key(&table) {
+                fk_list_cache.insert(table.clone(), Self::foreign_key_columns(tx, &table)?);
+            }
+            let column = fk_list_cache
+                .get(&table)
+                .and_then(|m| m.get(&fkid))
+                .map(String::as_str)
+                .unwrap_or("<unknown column>");
+
+            if Self::is_known_dangling_fk(&table, column, &parent)
+                && let Some(rowid) = rowid
+            {
+                to_null.push(rowid);
+                continue;
+            }
+
+            let rowid_str = rowid
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| "N/A".to_string());
+            violations.push(format!(
+                "table {table}, rowid {rowid_str}, column {column} references {parent}"
+            ));
+        }
+        Ok((violations, to_null))
+    }
+
+    /// The one known data quirk described above: an `npcCorporations.stationId`
+    /// that matches no row of `npcStations`.
+    fn is_known_dangling_fk(table: &str, column: &str, parent: &str) -> bool {
+        table == "npcCorporations" && column == "stationId" && parent == "npcStations"
+    }
+
+    /// Maps each foreign key id of `table` (as reported by
+    /// `foreign_key_check`) to the name of its column.
+    fn foreign_key_columns(
+        tx: &rusqlite::Transaction,
+        table: &str,
+    ) -> Result<std::collections::HashMap<i64, String>, Error> {
+        let mut column_by_fkid = std::collections::HashMap::new();
+        let mut fk_list = tx.prepare(&format!("PRAGMA foreign_key_list({table})"))?;
+        let mut fk_rows = fk_list.query([])?;
+        while let Some(fk_row) = fk_rows.next()? {
+            let id: i64 = fk_row.get(0)?;
+            let from_column: String = fk_row.get(3)?;
+            column_by_fkid.insert(id, from_column);
+        }
+        Ok(column_by_fkid)
+    }
+
+    fn count_rows(tx: &rusqlite::Transaction, table: &str) -> Result<usize, Error> {
+        let count: i64 = tx.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })?;
+        Ok(count as usize)
     }
 
     /// Runs the full database build: the canonical SDE parse
@@ -2973,6 +3031,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::type_complexity)]
     fn parse_solar_systems_inserts_kspace_system_with_ccp_position2d() {
         let dir = TempSdeDir::new(
             "solar_systems_kspace",
@@ -4456,16 +4515,18 @@ mod tests {
 
         let mut connection = Connection::open_in_memory().unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
-        let mut config = ParserConfig::default();
-        config.language = "en".to_string();
-        config.position_2d = Position2DMode::Isometric(ProjectedAxis::Z);
-        config.map_kspace = true;
-        config.map_wspace = false;
-        config.map_abyssal = false;
-        config.map_void = false;
-        config.with_gates = true;
-        config.with_moons = true;
-        config.with_third_party = false;
+        let config = ParserConfig {
+            language: "en".to_string(),
+            position_2d: Position2DMode::Isometric(ProjectedAxis::Z),
+            map_kspace: true,
+            map_wspace: false,
+            map_abyssal: false,
+            map_void: false,
+            with_gates: true,
+            with_moons: true,
+            with_third_party: false,
+            ..Default::default()
+        };
         let parser = Parser::new(&dir.path, config);
         let client = reqwest::Client::new();
 
@@ -4479,88 +4540,39 @@ mod tests {
             .await
             .unwrap();
 
-        let (
-            sde_build,
-            language,
-            force_iso,
-            axis,
-            kspace,
-            wspace,
-            abyssal,
-            void,
-            gates,
-            moons,
-            third_party,
-            icebelts,
-            trig,
-            jove,
-            ore,
-            hash,
-        ): (
-            Option<String>,
-            String,
-            bool,
-            String,
-            bool,
-            bool,
-            bool,
-            bool,
-            bool,
-            bool,
-            bool,
-            Option<bool>,
-            Option<bool>,
-            Option<bool>,
-            Option<bool>,
-            String,
-        ) = connection
-            .query_row(
-                "SELECT sdeBuild, language, forceIsometricPosition2d, isometricProjectedAxis, \
-                 mapKspace, mapWspace, mapAbyssal, mapVoid, withGates, withMoons, \
-                 withThirdParty, withIcebelts, withTriglavianStatus, withJoveObservatories, \
-                 withSpecialOre, hash FROM sdeFingerprint WHERE id = 1",
-                [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                        row.get(7)?,
-                        row.get(8)?,
-                        row.get(9)?,
-                        row.get(10)?,
-                        row.get(11)?,
-                        row.get(12)?,
-                        row.get(13)?,
-                        row.get(14)?,
-                        row.get(15)?,
-                    ))
-                },
-            )
-            .unwrap();
+        use rusqlite::types::Value as Sql;
+        let read = |column: &str| -> Sql {
+            connection
+                .query_row(
+                    &format!("SELECT {column} FROM sdeFingerprint WHERE id = 1"),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        let text = |value: &str| Sql::Text(value.to_string());
 
-        assert_eq!(sde_build, Some("3458726".to_string()));
-        assert_eq!(language, "en");
-        assert!(force_iso);
-        assert_eq!(axis, "Z");
-        assert!(kspace);
-        assert!(!wspace);
-        assert!(!abyssal);
-        assert!(!void);
-        assert!(gates);
-        assert!(moons);
+        assert_eq!(read("sdeBuild"), text("3458726"));
+        assert_eq!(read("language"), text("en"));
+        assert_eq!(read("forceIsometricPosition2d"), Sql::Integer(1));
+        assert_eq!(read("isometricProjectedAxis"), text("Z"));
+        assert_eq!(read("mapKspace"), Sql::Integer(1));
+        assert_eq!(read("mapWspace"), Sql::Integer(0));
+        assert_eq!(read("mapAbyssal"), Sql::Integer(0));
+        assert_eq!(read("mapVoid"), Sql::Integer(0));
+        assert_eq!(read("withGates"), Sql::Integer(1));
+        assert_eq!(read("withMoons"), Sql::Integer(1));
         // with_third_party was false, so the four CommunityConfig flags
         // were never consulted -- confirms they're recorded as NULL,
         // not e.g. silently defaulted to false.
-        assert!(!third_party);
-        assert_eq!(icebelts, None);
-        assert_eq!(trig, None);
-        assert_eq!(jove, None);
-        assert_eq!(ore, None);
+        assert_eq!(read("withThirdParty"), Sql::Integer(0));
+        assert_eq!(read("withIcebelts"), Sql::Null);
+        assert_eq!(read("withTriglavianStatus"), Sql::Null);
+        assert_eq!(read("withJoveObservatories"), Sql::Null);
+        assert_eq!(read("withSpecialOre"), Sql::Null);
+        let Sql::Text(hash) = read("hash") else {
+            panic!("the stored hash is not text");
+        };
         assert_eq!(hash.len(), 64);
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
 
