@@ -106,6 +106,18 @@ pub async fn fetch_text(client: &Client, url: &str) -> Result<String, Error> {
     Ok(response.text().await?)
 }
 
+/// Downloads `url` and returns its body as bytes -- for small binary
+/// responses (e.g. a gzipped sde-deltas delta) kept in memory, like
+/// [`fetch_text`].
+#[tracing::instrument]
+pub async fn fetch_bytes(client: &Client, url: &str) -> Result<Vec<u8>, Error> {
+    let response = client.get(url).send().await?;
+    if !response.status().is_success() {
+        return Err(Error::http_status(url, response.status().as_u16()));
+    }
+    Ok(response.bytes().await?.to_vec())
+}
+
 /// Downloads `url` to `destination` (overwriting it if it already
 /// exists), reporting progress per chunk via `on_progress`. Returns the
 /// total bytes downloaded.

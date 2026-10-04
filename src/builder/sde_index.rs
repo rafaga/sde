@@ -57,6 +57,78 @@ fn find_sde_build_number(jsonl: &str) -> Option<String> {
     None
 }
 
+/// The most recent build CCP lists in `latest.jsonl`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LatestBuild {
+    pub build: String,
+    /// `releaseDate` as published (RFC 3339, e.g. `2026-10-02T11:08:57Z`),
+    /// if present.
+    pub release_date: Option<String>,
+}
+
+/// Reads `{sde_url_base}latest.jsonl` and returns its most recent build,
+/// or `None` if the file has no `sde` record. Unlike
+/// [`update_as_needed`], a network failure is an `Err`.
+#[tracing::instrument]
+pub async fn fetch_latest(
+    client: &Client,
+    sde_url_base: &str,
+) -> Result<Option<LatestBuild>, Error> {
+    let contents = http::fetch_text(client, &format!("{sde_url_base}latest.jsonl")).await?;
+    Ok(parse_latest(&contents))
+}
+
+/// The `_meta` record of CCP's changelog for one build
+/// (`{sde_url_base}changes/<build>.jsonl`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangesMeta {
+    pub build: u64,
+    /// The build CCP's changelog compares against.
+    pub last_build: u64,
+    pub release_date: Option<String>,
+}
+
+/// Reads the `_meta` record of CCP's changelog for `build`.
+#[tracing::instrument]
+pub async fn fetch_changes_meta(
+    client: &Client,
+    sde_url_base: &str,
+    build: u64,
+) -> Result<ChangesMeta, Error> {
+    let url = format!("{sde_url_base}changes/{build}.jsonl");
+    let contents = http::fetch_text(client, &url).await?;
+    parse_changes_meta(&contents)
+        .ok_or_else(|| Error::data(format!("{url} has no usable `_meta` record")))
+}
+
+fn parse_changes_meta(jsonl: &str) -> Option<ChangesMeta> {
+    let record = jsonl
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).ok())
+        .find(|record| record.get("_key").and_then(|v| v.as_str()) == Some("_meta"))?;
+    Some(ChangesMeta {
+        build: record.get("buildNumber")?.as_u64()?,
+        last_build: record.get("lastBuildNumber")?.as_u64()?,
+        release_date: record
+            .get("releaseDate")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    })
+}
+
+fn parse_latest(jsonl: &str) -> Option<LatestBuild> {
+    let build = find_sde_build_number(jsonl)?;
+    let release_date = jsonl
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).ok())
+        .find(|record| record.get("_key").and_then(|v| v.as_str()) == Some("sde"))
+        .and_then(|record| record.get("releaseDate")?.as_str().map(str::to_string));
+    Some(LatestBuild {
+        build,
+        release_date,
+    })
+}
+
 /// Checks the most recent SDE build number
 /// (`{sde_url_base}latest.jsonl`) and downloads
 /// `eve-online-static-data-{build}-{variant}.zip` to
@@ -180,6 +252,44 @@ mod tests {
         // \r\n line ending as-is -- not hand-synthesized.
         let jsonl = "{\"_key\": \"sde\", \"buildNumber\": 3458726, \"releaseDate\": \"2026-08-06T11:07:36Z\"}\r\n";
         assert_eq!(find_sde_build_number(jsonl), Some("3458726".to_string()));
+    }
+
+    #[test]
+    fn parse_latest_reads_the_build_and_its_release_date() {
+        let jsonl = "{\"_key\": \"sde\", \"buildNumber\": 3458726, \"releaseDate\": \"2026-08-06T11:07:36Z\"}\r\n";
+        assert_eq!(
+            parse_latest(jsonl),
+            Some(LatestBuild {
+                build: "3458726".to_string(),
+                release_date: Some("2026-08-06T11:07:36Z".to_string()),
+            })
+        );
+        assert_eq!(
+            parse_latest("{\"_key\": \"sde\", \"buildNumber\": 1}")
+                .unwrap()
+                .release_date,
+            None
+        );
+        assert_eq!(parse_latest(""), None);
+    }
+
+    #[test]
+    fn parse_changes_meta_reads_the_meta_record() {
+        // First two lines of the real changes/3569502.jsonl (October 2026).
+        let jsonl = concat!(
+            "{\"_key\":\"_meta\",\"buildNumber\":3569502,\"lastBuildNumber\":3561556,",
+            "\"releaseDate\":\"2026-10-02T11:08:57Z\"}\n",
+            "{\"_key\":\"missions\",\"changedLocalization\":[4843]}\n"
+        );
+        assert_eq!(
+            parse_changes_meta(jsonl),
+            Some(ChangesMeta {
+                build: 3569502,
+                last_build: 3561556,
+                release_date: Some("2026-10-02T11:08:57Z".to_string()),
+            })
+        );
+        assert_eq!(parse_changes_meta("{\"_key\":\"types\"}"), None);
     }
 
     fn temp_data_dir(name: &str) -> std::path::PathBuf {
