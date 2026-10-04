@@ -9,6 +9,31 @@ each tag; the **[Unreleased]** section covers commits that exist on the current 
 the `test` branch (origin/test) on top of the latest tag and that don't yet have a
 version bump in `Cargo.toml`.
 
+## [0.6.1] — Unreleased
+
+### Added
+
+- Delta updates check record counts: when sde-deltas publishes `counts` (records of
+  every table in the build) in a build's manifest, `update::prepare` compares the
+  mirror's tables with the last build's counts after applying the chain, and a
+  difference is drift (full build). Builds published without `counts` are not checked.
+  - `DeltaManifest::counts`.
+  - `MirrorUpdate::check_counts`.
+- `parser::PARSER_READS_VERSION` and `parser::PARSER_OUTPUT_VERSION`, and
+  `MirrorMeta::reads_version`. `Parser::build_database` stores
+  `PARSER_OUTPUT_VERSION` as the database's `PRAGMA user_version`.
+
+### Fixed
+
+- A mirror at or ahead of sde-deltas' latest build (e.g. right after a full build of
+  a build sde-deltas hasn't published yet) no longer counts as out of coverage, which
+  made every update download CCP's export again until sde-deltas caught up. Nothing
+  is applied then, and lag is measured from the mirror's build.
+- A new crate version no longer invalidates the mirror (a full download): mirrors are
+  matched by `PARSER_READS_VERSION`, which only changes when the parser reads other
+  fields. A database written by another `PARSER_OUTPUT_VERSION` is rebuilt from the
+  mirror instead. Mirrors written by 0.6.0 are read as version 1.
+
 ## [0.6.0] — 2026-10-03
 
 ### Added

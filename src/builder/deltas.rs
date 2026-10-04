@@ -88,6 +88,10 @@ pub struct DeltaManifest {
     /// CCP's copyright notice, which has to travel with the data.
     #[serde(default)]
     pub notice: String,
+    /// Records (distinct ids) of every table in the build, changed or not.
+    /// `None` for builds published before sde-deltas added it.
+    #[serde(default)]
+    pub counts: Option<BTreeMap<String, u64>>,
 }
 
 /// One table in [`DeltaManifest::tables`].
@@ -273,6 +277,20 @@ mod tests {
         .unwrap();
         let touched: Vec<&str> = manifest.touched_tables().collect();
         assert_eq!(touched, ["mapMoons", "moons", "types"]);
+        assert_eq!(manifest.counts, None);
+
+        let manifest: DeltaManifest = serde_json::from_str(
+            r#"{"formatVersion": 1, "build": 2, "lastBuild": 1,
+                "files": {}, "counts": {"types": 7, "mapMoons": 3}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            manifest.counts,
+            Some(BTreeMap::from([
+                ("mapMoons".to_string(), 3),
+                ("types".to_string(), 7)
+            ]))
+        );
     }
 
     #[test]

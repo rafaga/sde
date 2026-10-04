@@ -85,8 +85,9 @@ usually a few KB per build, and then:
 - otherwise the database is rebuilt from the mirror, without
   downloading CCP's export;
 - if the deltas can't be used (no mirror yet, a build they don't cover,
-  a schema change in a field the parser reads, an inconsistency, or
-  sde-deltas lagging more than two days behind CCP), it falls back to a
+  a schema change in a field the parser reads, an inconsistency -- including
+  a table whose record count differs from the one sde-deltas publishes --,
+  or sde-deltas lagging more than two days behind CCP), it falls back to a
   full build, which creates a new mirror.
 
 `--full` skips the deltas, `--keep-source` keeps CCP's export instead of

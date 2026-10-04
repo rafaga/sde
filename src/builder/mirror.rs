@@ -35,7 +35,7 @@
 //! length (the parser may iterate it).
 
 use crate::Error;
-use crate::builder::parser::ParserConfig;
+use crate::builder::parser::{PARSER_READS_VERSION, ParserConfig};
 use crate::builder::usage::{FieldUsage, normalize_path};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -60,9 +60,13 @@ pub struct MirrorMeta {
     pub format: u32,
     /// SDE build the mirror's content matches.
     pub build: String,
-    /// Version of this crate that recorded the field usage: another
-    /// version's parser may read other fields.
+    /// Version of this crate that recorded the field usage (informative).
     pub crate_version: String,
+    /// [`PARSER_READS_VERSION`] of the parser that recorded the field usage:
+    /// a parser with another one may read other fields. Mirrors written by
+    /// 0.6.0, before this field existed, were all version 1.
+    #[serde(default = "first_reads_version")]
+    pub reads_version: u32,
     /// [`config_key`] of the config the field usage was recorded with.
     pub config: String,
     /// Builds applied from deltas since the mirror was created from a full
@@ -77,6 +81,11 @@ pub struct MirrorMeta {
     /// an element appeared or went away, so any such change is drift.
     #[serde(default)]
     pub lossy_lists: BTreeMap<String, BTreeSet<String>>,
+}
+
+/// [`MirrorMeta::reads_version`] of a mirror written before it existed.
+fn first_reads_version() -> u32 {
+    1
 }
 
 /// The parts of a [`ParserConfig`] that change which fields (or tables) the
@@ -196,6 +205,7 @@ impl Mirror {
             format: MIRROR_FORMAT,
             build: build.to_string(),
             crate_version: env!("CARGO_PKG_VERSION").to_string(),
+            reads_version: PARSER_READS_VERSION,
             config: config_key(config),
             delta_builds: 0,
             pending: false,
@@ -243,10 +253,11 @@ impl Mirror {
     }
 
     /// Whether this crate, with `config`, would read the same fields the
-    /// mirror was projected with -- otherwise it may lack some of them.
+    /// mirror was projected with -- otherwise it may lack some of them. It
+    /// compares [`PARSER_READS_VERSION`], not the crate version: a release
+    /// that doesn't change what the parser reads keeps the mirror usable.
     pub fn matches(&self, config: &ParserConfig) -> bool {
-        self.meta.crate_version == env!("CARGO_PKG_VERSION")
-            && self.meta.config == config_key(config)
+        self.meta.reads_version == PARSER_READS_VERSION && self.meta.config == config_key(config)
     }
 
     /// Starts applying deltas. Nothing on disk changes until
@@ -452,6 +463,30 @@ impl MirrorUpdate<'_> {
         Ok(())
     }
 
+    /// Compares the number of records of every table the mirror holds, as the
+    /// deltas applied so far left it, with `counts` (the records of each
+    /// table in the build the update reached, as sde-deltas publishes them).
+    /// A difference is drift. A table missing from `counts` should have no
+    /// records.
+    #[tracing::instrument(skip(self, counts))]
+    pub fn check_counts(&mut self, counts: &BTreeMap<String, u64>) -> Result<(), Error> {
+        let mirror = self.mirror;
+        for table in mirror.usage.tables() {
+            let actual = match self.tables.get(table) {
+                Some(loaded) => loaded.index.len() as u64,
+                None => count_records(&table_path(&mirror.dir, table))?,
+            };
+            let expected = counts.get(table).copied().unwrap_or(0);
+            if actual != expected {
+                self.report.drift.push(format!(
+                    "{table}: {actual} records in the mirror, build {} has {expected}",
+                    self.build
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Writes the tables that changed and moves the mirror to the build the
     /// update reached. Refuses (with `Error::data`) when the report isn't
     /// clean: such a mirror must be replaced by a full build instead.
@@ -616,6 +651,18 @@ fn load_table<'t>(
         tables.insert(table.to_string(), loaded);
     }
     Ok(tables.get_mut(table).expect("just inserted"))
+}
+
+/// Records (distinct `_key`s) in a table file, without keeping them.
+fn count_records(path: &Path) -> Result<u64, Error> {
+    let mut keys = std::collections::HashSet::new();
+    for record in read_records(path)? {
+        let record = record?;
+        if let Some(key) = record.get("_key").and_then(Key::of) {
+            keys.insert(key);
+        }
+    }
+    Ok(keys.len() as u64)
 }
 
 /// Whether a `changed` entry adds a field (no `old`) or removes one (no
@@ -983,6 +1030,29 @@ mod tests {
     }
 
     #[test]
+    fn a_mirror_follows_what_the_parser_reads_not_the_crate_version() {
+        let (dir, mirror) = sample("versions");
+        let config = ParserConfig::default();
+
+        // Another crate version that reads the same fields: still usable.
+        let mut meta = mirror.meta().clone();
+        meta.crate_version = "0.0.1".to_string();
+        write_json(&dir.0.join(META_FILE), &meta).unwrap();
+        assert!(Mirror::open(&dir.0).unwrap().matches(&config));
+
+        // A parser that reads other fields: not usable.
+        meta.reads_version = PARSER_READS_VERSION + 1;
+        write_json(&dir.0.join(META_FILE), &meta).unwrap();
+        assert!(!Mirror::open(&dir.0).unwrap().matches(&config));
+
+        // Written by 0.6.0, before `readsVersion` existed: version 1.
+        let mut old = serde_json::to_value(mirror.meta()).unwrap();
+        old.as_object_mut().unwrap().remove("readsVersion");
+        write_json(&dir.0.join(META_FILE), &old).unwrap();
+        assert_eq!(Mirror::open(&dir.0).unwrap().meta().reads_version, 1);
+    }
+
+    #[test]
     fn changes_outside_read_fields_are_not_relevant() {
         let (_dir, mirror) = sample("irrelevant");
         let mut update = mirror.begin();
@@ -1145,6 +1215,39 @@ mod tests {
             .map(|alarm| alarm.kind.as_str())
             .collect();
         assert_eq!(kinds, ["rename_path", "drop_path", "rename_table"]);
+        assert!(update.commit().is_err());
+    }
+
+    #[test]
+    fn record_counts_are_checked_for_loaded_and_untouched_tables() {
+        let dir = TempDir::new(
+            "counts",
+            &[
+                ("t.jsonl", "{\"_key\":1,\"a\":1}\n{\"_key\":2,\"a\":2}\n"),
+                ("u.jsonl", "{\"_key\":\"x\",\"b\":1}\n"),
+            ],
+        );
+        let usage = usage(&[("t", "a"), ("u", "b")]);
+        let mirror = Mirror::create(&dir.0, &usage, "1", &ParserConfig::default()).unwrap();
+
+        // `t` is loaded by the delta, `u` is only counted from its file.
+        let mut update = mirror.begin();
+        update
+            .apply(
+                "2",
+                [json!({"table":"t","id":3,"op":"added","record":{"a":3}})],
+            )
+            .unwrap();
+        let counts = BTreeMap::from([("t".to_string(), 3), ("u".to_string(), 1)]);
+        update.check_counts(&counts).unwrap();
+        assert!(update.report().is_clean(), "{:?}", update.report());
+
+        // A table missing from `counts` should be empty; a wrong count is drift.
+        let mut update = mirror.begin();
+        update
+            .check_counts(&BTreeMap::from([("t".to_string(), 5)]))
+            .unwrap();
+        assert_eq!(update.report().drift.len(), 2, "{:?}", update.report());
         assert!(update.commit().is_err());
     }
 
