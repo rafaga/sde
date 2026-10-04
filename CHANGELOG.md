@@ -9,7 +9,51 @@ each tag; the **[Unreleased]** section covers commits that exist on the current 
 the `test` branch (origin/test) on top of the latest tag and that don't yet have a
 version bump in `Cargo.toml`.
 
-## [0.6.1] — Unreleased
+## [0.7.0] — Unreleased
+
+### Added
+
+- `builder::pipeline`: the two things `sde-builder` does, as library functions.
+  `pipeline::build` builds the database from CCP's export (the latest SDE build, or a
+  specific one), and `pipeline::update` brings it up to date through sde-deltas, falling
+  back to CCP's export. Both report `Event`s through a callback and return an `Outcome`;
+  `Pipeline` and `Workspace` describe the settings and the paths, and `Workspace::validate`
+  refuses paths a build would damage (a build empties the SDE directory).
+- `sde_index::parse_build_number` (validates a build number) and
+  `sde_index::download_build` (downloads a specific build's export).
+- `pipeline::clean_downloads`, and a clean-up after a full build: nothing downloaded from
+  CCP or decompressed is left on disk. The zip, the file recording its build and the
+  decompressed export are removed, and the SDE directory keeps only `maps/` (dotlan's
+  maps). `Event::CleanedUp` reports the space freed.
+- `Mirror::pack`, `Mirror::unpack`, `Mirror::archive_meta` and `MirrorMeta::matches`: the
+  mirror is kept as a single zip (`data/sde-mirror.zip`, ~20 MB instead of ~110 MB) and is
+  unpacked into the SDE directory only to apply deltas or rebuild, then removed. An
+  up-to-date database unpacks nothing. A mirror 0.6.x left unpacked in the SDE directory
+  is packed the first time. `update::release_working_copy` removes the unpacked copy of a
+  `Rebuild`.
+- `update::installed_build`.
+
+### Changed
+
+- **Breaking:** `update::prepare` takes the path of the mirror's archive, and
+  `update::create_mirror` takes it too, packs the mirror and returns its `MirrorMeta`
+  instead of a `Mirror`. A `Rebuild` leaves the mirror unpacked in the SDE directory:
+  call `update::release_working_copy` after building from it.
+- **Breaking:** `sde-builder` has two commands. `build` builds from scratch from CCP's
+  export (`--sde-build <build>` for a specific one) and no longer takes `--force` or
+  `--full`; `update` does what `build` did by default (deltas, with a fallback). Both take
+  `--data-dir` and `--sde-dir`, and the build number and paths are validated before
+  anything is touched.
+- `sde-builder` now only validates its arguments and calls `builder::pipeline`.
+- A full build verifies the new database (`PRAGMA quick_check`) before it replaces the
+  previous one, and a mirror that can't be made no longer fails the build.
+
+### Fixed
+
+- `update` no longer downloads CCP's export when sde-deltas is unreachable or lagging but
+  the database is already at CCP's latest build, even though the zip is gone.
+
+## [0.6.1] — 2026-10-04
 
 ### Added
 
