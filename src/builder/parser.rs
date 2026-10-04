@@ -82,6 +82,7 @@
 
 use crate::Error;
 use crate::builder::community::{self, CommunityConfig};
+use crate::builder::usage::{self, FieldUsage};
 use crate::objects::SdeFingerprint;
 use reqwest::Client;
 use rusqlite::Connection;
@@ -182,7 +183,7 @@ impl ParserConfig {
     /// Also accepts a plain (non-localized) string field. `None` if the
     /// field is absent or neither shape.
     fn localized<'a>(&self, record: &'a Value, field: &str) -> Option<&'a str> {
-        match record.get(field) {
+        match usage::field(record, field) {
             Some(Value::Object(map)) => map
                 .get(self.language.as_str())
                 .or_else(|| map.get("en"))
@@ -396,6 +397,10 @@ impl<'c> SolarSystemStatements<'c> {
 pub struct Parser {
     sde_directory: std::path::PathBuf,
     config: ParserConfig,
+    /// What the last [`Self::parse_data`] read (see [`Self::field_usage`]).
+    /// A `Mutex` rather than a `RefCell` so `Parser` stays `Sync`:
+    /// [`Self::build_database`] holds `&self` across `.await`s.
+    field_usage: std::sync::Mutex<Option<FieldUsage>>,
 }
 
 impl Parser {
@@ -403,7 +408,23 @@ impl Parser {
         Self {
             sde_directory: sde_directory.to_path_buf(),
             config,
+            field_usage: std::sync::Mutex::new(None),
         }
+    }
+
+    /// The config this parser was created with.
+    pub fn config(&self) -> &ParserConfig {
+        &self.config
+    }
+
+    /// The fields of each SDE table the last successful
+    /// [`Self::parse_data`] (or [`Self::build_database`]) read, or `None`
+    /// before one has run. See [`usage`].
+    pub fn field_usage(&self) -> Option<FieldUsage> {
+        self.field_usage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     // ---------------------------------------------------------------------
@@ -432,6 +453,9 @@ impl Parser {
     /// Runs `handle` on every record of `<sde_directory>/<stem>.jsonl` and
     /// returns how many it counted (`Ok(true)`); `Ok(false)` skips a record
     /// without counting it.
+    ///
+    /// Each record is the root of the field paths [`usage`] records while
+    /// [`Self::parse_data`] runs.
     fn for_each_record(
         &self,
         stem: &str,
@@ -439,8 +463,13 @@ impl Parser {
         mut handle: impl FnMut(&Value) -> Result<bool, Error>,
     ) -> Result<usize, Error> {
         let mut count = 0usize;
+        usage::open_table(stem);
         for record in iter_jsonl_records(&self.sde_directory, stem)? {
-            if handle(&record?)? {
+            let record = record?;
+            usage::enter_record(stem, &record);
+            let counted = handle(&record);
+            usage::leave_record();
+            if counted? {
                 count += 1;
             }
         }
@@ -454,61 +483,69 @@ impl Parser {
     /// isn't present or isn't numeric, this is a data error
     /// (`Error::data`), not a silent `None`.
     fn required_i64(&self, record: &Value, field: &str) -> Result<i64, Error> {
-        record.get(field).and_then(Value::as_i64).ok_or_else(|| {
-            Error::data(format!(
-                "record missing required field `{field}` (or it's not an integer): {record}"
-            ))
-        })
+        usage::field(record, field)
+            .and_then(Value::as_i64)
+            .ok_or_else(|| {
+                Error::data(format!(
+                    "record missing required field `{field}` (or it's not an integer): {record}"
+                ))
+            })
     }
 
     /// Extracts an optional integer field (`None` if missing, no error).
     fn optional_i64(&self, record: &Value, field: &str) -> Option<i64> {
-        record.get(field).and_then(Value::as_i64)
+        usage::field(record, field).and_then(Value::as_i64)
     }
 
     /// Extracts an optional boolean field.
     fn optional_bool(&self, record: &Value, field: &str) -> Option<bool> {
-        record.get(field).and_then(Value::as_bool)
+        usage::field(record, field).and_then(Value::as_bool)
     }
 
     /// Extracts an optional floating-point field.
     fn optional_f64(&self, record: &Value, field: &str) -> Option<f64> {
-        record.get(field).and_then(Value::as_f64)
+        usage::field(record, field).and_then(Value::as_f64)
     }
 
     /// Extracts a required plain string field (not localized -- for fields
     /// like `tickerName` that don't carry per-language variants).
     fn required_str<'a>(&self, record: &'a Value, field: &str) -> Result<&'a str, Error> {
-        record.get(field).and_then(Value::as_str).ok_or_else(|| {
-            Error::data(format!(
-                "record missing required field `{field}` (or it's not a string): {record}"
-            ))
-        })
+        usage::field(record, field)
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                Error::data(format!(
+                    "record missing required field `{field}` (or it's not a string): {record}"
+                ))
+            })
     }
 
     /// Extracts a required boolean field.
     fn required_bool(&self, record: &Value, field: &str) -> Result<bool, Error> {
-        record.get(field).and_then(Value::as_bool).ok_or_else(|| {
-            Error::data(format!(
-                "record missing required field `{field}` (or it's not a boolean): {record}"
-            ))
-        })
+        usage::field(record, field)
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                Error::data(format!(
+                    "record missing required field `{field}` (or it's not a boolean): {record}"
+                ))
+            })
     }
 
     /// Extracts a required floating-point field.
     fn required_f64(&self, record: &Value, field: &str) -> Result<f64, Error> {
-        record.get(field).and_then(Value::as_f64).ok_or_else(|| {
-            Error::data(format!(
-                "record missing required field `{field}` (or it's not a number): {record}"
-            ))
-        })
+        usage::field(record, field)
+            .and_then(Value::as_f64)
+            .ok_or_else(|| {
+                Error::data(format!(
+                    "record missing required field `{field}` (or it's not a number): {record}"
+                ))
+            })
     }
 
     /// Extracts ids from an optional integer array -- empty if the field is
     /// missing or `null`. If the field IS present but isn't an array, or
     /// any of its elements isn't an integer, that's a data error.
     fn optional_i64_array(&self, record: &Value, field: &str) -> Result<Vec<i64>, Error> {
-        match record.get(field) {
+        match usage::field(record, field) {
             None | Some(Value::Null) => Ok(Vec::new()),
             Some(Value::Array(items)) => items
                 .iter()
@@ -528,7 +565,7 @@ impl Parser {
     /// Both levels are required; if `position` or any of its three
     /// components is missing, that's a data error.
     fn required_position(&self, record: &Value) -> Result<(f64, f64, f64), Error> {
-        let position = record.get("position").ok_or_else(|| {
+        let position = usage::field(record, "position").ok_or_else(|| {
             Error::data(format!(
                 "record missing required field `position`: {record}"
             ))
@@ -543,7 +580,7 @@ impl Parser {
     /// `destination.stargateID`/`destination.solarSystemID` in
     /// [`Self::parse_stargates`].
     fn required_nested_i64(&self, record: &Value, outer: &str, inner: &str) -> Result<i64, Error> {
-        let outer_val = record.get(outer).ok_or_else(|| {
+        let outer_val = usage::field(record, outer).ok_or_else(|| {
             Error::data(format!("record missing required field `{outer}`: {record}"))
         })?;
         self.required_i64(outer_val, inner)
@@ -557,17 +594,21 @@ impl Parser {
     /// (both fall through to the nested value), since `optional_i64`
     /// doesn't distinguish "absent" from "present but of the wrong
     /// type/null".
+    ///
+    /// Both places are looked up every time, not only when the top level
+    /// is missing, so [`usage`] records both: a later SDE that moves the
+    /// field from one to the other must not be taken for an irrelevant
+    /// change.
     fn optional_i64_with_nested_fallback(
         &self,
         record: &Value,
         field: &str,
         nested_field: &str,
     ) -> Option<i64> {
-        self.optional_i64(record, field).or_else(|| {
-            record
-                .get(nested_field)
-                .and_then(|nested| self.optional_i64(nested, field))
-        })
+        let top = self.optional_i64(record, field);
+        let nested =
+            usage::field(record, nested_field).and_then(|nested| self.optional_i64(nested, field));
+        top.or(nested)
     }
 
     /// Same as `optional_i64_with_nested_fallback`, but for boolean
@@ -578,11 +619,10 @@ impl Parser {
         field: &str,
         nested_field: &str,
     ) -> Option<bool> {
-        self.optional_bool(record, field).or_else(|| {
-            record
-                .get(nested_field)
-                .and_then(|nested| self.optional_bool(nested, field))
-        })
+        let top = self.optional_bool(record, field);
+        let nested =
+            usage::field(record, nested_field).and_then(|nested| self.optional_bool(nested, field));
+        top.or(nested)
     }
 
     /// Same as `optional_i64_with_nested_fallback`, but for floating-point
@@ -594,16 +634,15 @@ impl Parser {
         field: &str,
         nested_field: &str,
     ) -> Option<f64> {
-        self.optional_f64(record, field).or_else(|| {
-            record
-                .get(nested_field)
-                .and_then(|nested| self.optional_f64(nested, field))
-        })
+        let top = self.optional_f64(record, field);
+        let nested =
+            usage::field(record, nested_field).and_then(|nested| self.optional_f64(nested, field));
+        top.or(nested)
     }
 
     /// Extracts an optional plain string field.
     fn optional_str<'a>(&self, record: &'a Value, field: &str) -> Option<&'a str> {
-        record.get(field).and_then(Value::as_str)
+        usage::field(record, field).and_then(Value::as_str)
     }
 
     /// Extracts `record[outer][inner]` as `f64`, returning `None` if either
@@ -611,7 +650,7 @@ impl Parser {
     /// which, unlike `position` (see `required_position`), is optional at
     /// both levels.
     fn optional_nested_f64(&self, record: &Value, outer: &str, inner: &str) -> Option<f64> {
-        record.get(outer)?.get(inner).and_then(Value::as_f64)
+        usage::field(usage::field(record, outer)?, inner).and_then(Value::as_f64)
     }
 
     /// Populates `invTypes` from `<sde_directory>/types.jsonl`, and along
@@ -889,7 +928,7 @@ impl Parser {
         corporation_id: i64,
         field: &str,
     ) -> Result<(), Error> {
-        let Some(Value::Array(entries)) = record.get(field) else {
+        let Some(Value::Array(entries)) = usage::field(record, field) else {
             return Ok(());
         };
         for entry in entries {
@@ -1705,7 +1744,7 @@ impl Parser {
         record: &Value,
         operation_id: i64,
     ) -> Result<(), Error> {
-        let Some(Value::Array(station_types)) = record.get("stationTypes") else {
+        let Some(Value::Array(station_types)) = usage::field(record, "stationTypes") else {
             return Ok(());
         };
         for entry in station_types {
@@ -1869,6 +1908,20 @@ impl Parser {
     /// [`Self::parse_npc_stations`]'s docstring for more on this table.
     #[tracing::instrument]
     pub fn parse_data(&self, connection: &mut Connection) -> Result<ParseSummary, Error> {
+        usage::start();
+        let parsed = self.parse_all(connection);
+        let field_usage = usage::finish();
+        if parsed.is_ok() {
+            *self
+                .field_usage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = field_usage;
+        }
+        parsed
+    }
+
+    /// [`Self::parse_data`] without the field-usage recording around it.
+    fn parse_all(&self, connection: &mut Connection) -> Result<ParseSummary, Error> {
         let tx = connection.transaction()?;
 
         let mut summary = ParseSummary::default();
