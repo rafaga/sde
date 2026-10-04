@@ -25,7 +25,7 @@ use crate::SdeManager;
 use crate::builder::BuildUrls;
 use crate::builder::deltas;
 use crate::builder::mirror::{Mirror, SchemaAlarm};
-use crate::builder::parser::{Parser, ParserConfig};
+use crate::builder::parser::{PARSER_OUTPUT_VERSION, Parser, ParserConfig};
 use crate::builder::sde_index;
 use crate::objects::SdeFingerprint;
 use reqwest::Client;
@@ -193,19 +193,30 @@ pub async fn prepare(
         Ok(index) => index,
         Err(error) => return full(FullReason::Unavailable(error.to_string())),
     };
-    if let (Some(max_lag), Some(deltas_latest)) =
-        (options.max_delta_lag_seconds, index.latest_build)
-        && let Some(ccp) = lagging_behind(client, &urls.sde_url, deltas_latest, max_lag).await
+    // A full build right after CCP releases a build leaves the mirror ahead
+    // of sde-deltas until it publishes that build's delta: nothing to apply
+    // then, and nothing to download either -- the mirror already has it.
+    let deltas_latest = index.latest_build.unwrap_or(0);
+    let reached = deltas_latest.max(from);
+    if let Some(max_lag) = options.max_delta_lag_seconds
+        && let Some(ccp) = lagging_behind(client, &urls.sde_url, reached, max_lag).await
     {
         return full(FullReason::Lagging {
             ccp,
             deltas: deltas_latest,
         });
     }
-    let Some(chain) = index.chain(from) else {
-        return full(FullReason::OutOfCoverage {
-            build: mirror.build().to_string(),
-        });
+    let chain = if from >= deltas_latest {
+        Vec::new()
+    } else {
+        match index.chain(from) {
+            Some(chain) => chain,
+            None => {
+                return full(FullReason::OutOfCoverage {
+                    build: mirror.build().to_string(),
+                });
+            }
+        }
     };
 
     let total = chain.len();
@@ -304,11 +315,26 @@ async fn fetch_lines(
 }
 
 /// `sde.db`'s build, if its fingerprint is intact and was written for the
-/// same config -- otherwise it has to be rebuilt anyway.
+/// same config by a parser with the same [`PARSER_OUTPUT_VERSION`] --
+/// otherwise it has to be rebuilt (from the mirror) anyway.
 fn database_build(db_path: &Path, config: &ParserConfig) -> Option<String> {
     let manager = SdeManager::new(db_path, 1.0).ok()?;
     let (fingerprint, intact) = manager.get_fingerprint().ok()??;
-    (intact && fingerprint_matches(&fingerprint, config)).then_some(fingerprint.sde_build)?
+    let current = intact
+        && fingerprint_matches(&fingerprint, config)
+        && output_version(db_path) == Some(PARSER_OUTPUT_VERSION);
+    current.then_some(fingerprint.sde_build)?
+}
+
+/// `sde.db`'s `PRAGMA user_version`: the [`PARSER_OUTPUT_VERSION`] of the
+/// parser that built it.
+fn output_version(db_path: &Path) -> Option<u32> {
+    let connection =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()?;
+    connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .ok()
 }
 
 fn fingerprint_matches(fingerprint: &SdeFingerprint, config: &ParserConfig) -> bool {
@@ -741,6 +767,58 @@ mod tests {
                 reason: FullReason::Unavailable(_)
             }
         ));
+    }
+
+    /// Moves the mirror of `setup` to `build` without applying anything.
+    fn move_mirror(setup: &Setup, build: &str) {
+        let mut meta = Mirror::open(&setup.sde()).unwrap().meta().clone();
+        meta.build = build.to_string();
+        std::fs::write(
+            setup.sde().join(crate::builder::mirror::META_FILE),
+            serde_json::to_vec(&meta).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_mirror_ahead_of_the_deltas_waits_for_them() {
+        // A full build of build 5 while sde-deltas (and CCP's index here)
+        // are still at 2: nothing to apply, nothing to download.
+        let setup = setup("ahead", "{}", "", None).await;
+        move_mirror(&setup, "5");
+        assert_eq!(
+            setup.prepare().await,
+            UpdatePlan::Rebuild {
+                from: Some("1".to_string()),
+                to: "5".to_string(),
+                mirror_dir: setup.sde(),
+            }
+        );
+        set_sde_build(&setup.db(), "5").unwrap();
+        assert_eq!(
+            setup.prepare().await,
+            UpdatePlan::UpToDate {
+                build: "5".to_string()
+            }
+        );
+        assert_eq!(Mirror::open(&setup.sde()).unwrap().build(), "5");
+    }
+
+    #[tokio::test]
+    async fn a_database_from_another_parser_output_is_rebuilt_from_the_mirror() {
+        let setup = setup("output", r#"{"skins":{"added":1}}"#, "", None).await;
+        rusqlite::Connection::open(setup.db())
+            .unwrap()
+            .pragma_update(None, "user_version", PARSER_OUTPUT_VERSION + 1)
+            .unwrap();
+        assert_eq!(
+            setup.prepare().await,
+            UpdatePlan::Rebuild {
+                from: None,
+                to: "2".to_string(),
+                mirror_dir: setup.sde(),
+            }
+        );
     }
 
     #[tokio::test]

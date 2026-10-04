@@ -91,6 +91,21 @@ use serde_json::Value;
 use std::io::BufRead;
 use std::path::Path;
 
+/// Version of *what the parser reads* from the SDE. Bump it whenever a change
+/// can make the parser read a field or table it didn't read before: a mirror
+/// projected by an older version may lack it, so
+/// [`super::mirror::Mirror::matches`] rejects it and the next update is a full
+/// build. A new crate version that doesn't change what's read keeps it, and
+/// keeps existing mirrors usable.
+pub const PARSER_READS_VERSION: u32 = 1;
+
+/// Version of *what the parser writes* for the same SDE. Bump it whenever a
+/// change makes the same input produce a different `sde.db`.
+/// [`Parser::build_database`] stores it as the database's
+/// `PRAGMA user_version`, and [`super::update::prepare`] rebuilds a database
+/// with another one from the mirror -- no download needed.
+pub const PARSER_OUTPUT_VERSION: u32 = 0;
+
 /// Config for the parser. Covers what's needed for localizing names
 /// and how `position2DX`/`position2DY` are produced (see
 /// [`Position2DMode`]/[`isometric_projection_2d`]/
@@ -2173,6 +2188,7 @@ impl Parser {
         };
 
         self.write_fingerprint(connection, sde_build, community_config.as_ref())?;
+        connection.pragma_update(None, "user_version", PARSER_OUTPUT_VERSION)?;
 
         Ok(summary)
     }

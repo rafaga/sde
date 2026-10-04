@@ -19,6 +19,20 @@ version bump in `Cargo.toml`.
   difference is drift (full build). Builds published without `counts` are not checked.
   - `DeltaManifest::counts`.
   - `MirrorUpdate::check_counts`.
+- `parser::PARSER_READS_VERSION` and `parser::PARSER_OUTPUT_VERSION`, and
+  `MirrorMeta::reads_version`. `Parser::build_database` stores
+  `PARSER_OUTPUT_VERSION` as the database's `PRAGMA user_version`.
+
+### Fixed
+
+- A mirror at or ahead of sde-deltas' latest build (e.g. right after a full build of
+  a build sde-deltas hasn't published yet) no longer counts as out of coverage, which
+  made every update download CCP's export again until sde-deltas caught up. Nothing
+  is applied then, and lag is measured from the mirror's build.
+- A new crate version no longer invalidates the mirror (a full download): mirrors are
+  matched by `PARSER_READS_VERSION`, which only changes when the parser reads other
+  fields. A database written by another `PARSER_OUTPUT_VERSION` is rebuilt from the
+  mirror instead. Mirrors written by 0.6.0 are read as version 1.
 
 ## [0.6.0] — 2026-10-03
 

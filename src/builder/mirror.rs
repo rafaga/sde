@@ -35,7 +35,7 @@
 //! length (the parser may iterate it).
 
 use crate::Error;
-use crate::builder::parser::ParserConfig;
+use crate::builder::parser::{PARSER_READS_VERSION, ParserConfig};
 use crate::builder::usage::{FieldUsage, normalize_path};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -60,9 +60,13 @@ pub struct MirrorMeta {
     pub format: u32,
     /// SDE build the mirror's content matches.
     pub build: String,
-    /// Version of this crate that recorded the field usage: another
-    /// version's parser may read other fields.
+    /// Version of this crate that recorded the field usage (informative).
     pub crate_version: String,
+    /// [`PARSER_READS_VERSION`] of the parser that recorded the field usage:
+    /// a parser with another one may read other fields. Mirrors written by
+    /// 0.6.0, before this field existed, were all version 1.
+    #[serde(default = "first_reads_version")]
+    pub reads_version: u32,
     /// [`config_key`] of the config the field usage was recorded with.
     pub config: String,
     /// Builds applied from deltas since the mirror was created from a full
@@ -77,6 +81,11 @@ pub struct MirrorMeta {
     /// an element appeared or went away, so any such change is drift.
     #[serde(default)]
     pub lossy_lists: BTreeMap<String, BTreeSet<String>>,
+}
+
+/// [`MirrorMeta::reads_version`] of a mirror written before it existed.
+fn first_reads_version() -> u32 {
+    1
 }
 
 /// The parts of a [`ParserConfig`] that change which fields (or tables) the
@@ -196,6 +205,7 @@ impl Mirror {
             format: MIRROR_FORMAT,
             build: build.to_string(),
             crate_version: env!("CARGO_PKG_VERSION").to_string(),
+            reads_version: PARSER_READS_VERSION,
             config: config_key(config),
             delta_builds: 0,
             pending: false,
@@ -243,10 +253,11 @@ impl Mirror {
     }
 
     /// Whether this crate, with `config`, would read the same fields the
-    /// mirror was projected with -- otherwise it may lack some of them.
+    /// mirror was projected with -- otherwise it may lack some of them. It
+    /// compares [`PARSER_READS_VERSION`], not the crate version: a release
+    /// that doesn't change what the parser reads keeps the mirror usable.
     pub fn matches(&self, config: &ParserConfig) -> bool {
-        self.meta.crate_version == env!("CARGO_PKG_VERSION")
-            && self.meta.config == config_key(config)
+        self.meta.reads_version == PARSER_READS_VERSION && self.meta.config == config_key(config)
     }
 
     /// Starts applying deltas. Nothing on disk changes until
@@ -1016,6 +1027,29 @@ mod tests {
             ..ParserConfig::default()
         };
         assert!(!reopened.matches(&other));
+    }
+
+    #[test]
+    fn a_mirror_follows_what_the_parser_reads_not_the_crate_version() {
+        let (dir, mirror) = sample("versions");
+        let config = ParserConfig::default();
+
+        // Another crate version that reads the same fields: still usable.
+        let mut meta = mirror.meta().clone();
+        meta.crate_version = "0.0.1".to_string();
+        write_json(&dir.0.join(META_FILE), &meta).unwrap();
+        assert!(Mirror::open(&dir.0).unwrap().matches(&config));
+
+        // A parser that reads other fields: not usable.
+        meta.reads_version = PARSER_READS_VERSION + 1;
+        write_json(&dir.0.join(META_FILE), &meta).unwrap();
+        assert!(!Mirror::open(&dir.0).unwrap().matches(&config));
+
+        // Written by 0.6.0, before `readsVersion` existed: version 1.
+        let mut old = serde_json::to_value(mirror.meta()).unwrap();
+        old.as_object_mut().unwrap().remove("readsVersion");
+        write_json(&dir.0.join(META_FILE), &old).unwrap();
+        assert_eq!(Mirror::open(&dir.0).unwrap().meta().reads_version, 1);
     }
 
     #[test]
