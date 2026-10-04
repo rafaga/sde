@@ -9,6 +9,17 @@ each tag; the **[Unreleased]** section covers commits that exist on the current 
 the `test` branch (origin/test) on top of the latest tag and that don't yet have a
 version bump in `Cargo.toml`.
 
+## [0.6.1] — Unreleased
+
+### Added
+
+- Delta updates check record counts: when sde-deltas publishes `counts` (records of
+  every table in the build) in a build's manifest, `update::prepare` compares the
+  mirror's tables with the last build's counts after applying the chain, and a
+  difference is drift (full build). Builds published without `counts` are not checked.
+  - `DeltaManifest::counts`.
+  - `MirrorUpdate::check_counts`.
+
 ## [0.6.0] — 2026-10-03
 
 ### Added

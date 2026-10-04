@@ -29,6 +29,7 @@ use crate::builder::parser::{Parser, ParserConfig};
 use crate::builder::sde_index;
 use crate::objects::SdeFingerprint;
 use reqwest::Client;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// After this many builds applied from deltas, the next update is a full
@@ -209,22 +210,32 @@ pub async fn prepare(
 
     let total = chain.len();
     let mut update = mirror.begin();
+    // Record counts of the last build applied, when sde-deltas published them.
+    let mut counts = None;
     for (done, entry) in chain.iter().enumerate() {
         on_progress(DeltaProgress {
             done,
             total,
             build: entry.build,
         });
-        let lines = match fetch_lines(client, &urls.deltas_url, entry, &mirror).await {
-            Ok(lines) => lines,
-            Err(error) => return full(FullReason::Unavailable(error.to_string())),
-        };
+        let (lines, build_counts) =
+            match fetch_lines(client, &urls.deltas_url, entry, &mirror).await {
+                Ok(fetched) => fetched,
+                Err(error) => return full(FullReason::Unavailable(error.to_string())),
+            };
         if let Err(error) = update.apply(&entry.build.to_string(), lines) {
             return full(FullReason::Unavailable(error.to_string()));
         }
         if !update.report().is_clean() {
             break;
         }
+        counts = build_counts;
+    }
+    if update.report().is_clean()
+        && let Some(counts) = &counts
+        && let Err(error) = update.check_counts(counts)
+    {
+        return full(FullReason::Unavailable(error.to_string()));
     }
     let report = update.report().clone();
     if !report.alarms.is_empty() {
@@ -265,14 +276,15 @@ pub async fn prepare(
     }
 }
 
-/// The lines of `entry`'s delta, or none when its manifest shows it only
-/// touches tables the mirror doesn't hold (the delta isn't downloaded).
+/// The lines of `entry`'s delta (none when its manifest shows it only
+/// touches tables the mirror doesn't hold: the delta isn't downloaded), and
+/// the record counts its manifest publishes, if any.
 async fn fetch_lines(
     client: &Client,
     base_url: &str,
     entry: &deltas::IndexEntry,
     mirror: &Mirror,
-) -> Result<Vec<serde_json::Value>, Error> {
+) -> Result<(Vec<serde_json::Value>, Option<BTreeMap<String, u64>>), Error> {
     let manifest = deltas::fetch_manifest(client, base_url, entry.build).await?;
     if manifest.last_build != entry.last_build {
         return Err(Error::data(format!(
@@ -280,13 +292,15 @@ async fn fetch_lines(
             entry.build, manifest.last_build, entry.last_build
         )));
     }
-    if !manifest
+    let lines = if manifest
         .touched_tables()
         .any(|table| mirror.usage().uses_table(table))
     {
-        return Ok(Vec::new());
-    }
-    deltas::fetch_delta(client, base_url, &manifest).await
+        deltas::fetch_delta(client, base_url, &manifest).await?
+    } else {
+        Vec::new()
+    };
+    Ok((lines, manifest.counts))
 }
 
 /// `sde.db`'s build, if its fingerprint is intact and was written for the
@@ -650,6 +664,34 @@ mod tests {
                 build: "2".to_string()
             }
         );
+    }
+
+    /// `tables` is spliced into the manifest right before `files`, so it can
+    /// carry a `counts` member too.
+    #[tokio::test]
+    async fn published_record_counts_are_checked() {
+        let matching = setup(
+            "counts_ok",
+            r#"{"skins":{"added":1}}, "counts": {"types": 1, "skins": 9}"#,
+            "",
+            None,
+        )
+        .await;
+        assert!(matches!(matching.prepare().await, UpdatePlan::Bump { .. }));
+
+        let wrong = setup(
+            "counts_wrong",
+            r#"{"skins":{"added":1}}, "counts": {"types": 5}"#,
+            "",
+            None,
+        )
+        .await;
+        let plan = wrong.prepare().await;
+        assert!(
+            matches!(&plan, UpdatePlan::Full { reason: FullReason::Drift(drift) } if drift.len() == 1),
+            "{plan:?}"
+        );
+        assert_eq!(Mirror::open(&wrong.sde()).unwrap().build(), "1");
     }
 
     #[tokio::test]

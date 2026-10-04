@@ -452,6 +452,30 @@ impl MirrorUpdate<'_> {
         Ok(())
     }
 
+    /// Compares the number of records of every table the mirror holds, as the
+    /// deltas applied so far left it, with `counts` (the records of each
+    /// table in the build the update reached, as sde-deltas publishes them).
+    /// A difference is drift. A table missing from `counts` should have no
+    /// records.
+    #[tracing::instrument(skip(self, counts))]
+    pub fn check_counts(&mut self, counts: &BTreeMap<String, u64>) -> Result<(), Error> {
+        let mirror = self.mirror;
+        for table in mirror.usage.tables() {
+            let actual = match self.tables.get(table) {
+                Some(loaded) => loaded.index.len() as u64,
+                None => count_records(&table_path(&mirror.dir, table))?,
+            };
+            let expected = counts.get(table).copied().unwrap_or(0);
+            if actual != expected {
+                self.report.drift.push(format!(
+                    "{table}: {actual} records in the mirror, build {} has {expected}",
+                    self.build
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Writes the tables that changed and moves the mirror to the build the
     /// update reached. Refuses (with `Error::data`) when the report isn't
     /// clean: such a mirror must be replaced by a full build instead.
@@ -616,6 +640,18 @@ fn load_table<'t>(
         tables.insert(table.to_string(), loaded);
     }
     Ok(tables.get_mut(table).expect("just inserted"))
+}
+
+/// Records (distinct `_key`s) in a table file, without keeping them.
+fn count_records(path: &Path) -> Result<u64, Error> {
+    let mut keys = std::collections::HashSet::new();
+    for record in read_records(path)? {
+        let record = record?;
+        if let Some(key) = record.get("_key").and_then(Key::of) {
+            keys.insert(key);
+        }
+    }
+    Ok(keys.len() as u64)
 }
 
 /// Whether a `changed` entry adds a field (no `old`) or removes one (no
@@ -1145,6 +1181,39 @@ mod tests {
             .map(|alarm| alarm.kind.as_str())
             .collect();
         assert_eq!(kinds, ["rename_path", "drop_path", "rename_table"]);
+        assert!(update.commit().is_err());
+    }
+
+    #[test]
+    fn record_counts_are_checked_for_loaded_and_untouched_tables() {
+        let dir = TempDir::new(
+            "counts",
+            &[
+                ("t.jsonl", "{\"_key\":1,\"a\":1}\n{\"_key\":2,\"a\":2}\n"),
+                ("u.jsonl", "{\"_key\":\"x\",\"b\":1}\n"),
+            ],
+        );
+        let usage = usage(&[("t", "a"), ("u", "b")]);
+        let mirror = Mirror::create(&dir.0, &usage, "1", &ParserConfig::default()).unwrap();
+
+        // `t` is loaded by the delta, `u` is only counted from its file.
+        let mut update = mirror.begin();
+        update
+            .apply(
+                "2",
+                [json!({"table":"t","id":3,"op":"added","record":{"a":3}})],
+            )
+            .unwrap();
+        let counts = BTreeMap::from([("t".to_string(), 3), ("u".to_string(), 1)]);
+        update.check_counts(&counts).unwrap();
+        assert!(update.report().is_clean(), "{:?}", update.report());
+
+        // A table missing from `counts` should be empty; a wrong count is drift.
+        let mut update = mirror.begin();
+        update
+            .check_counts(&BTreeMap::from([("t".to_string(), 5)]))
+            .unwrap();
+        assert_eq!(update.report().drift.len(), 2, "{:?}", update.report());
         assert!(update.commit().is_err());
     }
 
