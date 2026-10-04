@@ -56,43 +56,63 @@ let connections = sde.get_connections()?; // RTree<SdeSegment>, for spatial quer
 
 ## Building `sde.db`
 
-With the `builder` feature enabled, the `sde-builder` binary checks for
-a newer SDE release, downloads and unpacks it if needed, and rebuilds
-the database from it:
+With the `builder` feature enabled, the `sde-builder` binary has two
+commands:
 
 ```sh
-cargo run --bin sde-builder --features builder -- build
+# Build the database from scratch from CCP's export (the latest SDE
+# build, or a specific one), even if it's already up to date:
+cargo run --bin sde-builder --features builder -- build [--sde-build 3569502]
+
+# Bring the database up to the latest SDE build the cheapest way:
+cargo run --bin sde-builder --features builder -- update
 ```
 
-`build` takes a few flags -- `--force` to rebuild even if the database
-is already up to date, `-q`/`--quiet` to suppress the parser's
-per-phase progress output, and `-o`/`--output <path>` to change where
-the database is written (`sde.db` by default). See
-`cargo run --bin sde-builder --features builder -- build --help` for
-the full list.
+Both take `-o`/`--output <path>` (the database, `sde.db` by default),
+`--data-dir` and `--sde-dir`, `--with-third-party`, `--keep-source` and
+`-q`/`--quiet`; `update` also takes `--ignore-delta-lag`. See `--help` of
+each for the full list. The binary only validates its arguments and calls
+`builder::pipeline::build` / `builder::pipeline::update`, which a library
+consumer can call too.
+
+### What stays on disk
+
+Once a build finishes, nothing downloaded from CCP or decompressed is
+left. A build downloads CCP's zip (~99 MB) into `data/`, decompresses it
+into `sde/` (~560 MB), builds the database, and then:
+
+- the zip, the file recording its build and the decompressed tables are
+  removed (`pipeline::clean_downloads`);
+- what the parser read is kept as the *mirror* in a single zip,
+  `data/sde-mirror.zip` (~20 MB), so delta updates can work;
+- `sde/` keeps only `maps/`, dotlan's maps, which come from another source
+  and aren't downloaded again unless they changed.
+
+So what remains is `sde.db`, `data/sde-mirror.zip` and `sde/maps/`.
+`--keep-source` skips all of this and keeps CCP's export as it is.
 
 ### Delta updates
 
-After a full build, `sde/` is reduced to a *mirror*: only the tables
-and fields the parser actually read, recorded while it built the
-database (about 105 MB instead of CCP's ~560 MB export, and the zip is
-removed). Later runs bring the mirror up to date with the build-to-build
-deltas published by [sde-deltas](https://github.com/rafaga/sde-deltas),
-usually a few KB per build, and then:
+The mirror holds only the tables and fields the parser actually read,
+recorded while it built the database. `update` brings it up to date with
+the build-to-build deltas published by
+[sde-deltas](https://github.com/rafaga/sde-deltas), usually a few KB per
+build, and then:
 
+- if the database is already at that build, nothing is unpacked and
+  nothing is done;
 - if no change touches a field the parser reads, only the build recorded
   in the database's fingerprint moves -- no rebuild;
-- otherwise the database is rebuilt from the mirror, without
-  downloading CCP's export;
+- otherwise the mirror is unpacked into `sde/`, the database is rebuilt
+  from it without downloading CCP's export, and `sde/` is emptied again;
 - if the deltas can't be used (no mirror yet, a build they don't cover,
   a schema change in a field the parser reads, an inconsistency -- including
   a table whose record count differs from the one sde-deltas publishes --,
   or sde-deltas lagging more than two days behind CCP), it falls back to a
-  full build, which creates a new mirror.
+  full build from CCP's export, which makes a new mirror.
 
-`--full` skips the deltas, `--keep-source` keeps CCP's export instead of
-reducing it, and `--sde-build <build>` builds a specific SDE build. The
-same flow is available to library consumers in `builder::update`.
+A mirror an earlier version (0.6.x) left unpacked in `sde/` is packed into
+`data/sde-mirror.zip` the first time `update` runs.
 
 ## Architecture
 

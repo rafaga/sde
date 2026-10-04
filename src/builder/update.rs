@@ -1,6 +1,6 @@
 //! Keeping `sde.db` current with sde-deltas instead of CCP's full export.
 //!
-//! [`prepare`] brings the [`Mirror`] in the SDE directory up to the latest
+//! [`prepare`] brings the [`Mirror`] kept as a single zip up to the latest
 //! build sde-deltas publishes, and says what `sde.db` needs as an
 //! [`UpdatePlan`]:
 //!
@@ -10,7 +10,8 @@
 //!   ([`set_sde_build`]). No download beyond the deltas' manifests, no
 //!   rebuild.
 //! - [`UpdatePlan::Rebuild`] -- rebuild `sde.db` with
-//!   [`super::parser::Parser`] from the mirror directory: local, no
+//!   [`super::parser::Parser`] from the mirror, unpacked in the SDE
+//!   directory (removed afterwards with [`release_working_copy`]): local, no
 //!   download of CCP's export.
 //! - [`UpdatePlan::Full`] -- deltas can't be used (no mirror yet, the chain
 //!   doesn't reach the mirror's build, a schema change, drift, network...);
@@ -24,9 +25,9 @@ use crate::Error;
 use crate::SdeManager;
 use crate::builder::BuildUrls;
 use crate::builder::deltas;
-use crate::builder::mirror::{Mirror, SchemaAlarm};
+use crate::builder::mirror::{Mirror, MirrorMeta, SchemaAlarm};
 use crate::builder::parser::{PARSER_OUTPUT_VERSION, Parser, ParserConfig};
-use crate::builder::sde_index;
+use crate::builder::{extract, sde_index};
 use crate::objects::SdeFingerprint;
 use reqwest::Client;
 use std::collections::BTreeMap;
@@ -155,37 +156,99 @@ pub struct DeltaProgress {
     pub build: u64,
 }
 
-/// Brings the mirror in `sde_dir` up to sde-deltas' latest build and says
-/// what `db_path` needs, for a database built with `config`. See the module
-/// docs. Never fails: anything that keeps deltas from being used is an
+/// Brings the mirror stored in `archive` up to sde-deltas' latest build and
+/// says what `db_path` needs, for a database built with `config`. See the
+/// module docs. Never fails: anything that keeps deltas from being used is an
 /// [`UpdatePlan::Full`].
 ///
-/// The mirror is committed before returning, so a rebuild that then fails
-/// is retried by the next call ([`UpdatePlan::Rebuild`] again, since
-/// `sde.db` is still behind the mirror) without downloading anything.
+/// The mirror is only unpacked, into `sde_dir`, when deltas have to be
+/// applied or the database rebuilt; nothing is unpacked to find out that
+/// the database is up to date. Whatever was unpacked is removed again
+/// (`sde_dir` is emptied except for `maps/`) before returning, except for a
+/// [`UpdatePlan::Rebuild`], which builds from it: the caller removes it with
+/// [`release_working_copy`] afterwards, whether or not the build worked.
+///
+/// The archive is rewritten before returning when deltas were applied, so a
+/// rebuild that then fails is retried by the next call
+/// ([`UpdatePlan::Rebuild`] again, since `sde.db` is still behind the
+/// mirror) without downloading anything.
+///
+/// A mirror an earlier version left unpacked in `sde_dir` (0.6.x) is packed
+/// into `archive` the first time.
 #[tracing::instrument(skip(client, on_progress))]
+#[allow(clippy::too_many_arguments)]
 pub async fn prepare(
     client: &Client,
     urls: &BuildUrls,
     db_path: &Path,
     sde_dir: &Path,
+    archive: &Path,
+    config: &ParserConfig,
+    options: UpdateOptions,
+    on_progress: impl FnMut(DeltaProgress),
+) -> UpdatePlan {
+    let mut unpacked = false;
+    let plan = plan_update(
+        client,
+        urls,
+        db_path,
+        sde_dir,
+        archive,
+        config,
+        options,
+        on_progress,
+        &mut unpacked,
+    )
+    .await;
+    if unpacked && !matches!(plan, UpdatePlan::Rebuild { .. }) {
+        let _ = release_working_copy(sde_dir);
+    }
+    plan
+}
+
+/// Removes the working copy of the mirror [`prepare`] unpacked into
+/// `sde_dir` for an [`UpdatePlan::Rebuild`]: everything in it except
+/// `maps/`.
+pub fn release_working_copy(sde_dir: &Path) -> Result<(), Error> {
+    extract::clean_except_maps(sde_dir)
+}
+
+/// [`prepare`] without the clean-up; `unpacked` tells whether `sde_dir`
+/// got a working copy.
+#[allow(clippy::too_many_arguments)]
+async fn plan_update(
+    client: &Client,
+    urls: &BuildUrls,
+    db_path: &Path,
+    sde_dir: &Path,
+    archive: &Path,
     config: &ParserConfig,
     options: UpdateOptions,
     mut on_progress: impl FnMut(DeltaProgress),
+    unpacked: &mut bool,
 ) -> UpdatePlan {
     let full = |reason| UpdatePlan::Full { reason };
-    let Some(mirror) = Mirror::open(sde_dir) else {
+    if !archive.exists()
+        && let Some(legacy) = Mirror::open(sde_dir)
+    {
+        // 0.6.x left the mirror unpacked in the SDE directory.
+        if legacy.pack(archive).is_err() {
+            return full(FullReason::NoMirror);
+        }
+        *unpacked = true;
+    }
+    let Some(meta) = Mirror::archive_meta(archive) else {
         return full(FullReason::NoMirror);
     };
-    if !mirror.matches(config) {
+    if !meta.matches(config) {
         return full(FullReason::MirrorMismatch);
     }
-    if mirror.meta().delta_builds >= REFRESH_AFTER_DELTA_BUILDS {
+    if meta.delta_builds >= REFRESH_AFTER_DELTA_BUILDS {
         return full(FullReason::Refresh);
     }
-    let Ok(from) = mirror.build().parse::<u64>() else {
+    let Ok(from) = meta.build.parse::<u64>() else {
         return full(FullReason::OutOfCoverage {
-            build: mirror.build().to_string(),
+            build: meta.build.clone(),
         });
     };
 
@@ -213,12 +276,25 @@ pub async fn prepare(
             Some(chain) => chain,
             None => {
                 return full(FullReason::OutOfCoverage {
-                    build: mirror.build().to_string(),
+                    build: meta.build.clone(),
                 });
             }
         }
     };
 
+    // Nothing to apply and the database is already there: nothing to unpack.
+    if chain.is_empty()
+        && let Some(build) = installed_build(db_path, config)
+        && build == meta.build
+    {
+        return UpdatePlan::UpToDate { build };
+    }
+
+    *unpacked = true;
+    let mirror = match Mirror::unpack(archive, sde_dir) {
+        Ok(mirror) => mirror,
+        Err(error) => return full(FullReason::Unavailable(error.to_string())),
+    };
     let total = chain.len();
     let mut update = mirror.begin();
     // Record counts of the last build applied, when sde-deltas published them.
@@ -257,7 +333,14 @@ pub async fn prepare(
     }
     let committed = if total > 0 {
         match update.commit() {
-            Ok(committed) => Some(committed),
+            Ok(committed) => {
+                // The archive is the mirror that counts: the unpacked copy
+                // goes away. A failure here keeps the previous archive.
+                if let Err(error) = committed.pack(archive) {
+                    return full(FullReason::Unavailable(error.to_string()));
+                }
+                Some(committed)
+            }
             Err(error) => return full(FullReason::Unavailable(error.to_string())),
         }
     } else {
@@ -274,7 +357,7 @@ pub async fn prepare(
     }
 
     let to = mirror.build().to_string();
-    match database_build(db_path, config) {
+    match installed_build(db_path, config) {
         Some(build) if build == to => UpdatePlan::UpToDate { build },
         Some(build) if !report.relevant && build == from.to_string() => {
             UpdatePlan::Bump { from: build, to }
@@ -317,7 +400,7 @@ async fn fetch_lines(
 /// `sde.db`'s build, if its fingerprint is intact and was written for the
 /// same config by a parser with the same [`PARSER_OUTPUT_VERSION`] --
 /// otherwise it has to be rebuilt (from the mirror) anyway.
-fn database_build(db_path: &Path, config: &ParserConfig) -> Option<String> {
+pub fn installed_build(db_path: &Path, config: &ParserConfig) -> Option<String> {
     let manager = SdeManager::new(db_path, 1.0).ok()?;
     let (fingerprint, intact) = manager.get_fingerprint().ok()??;
     let current = intact
@@ -369,14 +452,24 @@ pub fn set_sde_build(db_path: &Path, build: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Turns the full export `parser` just read into a mirror for the next
-/// update ([`Mirror::create`], in place in the parser's SDE directory).
-/// Call it after a successful full build.
-pub fn create_mirror(sde_dir: &Path, parser: &Parser, build: &str) -> Result<Mirror, Error> {
+/// Turns the full export `parser` just read in `sde_dir` into the mirror
+/// for the next update: reduces it ([`Mirror::create`]), stores it as the
+/// single zip `archive` ([`Mirror::pack`]) and empties `sde_dir` except for
+/// `maps/`. Call it after a successful full build. If it fails, `sde_dir`
+/// may be left half reduced: empty it ([`release_working_copy`]).
+pub fn create_mirror(
+    sde_dir: &Path,
+    archive: &Path,
+    parser: &Parser,
+    build: &str,
+) -> Result<MirrorMeta, Error> {
     let usage = parser
         .field_usage()
         .ok_or_else(|| Error::data("the parser hasn't read the SDE yet"))?;
-    Mirror::create(sde_dir, &usage, build, parser.config())
+    let mirror = Mirror::create(sde_dir, &usage, build, parser.config())?;
+    mirror.pack(archive)?;
+    release_working_copy(sde_dir)?;
+    Ok(mirror.meta().clone())
 }
 
 /// CCP's latest build, if sde-deltas (at `deltas_latest`) lacks a build CCP
@@ -522,6 +615,14 @@ mod tests {
         }
     }
 
+    /// Reduces the export in `sde` to a mirror of build `build`, stores it
+    /// in `archive` and empties `sde`.
+    fn create_mirror_archive(sde: &Path, archive: &Path, usage: &FieldUsage, build: &str) {
+        let mirror = Mirror::create(sde, usage, build, &ParserConfig::default()).unwrap();
+        mirror.pack(archive).unwrap();
+        release_working_copy(sde).unwrap();
+    }
+
     impl Setup {
         fn db(&self) -> PathBuf {
             self.dir.join("sde.db")
@@ -529,6 +630,39 @@ mod tests {
 
         fn sde(&self) -> PathBuf {
             self.dir.join("sde")
+        }
+
+        fn archive(&self) -> PathBuf {
+            self.dir.join("data").join("sde-mirror.zip")
+        }
+
+        /// The build of the mirror in the archive.
+        fn mirror_build(&self) -> String {
+            Mirror::archive_meta(&self.archive()).unwrap().build
+        }
+
+        /// Changes the metadata of the mirror in the archive.
+        fn edit_mirror(&self, edit: impl FnOnce(&mut MirrorMeta)) {
+            let unpacked = Mirror::unpack(&self.archive(), &self.sde()).unwrap();
+            let mut meta = unpacked.meta().clone();
+            edit(&mut meta);
+            std::fs::write(
+                self.sde().join(crate::builder::mirror::META_FILE),
+                serde_json::to_vec(&meta).unwrap(),
+            )
+            .unwrap();
+            Mirror::open(&self.sde())
+                .unwrap()
+                .pack(&self.archive())
+                .unwrap();
+            release_working_copy(&self.sde()).unwrap();
+        }
+
+        /// Whether the SDE directory has nothing but `maps/` in it.
+        fn sde_is_empty(&self) -> bool {
+            std::fs::read_dir(self.sde())
+                .unwrap()
+                .all(|entry| entry.unwrap().file_name() == "maps")
         }
 
         fn urls(&self) -> BuildUrls {
@@ -545,6 +679,7 @@ mod tests {
                 &self.urls(),
                 &self.db(),
                 &self.sde(),
+                &self.archive(),
                 &ParserConfig::default(),
                 UpdateOptions::default(),
                 |_| {},
@@ -599,7 +734,9 @@ mod tests {
         .unwrap();
         let mut usage = FieldUsage::default();
         usage.insert("types", "name");
-        Mirror::create(&sde, &usage, "1", &ParserConfig::default()).unwrap();
+        // Kept the way a build leaves it: one zip, and the SDE directory
+        // emptied (see `legacy_mirrors_are_packed...` for the unpacked one).
+        create_mirror_archive(&sde, &dir.join("data").join("sde-mirror.zip"), &usage, "1");
 
         let connection = rusqlite::Connection::open(dir.join("sde.db")).unwrap();
         crate::builder::schema::create_schema(&connection).unwrap();
@@ -676,7 +813,9 @@ mod tests {
                 to: "2".to_string()
             }
         );
-        assert_eq!(Mirror::open(&setup.sde()).unwrap().build(), "2");
+        assert_eq!(setup.mirror_build(), "2");
+        // Only the build moved: nothing was left unpacked.
+        assert!(setup.sde_is_empty());
 
         set_sde_build(&setup.db(), "2").unwrap();
         let db = setup.db();
@@ -717,7 +856,8 @@ mod tests {
             matches!(&plan, UpdatePlan::Full { reason: FullReason::Drift(drift) } if drift.len() == 1),
             "{plan:?}"
         );
-        assert_eq!(Mirror::open(&wrong.sde()).unwrap().build(), "1");
+        assert_eq!(wrong.mirror_build(), "1");
+        assert!(wrong.sde_is_empty());
     }
 
     #[tokio::test]
@@ -743,6 +883,7 @@ mod tests {
         assert!(types.contains("\"B\""), "{types}");
         // The database is still behind the committed mirror: rebuild again.
         assert!(matches!(setup.prepare().await, UpdatePlan::Rebuild { .. }));
+        assert_eq!(setup.mirror_build(), "2");
     }
 
     #[tokio::test]
@@ -754,8 +895,9 @@ mod tests {
             matches!(&plan, UpdatePlan::Full { reason: FullReason::SchemaChanged(alarms) } if alarms.len() == 1),
             "{plan:?}"
         );
-        // Nothing was committed.
-        assert_eq!(Mirror::open(&setup.sde()).unwrap().build(), "1");
+        // Nothing was committed, and nothing is left unpacked.
+        assert_eq!(setup.mirror_build(), "1");
+        assert!(setup.sde_is_empty());
     }
 
     #[tokio::test]
@@ -769,23 +911,12 @@ mod tests {
         ));
     }
 
-    /// Moves the mirror of `setup` to `build` without applying anything.
-    fn move_mirror(setup: &Setup, build: &str) {
-        let mut meta = Mirror::open(&setup.sde()).unwrap().meta().clone();
-        meta.build = build.to_string();
-        std::fs::write(
-            setup.sde().join(crate::builder::mirror::META_FILE),
-            serde_json::to_vec(&meta).unwrap(),
-        )
-        .unwrap();
-    }
-
     #[tokio::test]
     async fn a_mirror_ahead_of_the_deltas_waits_for_them() {
         // A full build of build 5 while sde-deltas (and CCP's index here)
         // are still at 2: nothing to apply, nothing to download.
         let setup = setup("ahead", "{}", "", None).await;
-        move_mirror(&setup, "5");
+        setup.edit_mirror(|meta| meta.build = "5".to_string());
         assert_eq!(
             setup.prepare().await,
             UpdatePlan::Rebuild {
@@ -794,6 +925,9 @@ mod tests {
                 mirror_dir: setup.sde(),
             }
         );
+        // The rebuild builds from the unpacked mirror; the caller releases it.
+        assert!(setup.sde().join("types.jsonl").exists());
+        release_working_copy(&setup.sde()).unwrap();
         set_sde_build(&setup.db(), "5").unwrap();
         assert_eq!(
             setup.prepare().await,
@@ -801,7 +935,55 @@ mod tests {
                 build: "5".to_string()
             }
         );
-        assert_eq!(Mirror::open(&setup.sde()).unwrap().build(), "5");
+        assert_eq!(setup.mirror_build(), "5");
+        assert!(setup.sde_is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_current_database_leaves_the_mirror_packed() {
+        // Up to date: nothing is unpacked to find that out, and `maps/` is
+        // never touched.
+        let setup = setup("packed", "{}", "", None).await;
+        std::fs::create_dir_all(setup.sde().join("maps")).unwrap();
+        std::fs::write(setup.sde().join("maps").join("a.svg"), "<svg/>").unwrap();
+        set_sde_build(&setup.db(), "1").unwrap();
+        // sde-deltas is at 2: the build is applied, nothing the parser reads.
+        assert!(matches!(setup.prepare().await, UpdatePlan::Bump { .. }));
+        set_sde_build(&setup.db(), "2").unwrap();
+        assert!(matches!(setup.prepare().await, UpdatePlan::UpToDate { .. }));
+        assert!(setup.sde_is_empty());
+        assert!(setup.sde().join("maps").join("a.svg").exists());
+    }
+
+    #[tokio::test]
+    async fn a_mirror_left_unpacked_by_0_6_is_packed_the_first_time() {
+        let setup = setup("legacy", r#"{"skins":{"added":1}}"#, "", None).await;
+        // Back to how 0.6.x left it: the mirror as a directory, no archive.
+        Mirror::unpack(&setup.archive(), &setup.sde()).unwrap();
+        std::fs::remove_file(setup.archive()).unwrap();
+
+        assert!(matches!(setup.prepare().await, UpdatePlan::Bump { .. }));
+        assert_eq!(setup.mirror_build(), "2");
+        assert!(setup.sde_is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_rebuild_is_retried_from_the_archive() {
+        let delta = r#"{"table":"types","id":1,"op":"changed","fields":[{"path":"name.en","old":"A","new":"B"}]}"#;
+        let setup = setup("retry", r#"{"types":{"changed":1}}"#, delta, None).await;
+        assert!(matches!(setup.prepare().await, UpdatePlan::Rebuild { .. }));
+        // The caller dies without releasing or building: the archive already
+        // has build 2, and the next run starts from a clean unpack.
+        std::fs::write(setup.sde().join("leftover.jsonl"), "{}").unwrap();
+        assert_eq!(setup.mirror_build(), "2");
+        let plan = setup.prepare().await;
+        assert!(
+            matches!(&plan, UpdatePlan::Rebuild { to, .. } if to == "2"),
+            "{plan:?}"
+        );
+        assert!(!setup.sde().join("leftover.jsonl").exists());
+        let types = std::fs::read_to_string(setup.sde().join("types.jsonl")).unwrap();
+        assert!(types.contains("\"B\""), "{types}");
     }
 
     #[tokio::test]
@@ -824,13 +1006,7 @@ mod tests {
     #[tokio::test]
     async fn no_mirror_or_no_chain_needs_a_full_build() {
         let setup = setup("coverage", "{}", "", None).await;
-        let mut meta = Mirror::open(&setup.sde()).unwrap().meta().clone();
-        meta.build = "0".to_string();
-        std::fs::write(
-            setup.sde().join(crate::builder::mirror::META_FILE),
-            serde_json::to_vec(&meta).unwrap(),
-        )
-        .unwrap();
+        setup.edit_mirror(|meta| meta.build = "0".to_string());
         assert_eq!(
             setup.prepare().await,
             UpdatePlan::Full {
@@ -839,7 +1015,8 @@ mod tests {
                 }
             }
         );
-        std::fs::remove_file(setup.sde().join(crate::builder::mirror::META_FILE)).unwrap();
+        assert!(setup.sde_is_empty());
+        std::fs::remove_file(setup.archive()).unwrap();
         assert_eq!(
             setup.prepare().await,
             UpdatePlan::Full {

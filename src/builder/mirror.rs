@@ -7,6 +7,17 @@
 //! export, and still a directory of ordinary `<table>.jsonl` files, so
 //! [`super::parser::Parser`] reads it unchanged.
 //!
+//! ## Kept as a single archive
+//!
+//! Between runs the mirror isn't left as a directory: [`Mirror::pack`] stores
+//! it as one zip (~20 MB instead of ~110 MB) and the SDE directory is emptied
+//! except for `maps/`. [`Mirror::archive_meta`] reads what's needed to decide
+//! whether it can be used without unpacking anything, and
+//! [`Mirror::unpack`] makes a working copy in the SDE directory, which is
+//! emptied again (`extract::clean_except_maps`) once it's no longer needed.
+//! The archive is the only authoritative copy: a working copy left by a
+//! crash is discarded the next time.
+//!
 //! [`Mirror::begin`] then applies sde-deltas' build-to-build deltas
 //! (format 1, see <https://github.com/rafaga/sde-deltas>) on top of it:
 //!
@@ -86,6 +97,25 @@ pub struct MirrorMeta {
 /// [`MirrorMeta::reads_version`] of a mirror written before it existed.
 fn first_reads_version() -> u32 {
     1
+}
+
+impl MirrorMeta {
+    /// Whether this crate, with `config`, would read the same fields the
+    /// mirror was projected with -- otherwise it may lack some of them. It
+    /// compares [`PARSER_READS_VERSION`], not the crate version: a release
+    /// that doesn't change what the parser reads keeps the mirror usable.
+    pub fn matches(&self, config: &ParserConfig) -> bool {
+        self.reads_version == PARSER_READS_VERSION && self.config == config_key(config)
+    }
+}
+
+/// A single file name: no directory separators, nor `.` / `..`.
+fn is_plain_file_name(name: &str) -> bool {
+    let mut components = Path::new(name).components();
+    matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    )
 }
 
 /// The parts of a [`ParserConfig`] that change which fields (or tables) the
@@ -253,11 +283,82 @@ impl Mirror {
     }
 
     /// Whether this crate, with `config`, would read the same fields the
-    /// mirror was projected with -- otherwise it may lack some of them. It
-    /// compares [`PARSER_READS_VERSION`], not the crate version: a release
-    /// that doesn't change what the parser reads keeps the mirror usable.
+    /// mirror was projected with -- otherwise it may lack some of them. See
+    /// [`MirrorMeta::matches`].
     pub fn matches(&self, config: &ParserConfig) -> bool {
-        self.meta.reads_version == PARSER_READS_VERSION && self.meta.config == config_key(config)
+        self.meta.matches(config)
+    }
+
+    /// Stores the mirror as a single zip at `archive` (written to a
+    /// temporary file and moved over it, so a crash keeps the previous one):
+    /// every file of its directory except `maps/`.
+    #[tracing::instrument(skip(self))]
+    pub fn pack(&self, archive: &Path) -> Result<(), Error> {
+        if let Some(parent) = archive.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let temporary = archive.with_extension("zip.tmp");
+        {
+            let mut writer =
+                zip::ZipWriter::new(BufWriter::new(std::fs::File::create(&temporary)?));
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            let mut names: Vec<String> = std::fs::read_dir(&self.dir)?
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().is_file())
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .collect();
+            names.sort();
+            for name in names {
+                writer.start_file(name.as_str(), options)?;
+                let mut file = std::fs::File::open(self.dir.join(&name))?;
+                std::io::copy(&mut file, &mut writer)?;
+            }
+            writer.finish()?.flush()?;
+        }
+        std::fs::rename(&temporary, archive)?;
+        Ok(())
+    }
+
+    /// The [`MirrorMeta`] of the mirror stored in `archive`, reading only
+    /// that entry: `None` if there's no usable one (no archive, not a
+    /// zip, no [`META_FILE`], another [`MIRROR_FORMAT`] or one a crash left
+    /// half-written).
+    pub fn archive_meta(archive: &Path) -> Option<MirrorMeta> {
+        let mut zip =
+            zip::ZipArchive::new(std::io::BufReader::new(std::fs::File::open(archive).ok()?))
+                .ok()?;
+        let meta: MirrorMeta = serde_json::from_reader(zip.by_name(META_FILE).ok()?).ok()?;
+        (meta.format == MIRROR_FORMAT && !meta.pending).then_some(meta)
+    }
+
+    /// Makes a working copy of the mirror stored in `archive` in `dir`: first
+    /// empties `dir` (keeping `maps/`, see [`super::extract::clean_except_maps`]),
+    /// then extracts every file of the archive into it. File names with a
+    /// path are refused: the archive only holds a flat list of files.
+    #[tracing::instrument]
+    pub fn unpack(archive: &Path, dir: &Path) -> Result<Mirror, Error> {
+        let mut zip = zip::ZipArchive::new(std::io::BufReader::new(std::fs::File::open(archive)?))?;
+        for index in 0..zip.len() {
+            let name = zip.by_index(index)?.name().to_string();
+            if !is_plain_file_name(&name) {
+                return Err(Error::data(format!(
+                    "{archive:?} holds an entry with a path (`{name}`), a mirror is a flat list of files"
+                )));
+            }
+        }
+        std::fs::create_dir_all(dir)?;
+        crate::builder::extract::clean_except_maps(dir)?;
+        for index in 0..zip.len() {
+            let mut entry = zip.by_index(index)?;
+            if entry.is_dir() {
+                continue;
+            }
+            let mut file = std::fs::File::create(dir.join(entry.name()))?;
+            std::io::copy(&mut entry, &mut file)?;
+        }
+        Mirror::open(dir)
+            .ok_or_else(|| Error::data(format!("{archive:?} doesn't hold a usable mirror")))
     }
 
     /// Starts applying deltas. Nothing on disk changes until
@@ -1249,6 +1350,82 @@ mod tests {
             .unwrap();
         assert_eq!(update.report().drift.len(), 2, "{:?}", update.report());
         assert!(update.commit().is_err());
+    }
+
+    #[test]
+    fn a_mirror_packs_into_one_zip_and_unpacks_into_a_clean_directory() {
+        let (dir, mirror) = sample("pack");
+        let archive = dir.0.join("out").join("mirror.zip");
+        mirror.pack(&archive).unwrap();
+        assert!(archive.is_file());
+        assert!(!archive.with_extension("zip.tmp").exists());
+        // Smaller than what it holds, and without `maps/`.
+        let meta = Mirror::archive_meta(&archive).unwrap();
+        assert_eq!(&meta, mirror.meta());
+        assert!(meta.matches(&ParserConfig::default()));
+
+        // Unpacks over leftovers (which go), keeping `maps/`.
+        let work = TempDir::new("pack_work", &[("leftover.jsonl", "{}")]);
+        std::fs::create_dir_all(work.0.join("maps")).unwrap();
+        std::fs::write(work.0.join("maps").join("a.svg"), "<svg/>").unwrap();
+        let unpacked = Mirror::unpack(&archive, &work.0).unwrap();
+        assert_eq!(unpacked.meta(), mirror.meta());
+        assert_eq!(unpacked.usage(), mirror.usage());
+        assert!(!work.0.join("leftover.jsonl").exists());
+        assert!(!work.0.join("maps").join("maps").exists());
+        assert!(work.0.join("maps").join("a.svg").exists());
+        assert_eq!(lines(&work.0, "t"), lines(&dir.0, "t"));
+        assert!(
+            !work
+                .0
+                .join("maps")
+                .join("a.svg")
+                .metadata()
+                .unwrap()
+                .is_dir()
+        );
+    }
+
+    #[test]
+    fn archive_meta_ignores_what_is_not_a_usable_mirror() {
+        let (dir, mirror) = sample("archive_meta");
+        assert!(Mirror::archive_meta(&dir.0.join("missing.zip")).is_none());
+        std::fs::write(dir.0.join("garbage.zip"), "not a zip").unwrap();
+        assert!(Mirror::archive_meta(&dir.0.join("garbage.zip")).is_none());
+
+        // A mirror a crash left half-written, and one of another format.
+        for (name, edit) in [("pending.zip", "pending"), ("format.zip", "format")] {
+            let mut meta = mirror.meta().clone();
+            match edit {
+                "pending" => meta.pending = true,
+                _ => meta.format = MIRROR_FORMAT + 1,
+            }
+            write_json(&dir.0.join(META_FILE), &meta).unwrap();
+            let broken = Mirror {
+                dir: dir.0.clone(),
+                meta,
+                usage: mirror.usage().clone(),
+            };
+            broken.pack(&dir.0.join(name)).unwrap();
+            assert!(Mirror::archive_meta(&dir.0.join(name)).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn an_archive_with_paths_in_it_is_refused() {
+        let dir = TempDir::new("slip", &[]);
+        let archive = dir.0.join("evil.zip");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        for name in ["_mirror.json", "../escaped.txt"] {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(b"{}").unwrap();
+        }
+        writer.finish().unwrap();
+        let work = dir.0.join("work");
+        assert!(Mirror::unpack(&archive, &work).is_err());
+        assert!(!dir.0.join("escaped.txt").exists());
+        assert!(!work.exists());
     }
 
     #[test]
