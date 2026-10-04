@@ -165,7 +165,6 @@ pub async fn update_as_needed(
 
     let build_file = data_dir.join(format!("sde-{variant}.build"));
     let zip_file = data_dir.join(format!("sde-{variant}.zip"));
-    let temp_zip_file = data_dir.join(format!("sde-{variant}.zip.tmp"));
 
     let index_url = format!("{sde_url_base}latest.jsonl");
     let index_contents = match http::fetch_text(client, &index_url).await {
@@ -195,12 +194,55 @@ pub async fn update_as_needed(
         current_build.as_deref().unwrap_or("none")
     );
 
-    let zip_url = format!("{sde_url_base}eve-online-static-data-{latest_build}-{variant}.zip");
-    http::download(client, &zip_url, &temp_zip_file, |_| {}).await?;
-    std::fs::rename(&temp_zip_file, &zip_file)?;
-    std::fs::write(&build_file, &latest_build)?;
+    download_build(client, data_dir, sde_url_base, variant, &latest_build).await?;
 
     Ok(true)
+}
+
+/// Checks that `text` is an SDE build number: ASCII digits only, no sign,
+/// spaces or leading zeros, and it fits a `u64` (the build numbers of CCP's
+/// SDE and of sde-deltas). Returns it as the plain text the rest of this
+/// module works with. Meant for validating user input before it ends up in
+/// a URL or a file name.
+pub fn parse_build_number(text: &str) -> Result<String, Error> {
+    let text = text.trim();
+    let valid = !text.is_empty()
+        && text.bytes().all(|byte| byte.is_ascii_digit())
+        && !text.starts_with('0')
+        && text.parse::<u64>().is_ok();
+    if valid {
+        Ok(text.to_string())
+    } else {
+        Err(Error::data(format!(
+            "`{text}` is not an SDE build number (digits only, e.g. 3569502)"
+        )))
+    }
+}
+
+/// Downloads the export of SDE build `build` (see [`parse_build_number`]) to
+/// `<data_dir>/sde-{variant}.zip` and records the build in
+/// `<data_dir>/sde-{variant}.build`, whether or not it's the latest one.
+///
+/// Like [`update_as_needed`], it downloads to a temporary file and only
+/// replaces the previous zip once the download finished, so a failure (a
+/// build CCP doesn't have, no network...) leaves what was there intact.
+#[tracing::instrument]
+pub async fn download_build(
+    client: &Client,
+    data_dir: &Path,
+    sde_url_base: &str,
+    variant: &str,
+    build: &str,
+) -> Result<(), Error> {
+    parse_build_number(build)?;
+    std::fs::create_dir_all(data_dir)?;
+    let zip_file = data_dir.join(format!("sde-{variant}.zip"));
+    let temp_zip_file = data_dir.join(format!("sde-{variant}.zip.tmp"));
+    let zip_url = format!("{sde_url_base}eve-online-static-data-{build}-{variant}.zip");
+    http::download(client, &zip_url, &temp_zip_file, |_| {}).await?;
+    std::fs::rename(&temp_zip_file, &zip_file)?;
+    std::fs::write(data_dir.join(format!("sde-{variant}.build")), build)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -297,6 +339,73 @@ mod tests {
             std::env::temp_dir().join(format!("sde-index-test-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn parse_build_number_accepts_only_plain_build_numbers() {
+        assert_eq!(parse_build_number("3569502").unwrap(), "3569502");
+        assert_eq!(parse_build_number("  42\n").unwrap(), "42");
+        for text in [
+            "",
+            "0",
+            "0123",
+            "-5",
+            "+5",
+            "12 34",
+            "1e5",
+            "../1",
+            "1/2",
+            "latest",
+            "18446744073709551616",
+        ] {
+            assert!(parse_build_number(text).is_err(), "{text:?} was accepted");
+        }
+    }
+
+    #[tokio::test]
+    async fn download_build_gets_the_requested_build_and_keeps_the_zip_on_failure() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::path(
+            "/eve-online-static-data-77-jsonl.zip",
+        ))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(b"build 77".to_vec()))
+        .mount(&server)
+        .await;
+        let client = http::build_client().unwrap();
+        let data_dir = temp_data_dir("download_build");
+        let base_url = format!("{}/", server.uri());
+
+        download_build(&client, &data_dir, &base_url, "jsonl", "77")
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(data_dir.join("sde-jsonl.zip")).unwrap(),
+            b"build 77"
+        );
+        assert_eq!(
+            std::fs::read_to_string(data_dir.join("sde-jsonl.build")).unwrap(),
+            "77"
+        );
+
+        // A build CCP doesn't have (404), or a name that isn't a build.
+        assert!(
+            download_build(&client, &data_dir, &base_url, "jsonl", "78")
+                .await
+                .is_err()
+        );
+        assert!(
+            download_build(&client, &data_dir, &base_url, "jsonl", "../x")
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(data_dir.join("sde-jsonl.zip")).unwrap(),
+            b"build 77"
+        );
+        assert_eq!(
+            std::fs::read_to_string(data_dir.join("sde-jsonl.build")).unwrap(),
+            "77"
+        );
     }
 
     #[tokio::test]

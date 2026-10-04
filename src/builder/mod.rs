@@ -13,6 +13,7 @@ pub mod http;
 pub mod manifest;
 pub mod mirror;
 pub mod parser;
+pub mod pipeline;
 pub mod schema;
 pub mod sde_index;
 pub mod update;
