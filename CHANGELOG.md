@@ -9,6 +9,32 @@ each tag; the **[Unreleased]** section covers commits that exist on the current 
 the `test` branch (origin/test) on top of the latest tag and that don't yet have a
 version bump in `Cargo.toml`.
 
+## [0.6.0] — 2026-10-03
+
+### Added
+
+- Delta updates from [sde-deltas](https://github.com/rafaga/sde-deltas):
+  - `builder::usage`: `Parser::parse_data` records which fields of each SDE table it
+    reads (`FieldUsage`, exposed by `Parser::field_usage`).
+  - `builder::mirror`: `Mirror`, a projected copy of the SDE holding only those fields,
+    that sde-deltas' deltas are applied to. Changes outside the read fields are dropped,
+    schema changes to read fields raise a `SchemaAlarm`, and inconsistencies are
+    reported as drift.
+  - `builder::deltas`: client for sde-deltas' `index.json`, manifests and gzipped
+    deltas (with SHA-256 check).
+  - `builder::update`: `prepare` brings the mirror up to date and returns an
+    `UpdatePlan` (`UpToDate`, `Bump`, `Rebuild` from the mirror, or `Full` with a
+    `FullReason`); `set_sde_build` and `create_mirror` complete it.
+  - `sde_index::fetch_latest` / `fetch_changes_meta`, and `http::fetch_bytes`.
+- `sde-builder build` uses delta updates by default, with `--full`, `--sde-build`,
+  `--keep-source` and `--ignore-delta-lag`. It now builds into a temporary file and
+  replaces the database only once the build succeeded.
+- `Parser::config`.
+
+### Changed
+
+- **Breaking:** `BuildUrls` has a new field, `deltas_url`.
+
 ## [0.5.0] — 2026-09-24
 
 ### Added

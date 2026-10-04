@@ -7,7 +7,7 @@ repository = "https://github.com/rafaga/sde/"
 keywords = ["sde", "eve-online"]
 categories = ["games", "value-formatting"]
 exclude = ["tests/",".github/",".gitignore"]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "MIT"
 
@@ -52,6 +52,7 @@ builder = [
     "dep:tokio",
     "dep:futures",
     "dep:zip",
+    "dep:flate2",
     "dep:roxmltree",
     "dep:serde",
     "dep:serde_json",
@@ -82,6 +83,7 @@ reqwest = { version = "0.13.4", default-features = false, features = ["rustls", 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"], optional = true }
 futures = { version = "0.3", optional = true }
 zip = { version = "8.6", default-features = false, features = ["deflate"], optional = true }
+flate2 = { version = "1.1", optional = true }
 roxmltree = { version = "0.21", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }

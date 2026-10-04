@@ -5,8 +5,9 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use sde::builder::BuildUrls;
 use sde::builder::parser::{ParserConfig, Position2DMode, ProjectedAxis};
+use sde::builder::update::{self, FullReason, UpdateOptions, UpdatePlan};
 use sde::builder::{extract, http, parser, schema, sde_index};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(
@@ -21,12 +22,35 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Check for a new SDE build and rebuild the database if one is
+    /// Check for a new SDE build and update the database if one is
     /// available (or if the database doesn't exist yet).
+    ///
+    /// Uses sde-deltas when it can: the local mirror of the SDE (`sde/`,
+    /// left by the previous build) is brought up to date with a few KB of
+    /// deltas, and the database is only rebuilt -- from the mirror, without
+    /// downloading CCP's export -- if something it holds changed. Falls
+    /// back to CCP's full export otherwise.
     Build {
-        /// Rebuild even if the local database is already up to date.
+        /// Rebuild from CCP's full export even if the local database is
+        /// already up to date.
         #[arg(long)]
         force: bool,
+        /// Skip sde-deltas: always rebuild from CCP's full export.
+        #[arg(long)]
+        full: bool,
+        /// Build from this SDE build's full export instead of the latest
+        /// (implies `--full`).
+        #[arg(long)]
+        sde_build: Option<String>,
+        /// After a full build, keep CCP's export (`sde/` and the zip in
+        /// `data/`) as is instead of reducing `sde/` to the mirror delta
+        /// updates need. The next update is then a full build again.
+        #[arg(long)]
+        keep_source: bool,
+        /// Use sde-deltas however far behind CCP it is, instead of falling
+        /// back to a full build when it lags for more than two days.
+        #[arg(long)]
+        ignore_delta_lag: bool,
         /// Suppress the progress output the parser prints by
         /// default.
         #[arg(short, long)]
@@ -110,6 +134,10 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let Command::Build {
         force,
+        full,
+        sde_build,
+        keep_source,
+        ignore_delta_lag,
         quiet,
         output,
         with_third_party,
@@ -119,32 +147,6 @@ async fn main() -> anyhow::Result<()> {
     let data_dir = PathBuf::from("data");
     let sde_dir = PathBuf::from("sde");
     let urls = BuildUrls::default();
-
-    let changed = sde_index::update_as_needed(&client, &data_dir, &urls.sde_url, &urls.sde_variant)
-        .await
-        .context("checking for a new SDE build")?;
-
-    if !force && !changed && output.exists() {
-        println!(
-            "sde: {} is already up to date, nothing to do",
-            output.display()
-        );
-        return Ok(());
-    }
-
-    if output.exists() {
-        std::fs::remove_file(&output).context("removing the previous database")?;
-        println!(
-            "sde: removing the previous {}, a new SDE build is available",
-            output.display()
-        );
-    }
-
-    let zip_path = data_dir.join(format!("sde-{}.zip", urls.sde_variant));
-    extract::prepare_sde_directory(&zip_path, &sde_dir).context("decompressing the SDE zip")?;
-
-    let mut connection = rusqlite::Connection::open(&output).context("creating the database")?;
-    schema::create_schema(&connection).context("creating the schema")?;
 
     // Local projection instead of CCP's precomputed `position2D`:
     // that value is a hand-adjusted schematic of the in-game map, not
@@ -166,28 +168,127 @@ async fn main() -> anyhow::Result<()> {
         verbose: !quiet,
         with_third_party,
     };
+
+    let full = full || force || sde_build.is_some();
+    let mut reason = None;
+    if !full {
+        let plan = update::prepare(
+            &client,
+            &urls,
+            &output,
+            &sde_dir,
+            &parser_config,
+            UpdateOptions {
+                max_delta_lag_seconds: if ignore_delta_lag {
+                    None
+                } else {
+                    UpdateOptions::default().max_delta_lag_seconds
+                },
+            },
+            |progress| {
+                if progress.done < progress.total {
+                    println!(
+                        "sde: applying delta {}/{} (build {})",
+                        progress.done + 1,
+                        progress.total,
+                        progress.build
+                    );
+                }
+            },
+        )
+        .await;
+        match plan {
+            UpdatePlan::UpToDate { build } => {
+                println!(
+                    "sde: {} is already up to date (build {build}), nothing to do",
+                    output.display()
+                );
+                return Ok(());
+            }
+            UpdatePlan::Bump { from, to } => {
+                update::set_sde_build(&output, &to).context("recording the new build")?;
+                println!(
+                    "sde: build {from} -> {to} changes nothing {} holds, only its build was updated",
+                    output.display()
+                );
+                return Ok(());
+            }
+            UpdatePlan::Rebuild {
+                from,
+                to,
+                mirror_dir,
+            } => {
+                println!(
+                    "sde: rebuilding {} from the local mirror ({} -> {to})",
+                    output.display(),
+                    from.as_deref().unwrap_or("none")
+                );
+                let sde_parser = parser::Parser::new(&mirror_dir, parser_config);
+                build_into(&output, &sde_parser, &client, &urls, Some(&to)).await?;
+                println!("sde: build complete -> {}", output.display());
+                return Ok(());
+            }
+            UpdatePlan::Full { reason: why } => {
+                println!("sde: full build from CCP's export: {why}");
+                reason = Some(why);
+            }
+        }
+    }
+
+    let zip_path = data_dir.join(format!("sde-{}.zip", urls.sde_variant));
+    let build_file = data_dir.join(format!("sde-{}.build", urls.sde_variant));
+    let changed = match &sde_build {
+        Some(build) => {
+            let url = format!(
+                "{}eve-online-static-data-{build}-{}.zip",
+                urls.sde_url, urls.sde_variant
+            );
+            println!("sde: downloading {url}");
+            http::download(&client, &url, &zip_path, |_| {})
+                .await
+                .context("downloading the requested SDE build")?;
+            std::fs::write(&build_file, build).context("recording the downloaded build")?;
+            true
+        }
+        None => sde_index::update_as_needed(&client, &data_dir, &urls.sde_url, &urls.sde_variant)
+            .await
+            .context("checking for a new SDE build")?,
+    };
+
+    // With a usable mirror but sde-deltas out of reach, a database already
+    // at CCP's latest build doesn't need the full rebuild.
+    let deltas_only_unreachable = matches!(
+        reason,
+        Some(FullReason::Unavailable(_) | FullReason::Lagging { .. })
+    );
+    if !force && !changed && output.exists() && deltas_only_unreachable {
+        println!(
+            "sde: {} is already up to date, nothing to do",
+            output.display()
+        );
+        return Ok(());
+    }
+
+    extract::prepare_sde_directory(&zip_path, &sde_dir).context("decompressing the SDE zip")?;
+
     let sde_parser = parser::Parser::new(&sde_dir, parser_config);
     // Read back the build number update_as_needed() just wrote (or
-    // confirmed unchanged) to sde-{urls.sde_variant}.build, purely to
-    // record it in sdeFingerprint -- build_database() doesn't otherwise
-    // need it. `Ok` and not `.context(...)`-wrapped into an early
-    // return: a database with no recorded build number
-    // (sdeFingerprint.sdeBuild = NULL) is still valid, so a read
-    // failure here shouldn't abort the whole build.
-    let build_number =
-        std::fs::read_to_string(data_dir.join(format!("sde-{}.build", urls.sde_variant)))
-            .ok()
-            .map(|s| s.trim().to_string());
-    let _summary = sde_parser
-        .build_database(
-            &mut connection,
-            &client,
-            &urls.maps_url,
-            build_number.as_deref(),
-        )
-        .await
-        .context("building the database")?;
-    println!("sde: Parse complete");
+    // confirmed unchanged) to sde-{urls.sde_variant}.build, to record it in
+    // sdeFingerprint and the mirror. `Ok` and not `.context(...)`-wrapped
+    // into an early return: a database with no recorded build number
+    // (sdeFingerprint.sdeBuild = NULL) is still valid, so a read failure
+    // here shouldn't abort the whole build.
+    let build_number = std::fs::read_to_string(&build_file)
+        .ok()
+        .map(|s| s.trim().to_string());
+    build_into(
+        &output,
+        &sde_parser,
+        &client,
+        &urls,
+        build_number.as_deref(),
+    )
+    .await?;
 
     let third_party_note = if with_third_party {
         " (with community-maintained third-party data)"
@@ -198,5 +299,42 @@ async fn main() -> anyhow::Result<()> {
         "sde: build complete{third_party_note} -> {}",
         output.display()
     );
+
+    if !keep_source && let Some(build) = &build_number {
+        update::create_mirror(&sde_dir, &sde_parser, build)
+            .context("reducing the SDE to the mirror for delta updates")?;
+        std::fs::remove_file(&zip_path).context("removing the SDE zip")?;
+        println!(
+            "sde: kept a mirror of the SDE in {} for delta updates",
+            sde_dir.display()
+        );
+    }
+    Ok(())
+}
+
+/// Builds the database with `sde_parser` next to `output` and moves it over
+/// `output` only once complete: a failed build keeps the previous one.
+async fn build_into(
+    output: &Path,
+    sde_parser: &parser::Parser,
+    client: &reqwest::Client,
+    urls: &BuildUrls,
+    build: Option<&str>,
+) -> anyhow::Result<()> {
+    let building = output.with_extension("building");
+    if building.exists() {
+        std::fs::remove_file(&building).context("removing a previous unfinished build")?;
+    }
+    {
+        let mut connection =
+            rusqlite::Connection::open(&building).context("creating the database")?;
+        schema::create_schema(&connection).context("creating the schema")?;
+        sde_parser
+            .build_database(&mut connection, client, &urls.maps_url, build)
+            .await
+            .context("building the database")?;
+    }
+    println!("sde: Parse complete");
+    std::fs::rename(&building, output).context("replacing the previous database")?;
     Ok(())
 }

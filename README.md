@@ -71,6 +71,28 @@ the database is written (`sde.db` by default). See
 `cargo run --bin sde-builder --features builder -- build --help` for
 the full list.
 
+### Delta updates
+
+After a full build, `sde/` is reduced to a *mirror*: only the tables
+and fields the parser actually read, recorded while it built the
+database (about 105 MB instead of CCP's ~560 MB export, and the zip is
+removed). Later runs bring the mirror up to date with the build-to-build
+deltas published by [sde-deltas](https://github.com/rafaga/sde-deltas),
+usually a few KB per build, and then:
+
+- if no change touches a field the parser reads, only the build recorded
+  in the database's fingerprint moves -- no rebuild;
+- otherwise the database is rebuilt from the mirror, without
+  downloading CCP's export;
+- if the deltas can't be used (no mirror yet, a build they don't cover,
+  a schema change in a field the parser reads, an inconsistency, or
+  sde-deltas lagging more than two days behind CCP), it falls back to a
+  full build, which creates a new mirror.
+
+`--full` skips the deltas, `--keep-source` keeps CCP's export instead of
+reducing it, and `--sde-build <build>` builds a specific SDE build. The
+same flow is available to library consumers in `builder::update`.
+
 ## Architecture
 
 The crate has two parts. The core is a small, read-only API for

@@ -7,12 +7,16 @@
 //! feature and calls into this module's functions.
 
 pub mod community;
+pub mod deltas;
 pub mod extract;
 pub mod http;
 pub mod manifest;
+pub mod mirror;
 pub mod parser;
 pub mod schema;
 pub mod sde_index;
+pub mod update;
+pub mod usage;
 
 // `schema` (STRICT DDL): see builder::schema::create_schema().
 // `parser` (data writing): see builder::parser's docstring for the
@@ -34,9 +38,10 @@ pub mod sde_index;
 
 /// Default network endpoints for a full build: CCP's own SDE export
 /// (`sde_url`/`sde_variant`, consumed by
-/// [`sde_index::update_as_needed`]) and the third-party map data used
+/// [`sde_index::update_as_needed`]), the third-party map data used
 /// when `ParserConfig.with_third_party` is set (`maps_url`, consumed
-/// by [`parser::Parser::build_database`]).
+/// by [`parser::Parser::build_database`]), and sde-deltas' build-to-build
+/// deltas (`deltas_url`, consumed by [`update::prepare`]).
 ///
 /// A plain struct with a [`Default`] impl rather than free-standing
 /// constants, so any caller assembling a build pipeline around this
@@ -55,6 +60,8 @@ pub struct BuildUrls {
     pub sde_variant: String,
     pub sde_url: String,
     pub maps_url: String,
+    /// Base URL of sde-deltas' `deltas/` directory (ending in `/`).
+    pub deltas_url: String,
 }
 
 impl Default for BuildUrls {
@@ -63,6 +70,8 @@ impl Default for BuildUrls {
             sde_variant: "jsonl".to_string(),
             sde_url: "https://developers.eveonline.com/static-data/tranquility/".to_string(),
             maps_url: "http://evemaps.dotlan.net/svg/".to_string(),
+            deltas_url: "https://raw.githubusercontent.com/rafaga/sde-deltas/main/deltas/"
+                .to_string(),
         }
     }
 }
