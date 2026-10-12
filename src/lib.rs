@@ -28,6 +28,10 @@ pub use error::Error;
 /// Module that has Data object abstractions to fill with the database data.
 pub mod objects;
 
+/// Route planning over the stargate network: nodes are gates, so the
+/// distance flown inside each system is part of the cost.
+pub mod gate_graph;
+
 /// Logic to (re)generate `sde.db` (feature `builder`, disabled by
 /// default). See `src/builder/mod.rs` for the detail.
 #[cfg(feature = "builder")]

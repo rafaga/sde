@@ -54,6 +54,23 @@ let regions = sde.get_region_coordinates()?;
 let connections = sde.get_connections()?; // RTree<SdeSegment>, for spatial queries
 ```
 
+Find a route, choosing what to save: the fewest jumps, the shortest flight inside
+systems, or a balance of both:
+
+```rust
+use sde::gate_graph::{Endpoint, GateGraph, METERS_PER_AU, Priority};
+
+let graph = GateGraph::load(&sde)?;
+let (jita, amarr) = (Endpoint::System(30000142), Endpoint::System(30002187));
+let fewest = graph.route(jita, amarr, &Priority::FewestJumps)?;
+let shortest = graph.route(jita, amarr, &Priority::ShortestFlight)?;
+// One jump is worth 10 AU of flight.
+let route = graph.route(jita, amarr, &Priority::balanced(10.0 * METERS_PER_AU, 0.0))?;
+if let Some(route) = route {
+    println!("{} jumps, {:.0} AU", route.jumps, route.distance / METERS_PER_AU);
+}
+```
+
 ## Building `sde.db`
 
 With the `builder` feature enabled, the `sde-builder` binary has two

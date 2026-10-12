@@ -9,6 +9,23 @@ each tag; the **[Unreleased]** section covers commits that exist on the current 
 the `test` branch (origin/test) on top of the latest tag and that don't yet have a
 version bump in `Cargo.toml`.
 
+## [0.7.2] — Unreleased
+
+### Added
+
+- `gate_graph`: route planning over the stargate network. `GateGraph` has the stargates
+  as nodes, so the distance flown inside each system (between the gate you arrive through
+  and the gate you leave by) is part of the cost. `GateGraph::load` builds it from
+  `mapSystemGates` (about 13 ms for the whole universe) and `GateGraph::route` finds the
+  best route between two `Endpoint`s (a gate, a solar system, or a point inside a
+  system) with Dijkstra's algorithm. The caller chooses what to save with a `Priority`:
+  `FewestJumps` (ties broken by the shortest flight), `ShortestFlight` (ties broken by the
+  fewest jumps) or `Balanced(RouteCost)`, where `RouteCost::jump_cost` is the distance that
+  one jump is worth and `RouteCost::leg_cost` an optional fixed cost per flight. `Route`
+  returns the gates together with the jumps, legs, distance and cost. Distances are in the SDE's
+  own units (meters), unaffected by `SdeManager::factor`. Nothing is added to the
+  database.
+
 ## [0.7.0] — Unreleased
 
 ### Added
