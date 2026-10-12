@@ -50,6 +50,13 @@ pub(crate) enum ErrorKind {
     /// can't read any SDE data from a file that isn't a valid SQLite database.    
     InvalidDatabase(std::path::PathBuf),
 
+    /// A route query could not be answered because its input was not
+    /// valid: an endpoint (gate or solar system) that is not in the
+    /// graph, or a cost with a negative or non-finite number. A route
+    /// that simply does not exist is not an error (the query returns
+    /// `None`).
+    Route(String),
+
     /// I/O error (reading/writing a file on disk).
     #[cfg(feature = "builder")]
     Io(std::io::Error),
@@ -91,6 +98,12 @@ impl Error {
         Error(ErrorKind::InvalidDatabase(path))
     }
 
+    /// Builds an [`ErrorKind::Route`] error: the input of a route query
+    /// was not valid.
+    pub(crate) fn route(message: impl Into<String>) -> Self {
+        Error(ErrorKind::Route(message.into()))
+    }
+
     /// Builds an [`ErrorKind::Data`] error: an SDE record that read and
     /// parsed fine but doesn't have the shape a parser needs (a
     /// required field is missing, or is of the wrong type).
@@ -126,6 +139,7 @@ impl fmt::Display for Error {
                 write!(f, "invalid SQLite database: {}", path.display())
             }
             ErrorKind::Sqlite(err) => write!(f, "SQLite error: {err}"),
+            ErrorKind::Route(message) => write!(f, "invalid route query: {message}"),
             #[cfg(feature = "builder")]
             ErrorKind::Io(err) => write!(f, "I/O error: {err}"),
             #[cfg(feature = "builder")]
@@ -147,7 +161,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.0 {
-            ErrorKind::InvalidDatabase(_) => None,
+            ErrorKind::InvalidDatabase(_) | ErrorKind::Route(_) => None,
             ErrorKind::Sqlite(err) => Some(err),
             #[cfg(feature = "builder")]
             ErrorKind::Io(err) => Some(err),
