@@ -340,7 +340,7 @@ impl Mirror {
     pub fn unpack(archive: &Path, dir: &Path) -> Result<Mirror, Error> {
         let mut zip = zip::ZipArchive::new(std::io::BufReader::new(std::fs::File::open(archive)?))?;
         for index in 0..zip.len() {
-            let name = zip.by_index(index)?.name().to_string();
+            let name = zip.by_index(index)?.name()?.to_string();
             if !is_plain_file_name(&name) {
                 return Err(Error::data(format!(
                     "{archive:?} holds an entry with a path (`{name}`), a mirror is a flat list of files"
@@ -354,7 +354,8 @@ impl Mirror {
             if entry.is_dir() {
                 continue;
             }
-            let mut file = std::fs::File::create(dir.join(entry.name()))?;
+            let name = entry.name()?;
+            let mut file = std::fs::File::create(dir.join(&*name))?;
             std::io::copy(&mut entry, &mut file)?;
         }
         Mirror::open(dir)
