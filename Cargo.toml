@@ -7,7 +7,7 @@ repository = "https://github.com/rafaga/sde/"
 keywords = ["sde", "eve-online"]
 categories = ["games", "value-formatting"]
 exclude = ["tests/",".github/",".gitignore"]
-version = "0.7.3"
+version = "0.7.4"
 edition = "2024"
 license = "MIT"
 
@@ -74,7 +74,7 @@ profile = ["dep:tracing-tracy"]
 [dependencies]
 kdtree = "0.8"
 rstar = "0.13"
-rusqlite = { version = "0.40", features = ["bundled", "backup", "blob", "array"] }
+rusqlite = { version = "0.41", features = ["bundled", "backup", "blob", "array"] }
 sha2 = "0.11.0"
 tracing = "0.1"
 
