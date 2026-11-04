@@ -1025,6 +1025,64 @@ mod tests {
         }
     }
 
+    /// The real SDE export the ignored projection test reads.
+    struct RealExport {
+        dir: PathBuf,
+        /// The scratch directory of a download, removed on drop; `None` when
+        /// the export came from `SDE_FULL_DIR` and must be left alone.
+        _download: Option<TempDir>,
+    }
+
+    impl RealExport {
+        /// The extracted export in `SDE_FULL_DIR` when it is set. Otherwise
+        /// CCP's latest build, downloaded and unpacked in a scratch directory.
+        ///
+        /// A download keeps CCP's zip in `SDE_DATA_DIR` when that is set, so
+        /// the next run downloads again only if CCP has a newer build;
+        /// without it the zip lives in the scratch directory too.
+        fn obtain() -> Self {
+            if let Some(dir) = std::env::var_os("SDE_FULL_DIR") {
+                return Self {
+                    dir: PathBuf::from(dir),
+                    _download: None,
+                };
+            }
+
+            let urls = crate::builder::BuildUrls::default();
+            let scratch = TempDir::new("real_export", &[]);
+            let data_dir = std::env::var_os("SDE_DATA_DIR")
+                .map_or_else(|| scratch.0.join("data"), PathBuf::from);
+            let export_dir = scratch.0.join("export");
+
+            let client = crate::builder::http::build_client().expect("cannot build the client");
+            let runtime = tokio::runtime::Runtime::new().expect("cannot start the runtime");
+            // Not an error when CCP can't be reached: an earlier zip in
+            // `data_dir` is used as it is, so the zip is checked below.
+            runtime
+                .block_on(crate::builder::sde_index::update_as_needed(
+                    &client,
+                    &data_dir,
+                    &urls.sde_url,
+                    &urls.sde_variant,
+                ))
+                .expect("cannot download the SDE");
+            let zip = data_dir.join(format!("sde-{}.zip", urls.sde_variant));
+            assert!(
+                zip.exists(),
+                "no SDE export: set SDE_FULL_DIR to an extracted one, or let the test \
+                 download it (it could not reach {})",
+                urls.sde_url
+            );
+            crate::builder::extract::prepare_sde_directory(&zip, &export_dir)
+                .expect("cannot unpack the SDE");
+
+            Self {
+                dir: export_dir,
+                _download: Some(scratch),
+            }
+        }
+    }
+
     fn usage(entries: &[(&str, &str)]) -> FieldUsage {
         let mut usage = FieldUsage::default();
         for (table, path) in entries {
@@ -1494,12 +1552,18 @@ mod tests {
     /// Builds `sde.db` from a full, extracted SDE export and again from its
     /// mirror, and checks both are the same. Copies the tables the parser
     /// reads to a temporary directory first (the mirror is created in
-    /// place). Run with
-    /// `SDE_FULL_DIR=<extracted export> cargo test --features builder -- --ignored projection`.
+    /// place).
+    ///
+    /// Ignored because it reaches CCP's servers (about 100 MB) and takes
+    /// minutes. Run with `cargo test --features builder -- --ignored projection`:
+    /// it downloads CCP's latest build (`SDE_DATA_DIR` keeps the zip between
+    /// runs), or reads an extracted export when `SDE_FULL_DIR` is set. CI runs
+    /// it weekly in `real-sde.yml`, apart from the pull request checks.
     #[test]
-    #[ignore = "needs a full SDE export in SDE_FULL_DIR"]
+    #[ignore = "needs the real SDE: SDE_FULL_DIR, or a download from CCP"]
     fn projection_builds_the_same_database_as_the_full_export() {
-        let source = PathBuf::from(std::env::var("SDE_FULL_DIR").expect("SDE_FULL_DIR"));
+        let export = RealExport::obtain();
+        let source = export.dir.clone();
         let work = TempDir::new("real", &[]);
         let full_db = work.0.join("full.db");
         let parser = build_db(&full_db, &source);

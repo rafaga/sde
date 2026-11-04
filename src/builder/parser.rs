@@ -3499,6 +3499,91 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn parse_solar_systems_requires_a_security_status() {
+        let dir = TempSdeDir::new(
+            "solar_systems_missing_security",
+            &[(
+                "mapSolarSystems.jsonl",
+                "{\"_key\": 1, \"name\": {\"en\": \"Test\"}, \"constellationID\": 20000020, \
+                 \"radius\": 1.0, \"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}}\n",
+            )],
+        );
+        let connection = Connection::open_in_memory().unwrap();
+        crate::builder::schema::create_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapRegions \
+                 (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
+                 VALUES (10000002, 'The Forge', NULL, 0, 0, 0, 5, NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mapConstellations \
+                 (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
+                 VALUES (20000020, 'Kimotoro', 10000002, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        let parser = Parser::new(&dir.path, ParserConfig::default());
+        let mut scope = SystemScopeState::default();
+
+        let error = parser
+            .parse_solar_systems(&connection, &mut scope)
+            .unwrap_err();
+        assert!(error.to_string().contains("securityStatus"), "{error}");
+
+        let stored: i64 = connection
+            .query_row("SELECT COUNT(*) FROM mapSolarSystems", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(stored, 0);
+    }
+
+    #[test]
+    fn parse_solar_systems_security_must_stay_within_the_schema_range() {
+        // One run of the parser per value, each over its own database.
+        let attempt = |name: &str, security: f64| {
+            let line = format!(
+                "{{\"_key\": 1, \"name\": {{\"en\": \"Test\"}}, \"constellationID\": 20000020, \
+                 \"radius\": 1.0, \"position\": {{\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}}, \
+                 \"securityStatus\": {security:?}}}\n"
+            );
+            let dir = TempSdeDir::new(name, &[("mapSolarSystems.jsonl", line.as_str())]);
+            let connection = Connection::open_in_memory().unwrap();
+            crate::builder::schema::create_schema(&connection).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO mapRegions \
+                     (regionId, regionName, factionId, centerX, centerY, centerZ, nebula, wormholeClassId) \
+                     VALUES (10000002, 'The Forge', NULL, 0, 0, 0, 5, NULL)",
+                    [],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO mapConstellations \
+                     (constellationId, constellationName, regionId, centerX, centerY, centerZ) \
+                     VALUES (20000020, 'Kimotoro', 10000002, 0, 0, 0)",
+                    [],
+                )
+                .unwrap();
+            let parser = Parser::new(&dir.path, ParserConfig::default());
+            let mut scope = SystemScopeState::default();
+            parser
+                .parse_solar_systems(&connection, &mut scope)
+                .map(|_| ())
+        };
+
+        // The limits of the range are valid (-1.0 is the lowest a system gets).
+        assert!(attempt("security_lowest", -1.0).is_ok());
+        assert!(attempt("security_highest", 1.0).is_ok());
+        // Past them the schema's CHECK refuses the row, and the parser fails.
+        assert!(attempt("security_below", -1.0001).is_err());
+        assert!(attempt("security_above", 1.0001).is_err());
+    }
+
     /// FK prerequisites shared by `parse_stargates`'s tests: two solar
     /// systems (30000001, 30000002) in the same constellation, and the
     /// item type (16, "Stargate") referenced by `mapSystemGates.typeId`.

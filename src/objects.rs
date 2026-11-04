@@ -565,6 +565,10 @@ pub struct SolarSystem {
     pub region: u32,
     /// Constellation identifier
     pub constellation: u32,
+    /// True security status (`mapSolarSystems.security`, -1.0 to 1.0), as
+    /// read by [`SdeManager::get_universe`](crate::SdeManager::get_universe);
+    /// `0.0` in a system that wasn't read from the database.
+    pub security: f64,
     /// Planet vector with Identifer numbers in their respective cardinal order
     pub planets: Vec<u32>,
     /// Vector with Solar system identifiers where this Solar system has connections via Stargates
@@ -601,6 +605,7 @@ impl SolarSystem {
             name: String::new(),
             region: 0,
             constellation: 0,
+            security: 0.0,
             planets: Vec::new(),
             connections: Vec::new(),
             real_coords: SdePoint::default(),
