@@ -4,10 +4,42 @@ All notable changes to the `sde` crate (rafaga/sde) are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project uses [Semantic Versioning](https://semver.org/). Published versions (tags
-`0.0.3` … `0.3.3`) were reconstructed from `git log` history and from `Cargo.toml` at
-each tag; the **[Unreleased]** section covers commits that exist on the current HEAD of
-the `test` branch (origin/test) on top of the latest tag and that don't yet have a
-version bump in `Cargo.toml`.
+`0.0.3` … `0.7.4`) were reconstructed from `git log` history and from `Cargo.toml` at
+each tag. The top section covers what is on the current branch on top of the latest tag
+(`0.7.4`) and has no version bump in `Cargo.toml` yet.
+
+## [0.7.5] — 2026-11-04
+
+### Added
+
+- `SolarSystem::security`: the true security status of the system (`mapSolarSystems.security`,
+  -1.0 to 1.0), read by `SdeManager::get_universe` with the rest of the system.
+- `SdeManager::get_system_names` and `get_type_names`: the names of solar systems and of item
+  types (`invTypes`) by id, without loading the whole universe. An empty id list means
+  everything, like the rest of the API; an id the database doesn't know is left out.
+- `SdeManager::get_system_regions`: the region of every solar system (`solarSystemId ->
+  regionId`), through the constellation of each system.
+- `SdeManager::get_category_types`: the types of the groups of a category (6 is ships) as
+  `typeId -> typeName`; with `published_only` the ones CCP has taken out of the game are
+  left out.
+
+### Changed
+
+- `SolarSystem` has a new public field, `security`, so a `SolarSystem { .. }` written out in
+  full needs it; `SolarSystem::new` starts it at `0.0`.
+
+## [0.7.4] — 2026-10-26
+
+### Changed
+
+- Dependencies: `rusqlite` 0.41, `tokio` 1.54 and `reqwest` 0.13 (the last two are only used
+  with the `builder` feature).
+
+## [0.7.3] — 2026-10-26
+
+### Fixed
+
+- Mitigation for CVE-2026-111497 and the revoked eMudhra certificate (commit `9582a95`).
 
 ## [0.7.2] — Unreleased
 

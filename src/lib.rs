@@ -88,7 +88,10 @@ impl<'a> SdeManager<'a> {
         if !path.exists() {
             return false;
         }
-        let mut file = File::open(path).unwrap();
+        let Ok(mut file) = File::open(path) else {
+            // Exists but cannot be opened (permissions, a lock, a directory on Windows).
+            return false;
+        };
         let mut buf = [0u8; 16];
         match file.read_exact(&mut buf) {
             Ok(()) => &buf == SQLITE_HEADER,
@@ -394,6 +397,93 @@ impl<'a> SdeManager<'a> {
             results.push((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?));
         }
         Ok(results)
+    }
+
+    /// The name of each solar system in `systems`, by id; an empty list
+    /// means every solar system (the convention of this API). An id the
+    /// database doesn't know is left out.
+    #[tracing::instrument(skip(self))]
+    pub fn get_system_names(&self, systems: Vec<u32>) -> Result<HashMap<u32, String>, Error> {
+        let connection = self.get_standart_connection()?;
+        let mut query = String::from("SELECT solarSystemId, solarSystemName FROM mapSolarSystems");
+        if !systems.is_empty() {
+            query += " WHERE solarSystemId IN rarray(?1)";
+        }
+        let mut statement = connection.prepare(query.as_str())?;
+        let rows = if systems.is_empty() {
+            statement.query([])?
+        } else {
+            statement.query([Self::id_array(systems)])?
+        };
+        Self::read_names(rows)
+    }
+
+    /// The region of every solar system, as `solarSystemId -> regionId`.
+    /// Much lighter than [`Self::get_universe`] when only the region of
+    /// each system matters.
+    #[tracing::instrument(skip(self))]
+    pub fn get_system_regions(&self) -> Result<HashMap<u32, u32>, Error> {
+        let connection = self.get_standart_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT mss.solarSystemId, mc.regionId FROM mapSolarSystems AS mss \
+             INNER JOIN mapConstellations AS mc ON (mss.constellationId = mc.constellationId)",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut result = HashMap::new();
+        while let Some(row) = rows.next()? {
+            result.insert(row.get(0)?, row.get(1)?);
+        }
+        Ok(result)
+    }
+
+    /// The name of each item type in `types`, by id; an empty list means
+    /// every type. An id the database doesn't know is left out.
+    #[tracing::instrument(skip(self))]
+    pub fn get_type_names(&self, types: Vec<u32>) -> Result<HashMap<u32, String>, Error> {
+        let connection = self.get_standart_connection()?;
+        let mut query = String::from("SELECT typeId, typeName FROM invTypes");
+        if !types.is_empty() {
+            query += " WHERE typeId IN rarray(?1)";
+        }
+        let mut statement = connection.prepare(query.as_str())?;
+        let rows = if types.is_empty() {
+            statement.query([])?
+        } else {
+            statement.query([Self::id_array(types)])?
+        };
+        Self::read_names(rows)
+    }
+
+    /// The item types of the groups of `category` (6 is ships), as
+    /// `typeId -> typeName`. With `published_only` the ones CCP has taken
+    /// out of the game are left out.
+    #[tracing::instrument(skip(self))]
+    pub fn get_category_types(
+        &self,
+        category: u32,
+        published_only: bool,
+    ) -> Result<HashMap<u32, String>, Error> {
+        let connection = self.get_standart_connection()?;
+        let mut query = String::from(
+            "SELECT t.typeId, t.typeName FROM invTypes AS t \
+             INNER JOIN invGroups AS g ON (g.groupId = t.groupId) \
+             WHERE g.categoryId = ?1",
+        );
+        if published_only {
+            query += " AND t.published = 1";
+        }
+        let mut statement = connection.prepare(query.as_str())?;
+        let rows = statement.query([category])?;
+        Self::read_names(rows)
+    }
+
+    /// Reads the `(id, name)` pairs a query returned.
+    fn read_names(mut rows: rusqlite::Rows<'_>) -> Result<HashMap<u32, String>, Error> {
+        let mut result = HashMap::new();
+        while let Some(row) = rows.next()? {
+            result.insert(row.get(0)?, row.get(1)?);
+        }
+        Ok(result)
     }
 
     /// The real 3D coordinates (`centerX`/`Y`/`Z`, always `NOT NULL` in
@@ -880,7 +970,7 @@ impl<'a> SdeManager<'a> {
         let mut query =
             String::from("SELECT mss.solarSystemId, mss.solarSystemName, mc.regionId, ");
         query += " mss.centerX, mss.centerY, mss.centerZ, mss.position2DX, mss.position2DY, ";
-        query += " mss.constellationId FROM mapSolarSystems AS mss ";
+        query += " mss.constellationId, mss.security FROM mapSolarSystems AS mss ";
         query +=
             " INNER JOIN mapConstellations AS mc ON(mss.constellationId = mc.constellationId)  ";
         if !constellation.is_empty() {
@@ -909,6 +999,7 @@ impl<'a> SdeManager<'a> {
         object.id = row.get(0)?;
         object.name = row.get(1)?;
         object.constellation = row.get(8)?;
+        object.security = row.get(9)?;
 
         let mut real_x = row.get::<_, f64>(3)?;
         let mut real_y = row.get::<_, f64>(4)?;

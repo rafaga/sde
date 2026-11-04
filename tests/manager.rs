@@ -65,7 +65,8 @@ impl Fixture {
                 solarSystemName TEXT NOT NULL,
                 constellationId INTEGER NOT NULL,
                 centerX REAL, centerY REAL, centerZ REAL,
-                position2DX REAL, position2DY REAL
+                position2DX REAL, position2DY REAL,
+                security REAL
             );
             CREATE TABLE mapSystemConnections (
                 systemA INTEGER NOT NULL,
@@ -88,6 +89,12 @@ impl Fixture {
                 groupId INTEGER PRIMARY KEY,
                 categoryId INTEGER NOT NULL,
                 groupName TEXT NOT NULL
+            );
+            CREATE TABLE invTypes (
+                typeId INTEGER PRIMARY KEY,
+                groupId INTEGER,
+                typeName TEXT NOT NULL,
+                published INTEGER NOT NULL
             );
             CREATE TABLE mapSolarSystemDisallowedAnchorableCategories (
                 solarSystemId INTEGER NOT NULL,
@@ -137,11 +144,11 @@ impl Fixture {
             INSERT INTO mapConstellations (constellationId, constellationName, regionId, centerX, centerY, centerZ) VALUES
                 (20000001, 'Const One', 10000001, 100.0, 200.0, 300.0),
                 (20000002, 'Const Two', 10000002, -100.0, -200.0, -300.0);
-            INSERT INTO mapSolarSystems (solarSystemId, solarSystemName, constellationId, centerX, centerY, centerZ, position2DX, position2DY) VALUES
-                (30000001, 'Sys One',   20000001,  1000.0,  2000.0,  3000.0,  1000.0,  3000.0),
-                (30000002, 'Sys Two',   20000001, -1000.0, -2000.0, -3000.0, -1000.0, -3000.0),
-                (30000003, 'Sys Three', 20000002,  5000.0,  5000.0,  5000.0,  5000.0,  5000.0),
-                (31000001, 'W-Sys',     20000002,  9000.0,  9000.0,  9000.0,  9000.0,  9000.0);
+            INSERT INTO mapSolarSystems (solarSystemId, solarSystemName, constellationId, centerX, centerY, centerZ, position2DX, position2DY, security) VALUES
+                (30000001, 'Sys One',   20000001,  1000.0,  2000.0,  3000.0,  1000.0,  3000.0,  0.9),
+                (30000002, 'Sys Two',   20000001, -1000.0, -2000.0, -3000.0, -1000.0, -3000.0,  0.45),
+                (30000003, 'Sys Three', 20000002,  5000.0,  5000.0,  5000.0,  5000.0,  5000.0, -0.7),
+                (31000001, 'W-Sys',     20000002,  9000.0,  9000.0,  9000.0,  9000.0,  9000.0, -0.99);
             INSERT INTO mapSystemConnections (systemA, systemB) VALUES
                 (30000001, 30000002),
                 (30000002, 30000003);
@@ -152,9 +159,12 @@ impl Fixture {
             INSERT INTO mapMoons (moonId, moonIndex, solarSystemId, planetId) VALUES
                 (50000001, 1, 30000001, 40000001);
             INSERT INTO invCategories (categoryId, categoryName) VALUES
-                (65, 'Structure'), (22, 'Deployable');
+                (65, 'Structure'), (22, 'Deployable'), (6, 'Ship'), (4, 'Material');
             INSERT INTO invGroups (groupId, categoryId, groupName) VALUES
-                (361, 22, 'Mobile Warp Disruptor');
+                (361, 22, 'Mobile Warp Disruptor'), (25, 6, 'Frigate'), (18, 4, 'Mineral');
+            INSERT INTO invTypes (typeId, groupId, typeName, published) VALUES
+                (587, 25, 'Rifter', 1), (584, 25, 'Merlin', 1), (999, 25, 'Retired Frigate', 0),
+                (34, 18, 'Tritanium', 1);
             INSERT INTO mapSolarSystemDisallowedAnchorableCategories (solarSystemId, categoryId) VALUES
                 (30000001, 65), (30000001, 22);
             INSERT INTO mapSolarSystemDisallowedAnchorableGroups (solarSystemId, groupId) VALUES
@@ -188,6 +198,15 @@ impl Fixture {
 
     fn manager(&self) -> SdeManager<'_> {
         SdeManager::new(&self.path, FACTOR).unwrap()
+    }
+
+    /// Runs `sql` on the fixture file, for the tests that need a row the
+    /// shared fixture doesn't have.
+    fn run_sql(&self, sql: &str) {
+        let connection = Connection::open(&self.path).expect("cannot reopen fixture database");
+        connection
+            .execute_batch(sql)
+            .expect("cannot run fixture sql");
     }
 }
 
@@ -356,6 +375,62 @@ fn region_name_filter_is_case_insensitive() {
 // -------------------------------------------------------------------------
 // get_universe
 // -------------------------------------------------------------------------
+
+#[test]
+fn system_names_come_by_id_and_an_empty_list_means_all() {
+    let fixture = Fixture::new("system_names");
+    let manager = fixture.manager();
+
+    let some = manager.get_system_names(vec![30000001, 99]).unwrap();
+    assert_eq!(some.len(), 1);
+    assert_eq!(some[&30000001], "Sys One");
+    assert_eq!(manager.get_system_names(Vec::new()).unwrap().len(), 4);
+}
+
+#[test]
+fn system_regions_map_every_system_to_its_region() {
+    let fixture = Fixture::new("system_regions");
+    let regions = fixture.manager().get_system_regions().unwrap();
+
+    assert_eq!(regions.len(), 4);
+    assert_eq!(regions[&30000002], 10000001);
+    assert_eq!(regions[&30000003], 10000002);
+}
+
+#[test]
+fn type_names_come_by_id_and_by_category() {
+    let fixture = Fixture::new("type_names");
+    let manager = fixture.manager();
+
+    let named = manager.get_type_names(vec![587, 34]).unwrap();
+    assert_eq!(named.len(), 2);
+    assert_eq!(named[&34], "Tritanium");
+
+    let ships = manager.get_category_types(6, true).unwrap();
+    assert_eq!(ships.len(), 2);
+    assert_eq!(ships[&587], "Rifter");
+    assert!(!ships.contains_key(&999));
+    assert_eq!(manager.get_category_types(6, false).unwrap().len(), 3);
+}
+
+#[test]
+fn universe_systems_carry_name_region_and_security() {
+    let fixture = Fixture::new("universe_security");
+    let mut manager = fixture.manager();
+    manager.get_universe().unwrap();
+
+    let sys_two = &manager.universe.solar_systems[&30000002];
+    assert_eq!(sys_two.name, "Sys Two");
+    assert_eq!(sys_two.region, 10000001);
+    assert!((sys_two.security - 0.45).abs() < f64::EPSILON);
+    assert_eq!(
+        manager.universe.regions[&sys_two.region].name,
+        "Region Alpha"
+    );
+
+    let sys_three = &manager.universe.solar_systems[&30000003];
+    assert!((sys_three.security + 0.7).abs() < f64::EPSILON);
+}
 
 #[test]
 fn universe_with_empty_filters_returns_everything() {
@@ -815,4 +890,124 @@ fn fingerprint_detects_a_hand_edited_row() {
     assert!(result.is_some());
     let (_, matches) = result.unwrap();
     assert!(!matches);
+}
+
+// -------------------------------------------------------------------------
+// A system without a 2D position
+// -------------------------------------------------------------------------
+
+#[test]
+fn a_system_without_a_2d_position_is_in_the_universe_but_not_on_the_map() {
+    let fixture = Fixture::new("no_position_2d");
+    fixture.run_sql(
+        "INSERT INTO mapSolarSystems (solarSystemId, solarSystemName, constellationId, centerX, centerY, centerZ, position2DX, position2DY, security) VALUES
+            (30000004, 'Sys Four', 20000001, 700.0, 800.0, 900.0, NULL, NULL, 0.1);
+         INSERT INTO mapSystemConnections (systemA, systemB) VALUES (30000003, 30000004);",
+    );
+    let mut manager = fixture.manager();
+
+    // The map leaves it out, but keeps the system it is connected to.
+    let points = manager.get_systems().unwrap();
+    assert!(!points.contains_key(&30000004usize));
+    assert!(points.contains_key(&30000003usize));
+
+    // The universe keeps it, with the 2D projection at the origin.
+    manager.get_universe().unwrap();
+    let system = &manager.universe.solar_systems[&30000004];
+    assert_eq!(system.name, "Sys Four");
+    assert!((system.security - 0.1).abs() < f64::EPSILON);
+    assert_eq!(system.projected_coords.coords, [0.0, 0.0, 0.0]);
+}
+
+// -------------------------------------------------------------------------
+// SdeManager::new
+// -------------------------------------------------------------------------
+
+/// A path in the temp directory that is cleaned up on drop, whether a test
+/// leaves a file or a directory at it.
+struct ScratchPath {
+    path: PathBuf,
+}
+
+impl ScratchPath {
+    fn new(test_name: &str) -> Self {
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!(
+            "sde_scratch_{}_{}_{}",
+            test_name,
+            std::process::id(),
+            id
+        ));
+        Self { path }
+    }
+
+    fn write_file(&self, contents: &[u8]) {
+        std::fs::write(&self.path, contents).expect("cannot write scratch file");
+    }
+
+    fn create_directory(&self) {
+        std::fs::create_dir_all(&self.path).expect("cannot create scratch directory");
+    }
+
+    /// The message of the error `SdeManager::new` gives for this path.
+    fn rejection(&self) -> String {
+        match SdeManager::new(&self.path, FACTOR) {
+            Ok(_) => panic!("{:?} should not be accepted as a database", self.path),
+            Err(error) => error.to_string(),
+        }
+    }
+}
+
+impl Drop for ScratchPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+#[test]
+fn new_rejects_a_path_that_does_not_exist() {
+    let scratch = ScratchPath::new("missing");
+    let message = scratch.rejection();
+    assert!(message.starts_with("invalid SQLite database"), "{message}");
+    assert!(message.contains("sde_scratch_missing"), "{message}");
+}
+
+#[test]
+fn new_rejects_an_empty_file() {
+    let scratch = ScratchPath::new("empty");
+    scratch.write_file(b"");
+    assert!(scratch.rejection().starts_with("invalid SQLite database"));
+}
+
+#[test]
+fn new_rejects_a_file_shorter_than_the_sqlite_header() {
+    let scratch = ScratchPath::new("short");
+    scratch.write_file(b"SQLite format");
+    assert!(scratch.rejection().starts_with("invalid SQLite database"));
+}
+
+#[test]
+fn new_rejects_a_file_that_is_not_sqlite() {
+    let scratch = ScratchPath::new("text");
+    scratch.write_file(b"this is plain text, long enough to hold a whole header");
+    assert!(scratch.rejection().starts_with("invalid SQLite database"));
+}
+
+#[test]
+fn new_rejects_a_directory_instead_of_panicking() {
+    // On Windows a directory exists but cannot be opened as a file: that used
+    // to be an `unwrap` on the open.
+    let scratch = ScratchPath::new("directory");
+    scratch.create_directory();
+    assert!(scratch.rejection().starts_with("invalid SQLite database"));
+}
+
+#[test]
+fn new_accepts_a_sqlite_file_and_starts_with_the_given_factor() {
+    let fixture = Fixture::new("new_accepts");
+    let manager = fixture.manager();
+    assert_eq!(manager.path, fixture.path.as_path());
+    assert_eq!(manager.factor, FACTOR);
+    assert!(manager.invert_coordinates);
 }
