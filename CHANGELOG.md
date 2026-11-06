@@ -18,7 +18,9 @@ each tag. The top section covers what is on the current branch on top of the lat
   map that draws every system as a node can tell them apart. It only rewrites
   `position2DX`/`position2DY` of the K-space systems and is deterministic. It is idempotent
   without recording anything: on a database that is already patched nothing is too close, so
-  it moves nothing and writes nothing. `projection_patch::apply` runs it on a database file.
+  it moves nothing and writes nothing. `ProjectionPatch::apply` runs it on the database of an
+  `SdeManager`, and the distance is in the units of that manager: the patch takes its `factor`,
+  so what is patched and how it is read can't disagree.
 
 ## [0.7.5] — 2026-11-04
 
