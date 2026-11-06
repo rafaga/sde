@@ -46,7 +46,7 @@ maintenance = { status = "actively-developed" }
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = []
+default = ["projection-patch"]
 builder = [
     "dep:reqwest",
     "dep:tokio",
@@ -70,6 +70,13 @@ builder = [
 # feature unification on the shared `tracing` dependency -- no extra wiring
 # needed on either side.
 profile = ["dep:tracing-tracy"]
+# A postprocessing step for `sde.db`: moves apart the systems whose 2D
+# projection puts them closer than a distance (default 16 map units), so a map
+# that draws every system as a node can tell them apart. Independent of how
+# the database was built; see `sde::projection_patch`. On by default; it needs
+# nothing beyond the default dependencies, so a consumer that doesn't want it
+# turns it off with `default-features = false`.
+projection-patch = []
 
 [dependencies]
 kdtree = "0.8"

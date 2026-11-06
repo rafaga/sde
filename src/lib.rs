@@ -37,6 +37,12 @@ pub mod gate_graph;
 #[cfg(feature = "builder")]
 pub mod builder;
 
+/// Moving apart the systems the 2D projection puts on top of each other,
+/// as a postprocessing step of the finished database (feature
+/// `projection-patch`, enabled by default). See `src/projection_patch.rs`.
+#[cfg(feature = "projection-patch")]
+pub mod projection_patch;
+
 const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 
 /// Manages the process of reading SDE data and putting into different data structures

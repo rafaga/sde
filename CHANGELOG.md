@@ -8,6 +8,18 @@ project uses [Semantic Versioning](https://semver.org/). Published versions (tag
 each tag. The top section covers what is on the current branch on top of the latest tag
 (`0.7.4`) and has no version bump in `Cargo.toml` yet.
 
+## [Unreleased]
+
+### Added
+
+- `projection_patch` (feature `projection-patch`, on by default): a postprocessing step for
+  `sde.db` that moves apart the systems whose 2D projection puts them closer than
+  `ProjectionPatch::distance` (default 16 map units, read at `ProjectionPatch::factor`), so a
+  map that draws every system as a node can tell them apart. It only rewrites
+  `position2DX`/`position2DY` of the K-space systems and is deterministic. It is idempotent
+  without recording anything: on a database that is already patched nothing is too close, so
+  it moves nothing and writes nothing. `projection_patch::apply` runs it on a database file.
+
 ## [0.7.5] — 2026-11-04
 
 ### Added
