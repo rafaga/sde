@@ -56,12 +56,20 @@ pub struct UpdateOptions {
     /// for lagging: the database stays at sde-deltas' latest build until
     /// it catches up.
     pub max_delta_lag_seconds: Option<i64>,
+    /// What [`super::pipeline::update`] does with a database that is at CCP's
+    /// latest build but has no mirror ([`FullReason::NoMirror`]): `true`
+    /// builds it again from CCP's export, just to leave the mirror that delta
+    /// updates need; `false` leaves it as it is (it gets its mirror with the
+    /// next build it needs anyway) and, with CCP out of reach, says it is up
+    /// to date instead of failing. Default `true`.
+    pub build_missing_mirror: bool,
 }
 
 impl Default for UpdateOptions {
     fn default() -> Self {
         Self {
             max_delta_lag_seconds: Some(MAX_DELTA_LAG_SECONDS),
+            build_missing_mirror: true,
         }
     }
 }

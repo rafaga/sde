@@ -21,6 +21,33 @@ each tag. The top section covers what is on the current branch on top of the lat
   it moves nothing and writes nothing. `ProjectionPatch::apply` runs it on the database of an
   `SdeManager`, and the distance is in the units of that manager: the patch takes its `factor`,
   so what is patched and how it is read can't disagree.
+- `Pipeline::projection_patch`, `Pipeline::factor` and `Event::ProjectionPatch`: with a patch
+  set, `build` and `update` end by applying it, whatever they did (a fresh build, a rebuild from
+  the mirror, a version bump or an up-to-date database), so a database built before the patch
+  existed gets it on its next update. `factor` is the one the database is read with, and is only
+  read when `projection_patch` is set. `sde-builder` takes `--projection-patch <DISTANCE>`, which
+  requires `--factor <FACTOR>` (no default).
+- `Pipeline::cancel` (an `Arc<AtomicBool>`) and `Outcome::Cancelled`: a caller can stop a
+  `build` or `update` from another thread. The phase in progress finishes and the next one does
+  not start; the database there was is left alone and the build number recorded next to CCP's
+  zip is forgotten, so the next update still sees that export as new.
+- `Event::Downloaded { bytes }`, `Event::Verifying`, `Event::Verified` and
+  `Event::CleanupFailed { error }`: what a window showing progress needs. A failure removing what
+  was downloaded no longer fails a build whose database and mirror are in place.
+- `UpdateOptions::build_missing_mirror` (default `true`, as before): with `false`, a database at
+  CCP's latest build that has no mirror is left as it is instead of being rebuilt from CCP's
+  export just to leave one, and says it is up to date with CCP out of reach instead of failing.
+
+### Changed
+
+- `Pipeline` has new public fields (`cancel`, and with the `projection-patch` feature, on by
+  default, `projection_patch` and `factor`), so a struct literal needs `cancel: None`,
+  `projection_patch: None` and `factor` to keep the old behavior. `UpdateOptions` has a new
+  field too.
+- `pipeline::Event` and `pipeline::Outcome` are `#[non_exhaustive]`: a new kind is no longer a
+  breaking change, so a `match` on them needs a wildcard arm.
+- A projection patch that fails no longer fails `build` or `update`: it is reported as
+  `Event::ProjectionPatchFailed`, and the database stays as it was built.
 
 ## [0.7.5] — 2026-11-04
 

@@ -43,6 +43,11 @@ pub mod builder;
 #[cfg(feature = "projection-patch")]
 pub mod projection_patch;
 
+/// Where to put an extra node next to a system without it touching another:
+/// a free place near the system, in plain coordinates. See
+/// `src/placement.rs`.
+pub mod placement;
+
 const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 
 /// Manages the process of reading SDE data and putting into different data structures
