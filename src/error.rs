@@ -57,6 +57,12 @@ pub(crate) enum ErrorKind {
     /// `None`).
     Route(String),
 
+    /// The projection patch couldn't be applied: its settings are not
+    /// valid, or the systems could not be kept apart in the rounds it was
+    /// given (see [`crate::projection_patch`]).
+    #[cfg(feature = "projection-patch")]
+    ProjectionPatch(String),
+
     /// I/O error (reading/writing a file on disk).
     #[cfg(feature = "builder")]
     Io(std::io::Error),
@@ -104,6 +110,12 @@ impl Error {
         Error(ErrorKind::Route(message.into()))
     }
 
+    /// Builds an [`ErrorKind::ProjectionPatch`] error.
+    #[cfg(feature = "projection-patch")]
+    pub(crate) fn projection_patch(message: impl Into<String>) -> Self {
+        Error(ErrorKind::ProjectionPatch(message.into()))
+    }
+
     /// Builds an [`ErrorKind::Data`] error: an SDE record that read and
     /// parsed fine but doesn't have the shape a parser needs (a
     /// required field is missing, or is of the wrong type).
@@ -140,6 +152,8 @@ impl fmt::Display for Error {
             }
             ErrorKind::Sqlite(err) => write!(f, "SQLite error: {err}"),
             ErrorKind::Route(message) => write!(f, "invalid route query: {message}"),
+            #[cfg(feature = "projection-patch")]
+            ErrorKind::ProjectionPatch(message) => write!(f, "projection patch: {message}"),
             #[cfg(feature = "builder")]
             ErrorKind::Io(err) => write!(f, "I/O error: {err}"),
             #[cfg(feature = "builder")]
@@ -162,6 +176,8 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.0 {
             ErrorKind::InvalidDatabase(_) | ErrorKind::Route(_) => None,
+            #[cfg(feature = "projection-patch")]
+            ErrorKind::ProjectionPatch(_) => None,
             ErrorKind::Sqlite(err) => Some(err),
             #[cfg(feature = "builder")]
             ErrorKind::Io(err) => Some(err),

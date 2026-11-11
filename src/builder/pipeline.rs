@@ -21,6 +21,13 @@
 //!     parser: ParserConfig::default(),
 //!     keep_source: false,
 //!     updates: UpdateOptions::default(),
+//!     // Set it to `true` from another thread to stop the run.
+//!     cancel: None,
+//!     // With the `projection-patch` feature (on by default); `None` leaves
+//!     // the positions as the projection gives them.
+//!     projection_patch: None,
+//!     // The factor the database is read with: only used by the patch.
+//!     factor: 1.0,
 //! };
 //! let client = http::build_client().map_err(sde::Error::from)?;
 //! let outcome = pipeline::update(&client, &pipeline, |event| println!("{event}")).await?;
@@ -30,14 +37,20 @@
 //! ```
 
 use crate::Error;
+#[cfg(feature = "projection-patch")]
+use crate::SdeManager;
 use crate::builder::BuildUrls;
 use crate::builder::parser::{Parser, ParserConfig};
 use crate::builder::update::{
     self, DeltaProgress, FullReason, UpdateOptions, UpdatePlan, installed_build,
 };
 use crate::builder::{extract, schema, sde_index};
+#[cfg(feature = "projection-patch")]
+use crate::projection_patch::{PatchOutcome, ProjectionPatch};
 use reqwest::Client;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Name, inside the data directory, of the zip that holds the mirror.
 pub const MIRROR_ARCHIVE: &str = "sde-mirror.zip";
@@ -149,10 +162,50 @@ pub struct Pipeline {
     pub keep_source: bool,
     /// How [`update`] uses sde-deltas.
     pub updates: UpdateOptions,
+    /// Set it to `true` (from any thread) to stop a [`build`] or [`update`]
+    /// that is running: the phase in progress finishes and the next one does
+    /// not start, so the result is [`Outcome::Cancelled`]. The database there
+    /// was is left as it was, and the build number recorded next to CCP's zip
+    /// is forgotten, so the next update still sees that export as new instead
+    /// of taking the old database for up to date. `None` never cancels.
+    pub cancel: Option<Arc<AtomicBool>>,
+    /// When set, [`build`] and [`update`] end by moving apart the systems
+    /// the projection puts too close together
+    /// ([`crate::projection_patch`]), whatever they did: it is applied to a
+    /// database that was just built, to one that was up to date and to one
+    /// built before the patch existed alike, and does nothing when the
+    /// database already has it. `None` leaves the positions as they are.
+    #[cfg(feature = "projection-patch")]
+    pub projection_patch: Option<ProjectionPatch>,
+    /// The factor the database is read with ([`SdeManager::new`]): the
+    /// distance of [`Self::projection_patch`] is in the units it gives. It is
+    /// not used when there is no patch.
+    #[cfg(feature = "projection-patch")]
+    pub factor: f64,
+}
+
+impl Pipeline {
+    /// Whether [`Pipeline::cancel`] was set. A cancelled run forgets the
+    /// build number recorded next to CCP's zip (see [`Pipeline::cancel`]);
+    /// this does that too, so the check is made in one place.
+    fn cancelled(&self, variant: &str) -> bool {
+        let cancelled = self
+            .cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst));
+        if cancelled {
+            let _ = std::fs::remove_file(self.workspace.build_file(variant));
+        }
+        cancelled
+    }
 }
 
 /// Something that happens while [`build`] or [`update`] run.
+///
+/// `#[non_exhaustive]`: a new kind of event is not a breaking change, so a
+/// `match` on it needs a wildcard arm.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Event {
     /// Delta `progress.done + 1` of `progress.total` is being applied.
     ApplyingDelta(DeltaProgress),
@@ -167,10 +220,17 @@ pub enum Event {
     /// `None` for the latest), unless the zip kept from before is already
     /// the right one.
     Downloading { build: Option<String> },
+    /// CCP's export is there: `bytes` is the size of its zip.
+    Downloaded { bytes: u64 },
     /// Decompressing the export.
     Extracting,
     /// Parsing the SDE files into the database.
     Building,
+    /// The new database is being checked (SQLite's integrity check) before
+    /// it replaces the old one.
+    Verifying,
+    /// The new database passed its check and replaced the old one.
+    Verified,
     /// The SDE was reduced to what delta updates need and stored as the
     /// single zip `archive` (`bytes` long); the SDE directory was emptied
     /// except for `maps/`.
@@ -182,6 +242,18 @@ pub enum Event {
     /// What the build no longer needs was removed: CCP's zip and the
     /// decompressed export (all but the mirror), `freed` bytes in all.
     CleanedUp { freed: u64 },
+    /// What the build no longer needs couldn't be removed. The database and
+    /// its mirror are in place, so this doesn't fail the build: the files
+    /// just stay on disk.
+    CleanupFailed { error: String },
+    /// The projection patch ([`Pipeline::projection_patch`]) ran, or the
+    /// database already had it.
+    #[cfg(feature = "projection-patch")]
+    ProjectionPatch(PatchOutcome),
+    /// The projection patch couldn't be applied. The database is fine
+    /// without it, so this doesn't fail the build or the update.
+    #[cfg(feature = "projection-patch")]
+    ProjectionPatchFailed { error: String },
 }
 
 impl std::fmt::Display for Event {
@@ -209,8 +281,13 @@ impl std::fmt::Display for Event {
                 write!(f, "getting CCP's export of build {build}")
             }
             Event::Downloading { build: None } => write!(f, "getting CCP's latest export"),
+            Event::Downloaded { bytes } => {
+                write!(f, "got CCP's export ({})", format_size(*bytes))
+            }
             Event::Extracting => write!(f, "decompressing the export"),
             Event::Building => write!(f, "building the database"),
+            Event::Verifying => write!(f, "checking the new database"),
+            Event::Verified => write!(f, "the new database passed its check"),
             Event::MirrorKept { archive, bytes } => write!(
                 f,
                 "kept a mirror of the SDE in {} ({}) for delta updates",
@@ -228,13 +305,28 @@ impl std::fmt::Display for Event {
                     format_size(*freed)
                 )
             }
+            Event::CleanupFailed { error } => {
+                write!(f, "couldn't remove the downloaded export: {error}")
+            }
+            #[cfg(feature = "projection-patch")]
+            Event::ProjectionPatch(outcome) => write!(f, "{outcome}"),
+            #[cfg(feature = "projection-patch")]
+            Event::ProjectionPatchFailed { error } => {
+                write!(f, "couldn't apply the projection patch: {error}")
+            }
         }
     }
 }
 
 /// How [`build`] or [`update`] ended.
+///
+/// `#[non_exhaustive]`, like [`Event`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Outcome {
+    /// [`Pipeline::cancel`] was set: the run stopped before it changed the
+    /// database.
+    Cancelled,
     /// The database was already up to date; `build` is its build, if known.
     UpToDate { build: Option<String> },
     /// The database moved from build `from` to `to`, which changes nothing
@@ -250,6 +342,7 @@ pub enum Outcome {
 impl std::fmt::Display for Outcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Outcome::Cancelled => write!(f, "cancelled, the database was not changed"),
             Outcome::UpToDate { build: Some(build) } => {
                 write!(f, "already up to date (build {build}), nothing to do")
             }
@@ -290,7 +383,41 @@ pub async fn build(
 ) -> Result<Outcome, Error> {
     pipeline.workspace.validate()?;
     let sde_build = sde_build.map(sde_index::parse_build_number).transpose()?;
-    full_build(client, pipeline, sde_build, None, &mut on_event).await
+    let outcome = full_build(client, pipeline, sde_build, None, &mut on_event).await?;
+    if outcome != Outcome::Cancelled {
+        patch_projection(pipeline, &mut on_event)?;
+    }
+    Ok(outcome)
+}
+
+/// Applies [`Pipeline::projection_patch`], if there is one, to the database
+/// [`build`] or [`update`] leave in place. A database that isn't there is
+/// left alone: the patch has nothing to work on and must not create one.
+#[cfg(feature = "projection-patch")]
+fn patch_projection(pipeline: &Pipeline, on_event: &mut impl FnMut(Event)) -> Result<(), Error> {
+    let Some(patch) = &pipeline.projection_patch else {
+        return Ok(());
+    };
+    if !pipeline.workspace.db.exists() {
+        return Ok(());
+    }
+    // The database is in place and fine without it: the systems just stay
+    // where the projection put them. A failure is reported, it doesn't fail
+    // the update.
+    let applied = SdeManager::new(&pipeline.workspace.db, pipeline.factor)
+        .and_then(|manager| patch.apply(&manager));
+    match applied {
+        Ok(outcome) => on_event(Event::ProjectionPatch(outcome)),
+        Err(error) => on_event(Event::ProjectionPatchFailed {
+            error: error.to_string(),
+        }),
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "projection-patch"))]
+fn patch_projection(_: &Pipeline, _: &mut impl FnMut(Event)) -> Result<(), Error> {
+    Ok(())
 }
 
 /// Brings the database up to CCP's latest build the cheapest way there is:
@@ -309,6 +436,19 @@ pub async fn update(
     client: &Client,
     pipeline: &Pipeline,
     mut on_event: impl FnMut(Event),
+) -> Result<Outcome, Error> {
+    let outcome = update_database(client, pipeline, &mut on_event).await?;
+    if outcome != Outcome::Cancelled {
+        patch_projection(pipeline, &mut on_event)?;
+    }
+    Ok(outcome)
+}
+
+/// [`update`] without the projection patch.
+async fn update_database(
+    client: &Client,
+    pipeline: &Pipeline,
+    on_event: &mut impl FnMut(Event),
 ) -> Result<Outcome, Error> {
     let workspace = &pipeline.workspace;
     workspace.validate()?;
@@ -339,12 +479,19 @@ pub async fn update(
             to,
             mirror_dir,
         } => {
+            // `prepare` unpacked the mirror for this rebuild: it goes
+            // whatever happens next, the archive keeps it.
+            if pipeline.cancelled(pipeline.urls.sde_variant.as_str()) {
+                update::release_working_copy(&mirror_dir)?;
+                return Ok(Outcome::Cancelled);
+            }
             on_event(Event::RebuildingFromMirror {
                 from: from.clone(),
                 to: to.clone(),
             });
             on_event(Event::Building);
-            let built = build_database(client, pipeline, &mirror_dir, Some(&to)).await;
+            let built =
+                build_database(client, pipeline, &mirror_dir, Some(&to), &mut *on_event).await;
             // The unpacked mirror goes whether or not the build worked: the
             // archive keeps it.
             let released = update::release_working_copy(&mirror_dir);
@@ -353,10 +500,16 @@ pub async fn update(
             Ok(Outcome::RebuiltFromMirror { from, to })
         }
         UpdatePlan::Full { reason } => {
-            if matches!(
-                reason,
-                FullReason::Unavailable(_) | FullReason::Lagging { .. }
-            ) && let Some(installed) = installed_build(&workspace.db, &pipeline.parser)
+            // Deltas out of reach, or no mirror and none asked for: a
+            // database already at CCP's latest build (or with CCP out of
+            // reach) needs no full build.
+            let current_is_enough = match reason {
+                FullReason::Unavailable(_) | FullReason::Lagging { .. } => true,
+                FullReason::NoMirror => !pipeline.updates.build_missing_mirror,
+                _ => false,
+            };
+            if current_is_enough
+                && let Some(installed) = installed_build(&workspace.db, &pipeline.parser)
             {
                 let latest = sde_index::fetch_latest(client, &pipeline.urls.sde_url).await;
                 if !matches!(&latest, Ok(Some(latest)) if latest.build != installed) {
@@ -365,7 +518,7 @@ pub async fn update(
                     });
                 }
             }
-            full_build(client, pipeline, None, Some(reason), &mut on_event).await
+            full_build(client, pipeline, None, Some(reason), &mut *on_event).await
         }
     }
 }
@@ -422,9 +575,18 @@ async fn full_build(
             pipeline.urls.sde_url
         )));
     }
+    on_event(Event::Downloaded {
+        bytes: std::fs::metadata(&zip).map_or(0, |zip| zip.len()),
+    });
+    if pipeline.cancelled(variant) {
+        return Ok(Outcome::Cancelled);
+    }
 
     on_event(Event::Extracting);
     extract::prepare_sde_directory(&zip, &workspace.sde_dir)?;
+    if pipeline.cancelled(variant) {
+        return Ok(Outcome::Cancelled);
+    }
 
     // The build of the zip just used: recorded in the database and the
     // mirror. A database with no recorded build (`sdeFingerprint.sdeBuild`
@@ -435,7 +597,14 @@ async fn full_build(
         .filter(|build| !build.is_empty());
 
     on_event(Event::Building);
-    let parser = build_database(client, pipeline, &workspace.sde_dir, build.as_deref()).await?;
+    let parser = build_database(
+        client,
+        pipeline,
+        &workspace.sde_dir,
+        build.as_deref(),
+        &mut *on_event,
+    )
+    .await?;
 
     // The database is in place: what it was built from is only needed to
     // make the mirror delta updates use. Without one (no recorded build, or
@@ -453,9 +622,17 @@ async fn full_build(
                     archive,
                     bytes: std::fs::metadata(workspace.mirror_archive()).map_or(0, |m| m.len()),
                 });
-                clean_downloads(workspace, variant)?;
-                let freed = before.saturating_sub(used_space(workspace, variant));
-                on_event(Event::CleanedUp { freed });
+                // The database and its mirror are in place: a failure here
+                // only leaves files on disk, it doesn't fail the build.
+                match clean_downloads(workspace, variant) {
+                    Ok(_) => {
+                        let freed = before.saturating_sub(used_space(workspace, variant));
+                        on_event(Event::CleanedUp { freed });
+                    }
+                    Err(error) => on_event(Event::CleanupFailed {
+                        error: error.to_string(),
+                    }),
+                }
             }
             Err(error) => {
                 // The database is fine; don't fail the build over this. A
@@ -544,6 +721,7 @@ async fn build_database(
     pipeline: &Pipeline,
     sde_dir: &Path,
     build: Option<&str>,
+    on_event: &mut impl FnMut(Event),
 ) -> Result<Parser, Error> {
     let db = &pipeline.workspace.db;
     if let Some(parent) = db.parent()
@@ -563,7 +741,10 @@ async fn build_database(
             .build_database(&mut connection, client, &pipeline.urls.maps_url, build)
             .await
         {
-            Ok(_) => verify(&connection),
+            Ok(_) => {
+                on_event(Event::Verifying);
+                verify(&connection)
+            }
             Err(error) => Err(error),
         }
         // The connection closes here, before the file is moved or removed.
@@ -572,6 +753,7 @@ async fn build_database(
         let _ = std::fs::remove_file(&building);
         return Err(error);
     }
+    on_event(Event::Verified);
     std::fs::rename(&building, db)?;
     Ok(parser)
 }
@@ -694,6 +876,13 @@ mod tests {
                 parser: ParserConfig::default(),
                 keep_source: false,
                 updates: UpdateOptions::default(),
+                cancel: None,
+                #[cfg(feature = "projection-patch")]
+                projection_patch: None,
+                // What the tests that patch put their positions in (see
+                // `add_two_systems_on_top_of_each_other`).
+                #[cfg(feature = "projection-patch")]
+                factor: 50_000_000_000_000.0,
             }
         }
 
@@ -773,8 +962,16 @@ mod tests {
         assert!(freed > UNUSED_BYTES / 2, "freed only {freed} bytes");
         let archive = setup.dir.join("data").join("sde-mirror.zip");
         let bytes = std::fs::metadata(&archive).unwrap().len();
+        let mut steps = events[..events.len() - 1].to_vec();
+        // The size of CCP's zip: whatever it is, it was reported once, right
+        // after getting it.
+        let downloaded = steps.remove(2);
+        assert!(
+            matches!(downloaded, Event::Downloaded { bytes } if bytes > 0),
+            "{downloaded:?}"
+        );
         assert_eq!(
-            events[..events.len() - 1],
+            steps,
             [
                 Event::FullBuild { reason: None },
                 Event::Downloading {
@@ -782,6 +979,8 @@ mod tests {
                 },
                 Event::Extracting,
                 Event::Building,
+                Event::Verifying,
+                Event::Verified,
                 Event::MirrorKept { archive, bytes },
             ]
         );
@@ -899,6 +1098,195 @@ mod tests {
         assert!(events.is_empty());
     }
 
+    /// Puts two K-space systems on top of each other in the database the
+    /// build left (the export of these tests has no systems), 1 apart on the
+    /// map at the factor of the test pipeline (`Setup::pipeline`).
+    #[cfg(feature = "projection-patch")]
+    fn add_two_systems_on_top_of_each_other(setup: &Setup) {
+        let connection = rusqlite::Connection::open(setup.dir.join("sde.db")).unwrap();
+        for (id, x) in [(30_000_001_i64, 0.0_f64), (30_000_002, 5.0e13)] {
+            connection
+                .execute(
+                    "INSERT INTO mapSolarSystems (solarSystemId, solarSystemName, radius, \
+                     centerX, centerY, centerZ, position2DX, position2DY, security) \
+                     VALUES (?1, 'S', 1.0, 0.0, 0.0, 0.0, ?2, 0.0, 0.5)",
+                    rusqlite::params![id, x],
+                )
+                .unwrap();
+        }
+    }
+
+    #[cfg(feature = "projection-patch")]
+    #[tokio::test]
+    async fn update_applies_the_projection_patch_even_to_a_database_that_is_up_to_date() {
+        let setup = setup("patch").await;
+        // Built before the patch was asked for.
+        setup.build(Some("100")).await.0.unwrap();
+        add_two_systems_on_top_of_each_other(&setup);
+
+        let mut pipeline = setup.pipeline();
+        pipeline.projection_patch = Some(ProjectionPatch::default());
+        let mut events = Vec::new();
+        let outcome = update(&Client::new(), &pipeline, |event| events.push(event))
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            Outcome::UpToDate {
+                build: Some("100".to_string())
+            }
+        );
+        assert_eq!(
+            events,
+            vec![Event::ProjectionPatch(PatchOutcome { moved: 2 })]
+        );
+
+        // The next update finds nothing too close.
+        let mut events = Vec::new();
+        update(&Client::new(), &pipeline, |event| events.push(event))
+            .await
+            .unwrap();
+        assert_eq!(
+            events,
+            vec![Event::ProjectionPatch(PatchOutcome { moved: 0 })]
+        );
+    }
+
+    #[cfg(feature = "projection-patch")]
+    #[tokio::test]
+    async fn a_build_ends_with_the_projection_patch_when_it_is_asked_for() {
+        let setup = setup("patch_build").await;
+        let mut pipeline = setup.pipeline();
+        pipeline.projection_patch = Some(ProjectionPatch::default());
+        let mut events = Vec::new();
+        build(&Client::new(), &pipeline, Some("100"), |event| {
+            events.push(event)
+        })
+        .await
+        .unwrap();
+        // The last thing a build does, even when there is nothing to move
+        // (the export of these tests has no systems).
+        assert_eq!(
+            events.last(),
+            Some(&Event::ProjectionPatch(PatchOutcome { moved: 0 }))
+        );
+    }
+
+    #[cfg(feature = "projection-patch")]
+    #[tokio::test]
+    async fn a_projection_patch_that_fails_is_reported_and_does_not_fail_the_build() {
+        let setup = setup("patch_fails").await;
+        let mut pipeline = setup.pipeline();
+        // Not a distance anyone can keep: the patch refuses it.
+        pipeline.projection_patch = Some(ProjectionPatch {
+            distance: 0.0,
+            ..ProjectionPatch::default()
+        });
+        let mut events = Vec::new();
+        let outcome = build(&Client::new(), &pipeline, Some("100"), |event| {
+            events.push(event)
+        })
+        .await
+        .unwrap();
+        assert!(matches!(outcome, Outcome::FullBuild { .. }));
+        assert!(matches!(
+            events.last(),
+            Some(Event::ProjectionPatchFailed { .. })
+        ));
+        assert!(setup.dir.join("sde.db").exists());
+    }
+
+    /// A pipeline whose cancel flag is already raised.
+    fn cancelled_pipeline(setup: &Setup) -> Pipeline {
+        let mut pipeline = setup.pipeline();
+        pipeline.cancel = Some(Arc::new(AtomicBool::new(true)));
+        pipeline
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_build_stops_after_the_download_and_forgets_the_recorded_build() {
+        let setup = setup("cancel_build").await;
+        let pipeline = cancelled_pipeline(&setup);
+        let mut events = Vec::new();
+        let outcome = build(&Client::new(), &pipeline, Some("100"), |event| {
+            events.push(event)
+        })
+        .await
+        .unwrap();
+        assert_eq!(outcome, Outcome::Cancelled);
+        // The export was fetched, and nothing was decompressed or built.
+        assert!(matches!(events.last(), Some(Event::Downloaded { .. })));
+        assert!(!events.contains(&Event::Extracting));
+        assert!(!setup.dir.join("sde.db").exists());
+        // So the next check sees the export as new.
+        assert!(!setup.dir.join("data").join("sde-jsonl.build").exists());
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_update_from_the_mirror_leaves_the_database_and_the_sde_directory_alone() {
+        let setup = setup("cancel_rebuild").await;
+        setup.build(Some("100")).await.0.unwrap();
+        std::fs::remove_file(setup.dir.join("sde.db")).unwrap();
+
+        let pipeline = cancelled_pipeline(&setup);
+        let mut events = Vec::new();
+        let outcome = update(&Client::new(), &pipeline, |event| events.push(event))
+            .await
+            .unwrap();
+        assert_eq!(outcome, Outcome::Cancelled);
+        assert!(events.is_empty(), "{events:?}");
+        assert!(!setup.dir.join("sde.db").exists());
+        // The mirror unpacked for the rebuild is gone again.
+        assert!(
+            std::fs::read_dir(setup.dir.join("sde"))
+                .unwrap()
+                .all(|entry| entry.unwrap().file_name() == "maps")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pipeline_that_is_not_cancelled_runs_to_the_end() {
+        let setup = setup("not_cancelled").await;
+        let mut pipeline = setup.pipeline();
+        pipeline.cancel = Some(Arc::new(AtomicBool::new(false)));
+        let outcome = build(&Client::new(), &pipeline, Some("100"), |_| {})
+            .await
+            .unwrap();
+        assert!(matches!(outcome, Outcome::FullBuild { .. }));
+        assert!(setup.dir.join("sde.db").exists());
+    }
+
+    #[tokio::test]
+    async fn a_current_database_without_a_mirror_is_rebuilt_for_it_unless_told_not_to() {
+        let setup = setup("no_mirror").await;
+        setup.build(Some("100")).await.0.unwrap();
+        std::fs::remove_file(setup.dir.join("data").join("sde-mirror.zip")).unwrap();
+
+        // Told not to: it is up to date, and still so with CCP out of reach.
+        let mut pipeline = setup.pipeline();
+        pipeline.updates.build_missing_mirror = false;
+        pipeline.urls.sde_url = format!("{}/missing/", setup.server.uri());
+        let mut events = Vec::new();
+        let outcome = update(&Client::new(), &pipeline, |event| events.push(event))
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            Outcome::UpToDate {
+                build: Some("100".to_string())
+            }
+        );
+        assert!(!events.contains(&Event::Extracting), "{events:?}");
+
+        // By default it is built again, and leaves its mirror.
+        let (outcome, _) = setup.update().await;
+        assert!(matches!(
+            outcome.unwrap(),
+            Outcome::FullBuild { mirror: true, .. }
+        ));
+        assert!(setup.dir.join("data").join("sde-mirror.zip").exists());
+    }
+
     #[tokio::test]
     async fn update_without_deltas_keeps_a_current_database() {
         let setup = setup("no_deltas").await;
@@ -938,6 +1326,8 @@ mod tests {
                     to: "100".to_string()
                 },
                 Event::Building,
+                Event::Verifying,
+                Event::Verified,
             ]
         );
         assert_eq!(installed(&setup).as_deref(), Some("100"));

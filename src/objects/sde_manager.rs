@@ -1,0 +1,1429 @@
+//! The [`SdeManager`]: the handle to an SDE database and everything it reads from it.
+
+use super::{
+    Constellation, EveRegionArea, Moon, Planet, Position2DMode, Region, SdeFingerprint, SdePoint,
+    SdeSegment, SolarSystem, Star, SystemSummary, Universe,
+};
+use crate::error::Error;
+use rusqlite::{Connection, OpenFlags, ToSql, params, vtab::array};
+use std::cell::OnceCell;
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
+use std::rc::Rc;
+
+const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
+
+/// Manages the process of reading SDE data and putting into different data structures
+/// for easy in-memory access.
+pub struct SdeManager<'a> {
+    /// The path to the SDE database
+    pub path: &'a Path,
+    /// The universe Object that contains all the data
+    pub universe: Universe,
+    /// Adjusting factor for coordinates (because are very large numbers)
+    pub factor: f64,
+    /// Invert the sign of coordinate values for screen rendering.
+    ///
+    /// Not a uniform "negate everything": 2D map coordinates
+    /// (`get_systems`/`get_connections`/`get_region_coordinates`, and
+    /// `SolarSystem::projected_coords`) flip only their Y component --
+    /// screen space (egui/egui-map: `screen = map * zoom - origin`) has
+    /// +Y pointing down, so flipping Y keeps galactic north up, while
+    /// flipping X would mirror the universe east-west. Real 3D
+    /// coordinates (`get_system_coords`, `SolarSystem::real_coords`)
+    /// keep flipping all three components.
+    pub invert_coordinates: bool,
+    /// The read connection, opened by the first query that needs it and kept for
+    /// the next ones (see `Self::get_standart_connection`).
+    connection: OnceCell<Connection>,
+}
+
+impl Clone for SdeManager<'_> {
+    /// A clone points at the same database but opens its own connection: a
+    /// connection cannot be shared between two managers.
+    fn clone(&self) -> Self {
+        Self {
+            path: self.path,
+            universe: self.universe.clone(),
+            factor: self.factor,
+            invert_coordinates: self.invert_coordinates,
+            connection: OnceCell::new(),
+        }
+    }
+}
+
+impl<'a> SdeManager<'a> {
+    /// Creates a new `SdeManager` pointing at the SQLite database at
+    /// `path` (not opened yet -- the first query that needs it opens the
+    /// connection, via `Self::get_standart_connection`, and the next ones reuse it). `factor` is the coordinate-scaling divisor/multiplier used
+    /// throughout (see `Self::scale_coords`); it's also passed to
+    /// [`crate::objects::Universe::new`] to build the initial, empty
+    /// `universe`. `invert_coordinates` starts `true`.
+    #[tracing::instrument]
+    pub fn new(path: &Path, factor: f64) -> Result<SdeManager<'_>, Error> {
+        if Self::has_sqlite_header(path) {
+            Ok(SdeManager {
+                path,
+                universe: Universe::new(factor),
+                factor, // 10000000000000
+                invert_coordinates: true,
+                connection: OnceCell::new(),
+            })
+        } else {
+            Err(Error::invalid_database(path.to_path_buf()))
+        }
+    }
+
+    pub(super) fn has_sqlite_header(path: &Path) -> bool {
+        if !path.exists() {
+            return false;
+        }
+        let Ok(mut file) = File::open(path) else {
+            // Exists but cannot be opened (permissions, a lock, a directory on Windows).
+            return false;
+        };
+        let mut buf = [0u8; 16];
+        match file.read_exact(&mut buf) {
+            Ok(()) => &buf == SQLITE_HEADER,
+            Err(_) => false, // archivo demasiado pequeño (ej. vacío)
+        }
+    }
+
+    /// Applies the adjustment factor (`self.factor`) and, if `invert` is
+    /// `true`, flips the sign of the Y component only: screen space
+    /// (egui/egui-map: `screen = map * zoom - origin`) has +Y pointing
+    /// down, so negating Y keeps galactic north up, while negating X
+    /// would mirror the universe east-west. Replaces the
+    /// `DivAssign`/`MulAssign` operators `egui_map::RawPoint` used to
+    /// provide -- same logic as always (divide if the factor is > 1,
+    /// multiply by its absolute value if it's < -1), now directly on
+    /// `[f64; 2]`. `invert` is a parameter (not always
+    /// `self.invert_coordinates`) because not every function calling
+    /// this helper inverts: `get_systems`/`get_connections` do,
+    /// `get_abstract_systems`/`get_abstract_connections` don't.
+    ///
+    /// Used by [`Self::get_systems`]/[`Self::get_abstract_systems`]
+    /// (which build [`crate::objects::SdePoint`], `coords: [f64; 3]`) and
+    /// [`Self::get_connections`]/[`Self::get_abstract_connections`]
+    /// (building [`crate::objects::SdeSegment`], `point1`/`point2: [f64; 2]`) --
+    /// both types are `f64` throughout, so there's a single version of
+    /// this helper, not one per type as there used to be.
+    ///
+    /// Operating in `f32` anywhere along this path would silently
+    /// reintroduce precision loss that reading the columns as `f64` (and
+    /// scaling in `f64`) is meant to avoid: `some_f32_value as f64`
+    /// doesn't recover the precision lost when the value was first
+    /// narrowed to `f32` -- e.g. `0.1_f32 as f64` is
+    /// `0.10000000149011612`, not `0.1`. `position2DX`/`position2DY`/
+    /// `mapAbstractSystems.x`/`.y` are all `REAL` (i.e. already
+    /// `f64`-precision in SQLite), so reading them directly as `f64`
+    /// costs nothing and avoids that round-trip entirely.
+    pub(super) fn scale_coords(&self, mut coords: [f64; 2], invert: bool) -> [f64; 2] {
+        if self.factor > 1.0 {
+            let f = self.factor;
+            coords[0] /= f;
+            coords[1] /= f;
+        } else if self.factor < -1.0 {
+            let f = self.factor.abs();
+            coords[0] *= f;
+            coords[1] *= f;
+        }
+        if invert {
+            coords[1] *= -1.0;
+        }
+        coords
+    }
+
+    /// The read connection to `self.path`, opened on the first call and reused
+    /// by every query of this manager afterwards (a universe is some twenty
+    /// queries, and each used to open its own). It is closed when the manager
+    /// is dropped, so on Windows the file cannot be replaced while one lives.
+    pub(crate) fn get_standart_connection(&self) -> Result<&Connection, Error> {
+        match self.connection.get() {
+            Some(connection) => Ok(connection),
+            None => {
+                let connection = self.open_connection()?;
+                Ok(self.connection.get_or_init(|| connection))
+            }
+        }
+    }
+
+    /// Opens a fresh read connection to `self.path` with sensible
+    /// defaults for this crate's read-only workload: the `rarray`
+    /// virtual table module loaded (every filtered getter here passes
+    /// its id list through it) and `PRAGMA foreign_keys = ON` for
+    /// consistency with the rest of the codebase, even though it has no
+    /// effect on `SELECT`-only queries.
+    fn open_connection(&self) -> Result<Connection, Error> {
+        let mut flags = OpenFlags::default();
+        flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
+        flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
+        let connection = Connection::open_with_flags(self.path, flags)?;
+
+        // we add the carray module disguised as rarray in rusqlite
+        array::load_module(&connection)?;
+
+        // `SdeManager` only ever runs SELECTs, so `foreign_keys = ON` doesn't
+        // change query results (FK enforcement only applies to writes), but
+        // it's harmless to enable and keeps the connection consistent with
+        // the rest of the codebase. `execute_batch` (unlike `prepare`, which
+        // only compiles the *first* statement in the string) runs every
+        // statement it's given, so this actually takes effect.
+        //
+        // NOTE: this used to also set `PRAGMA journal_mode=WAL` (with a typo,
+        // "journey_mode", so it silently never ran). WAL is intentionally
+        // NOT enabled here: it persists a mode change into the database file
+        // itself and requires write access to the containing directory (to
+        // create the `-wal`/`-shm` siblings) on *every* call to this method,
+        // which would break any consumer shipping a read-only `sde.db`. If
+        // you need WAL for a specific deployment, set it once out-of-band
+        // (e.g. as part of the builder) rather than on every read connection.
+        connection.execute_batch("PRAGMA foreign_keys = ON;")?;
+
+        Ok(connection)
+    }
+
+    /// An `rarray` value to bind to a `... IN rarray(?)` parameter.
+    pub(super) fn id_array(ids: Vec<u32>) -> array::Array {
+        Rc::new(
+            ids.into_iter()
+                .map(rusqlite::types::Value::from)
+                .collect::<Vec<rusqlite::types::Value>>(),
+        )
+    }
+
+    /// Runs `sql` (two `u32` columns) and calls `apply` with each row's pair.
+    pub(super) fn for_each_id_pair(
+        connection: &Connection,
+        sql: &str,
+        mut apply: impl FnMut(u32, u32),
+    ) -> Result<(), Error> {
+        let mut statement = connection.prepare(sql)?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            apply(row.get::<usize, u32>(0)?, row.get::<usize, u32>(1)?);
+        }
+        Ok(())
+    }
+
+    /// The name of each item type in `types`, by id; an empty list means
+    /// every type. An id the database doesn't know is left out.
+    #[tracing::instrument(skip(self))]
+    pub fn get_type_names(&self, types: Vec<u32>) -> Result<HashMap<u32, String>, Error> {
+        let connection = self.get_standart_connection()?;
+        let mut query = String::from("SELECT typeId, typeName FROM invTypes");
+        if !types.is_empty() {
+            query += " WHERE typeId IN rarray(?1)";
+        }
+        let mut statement = connection.prepare(query.as_str())?;
+        let rows = if types.is_empty() {
+            statement.query([])?
+        } else {
+            statement.query([Self::id_array(types)])?
+        };
+        Self::read_names(rows)
+    }
+
+    /// The item types of the groups of `category` (6 is ships), as
+    /// `typeId -> typeName`. With `published_only` the ones CCP has taken
+    /// out of the game are left out.
+    #[tracing::instrument(skip(self))]
+    pub fn get_category_types(
+        &self,
+        category: u32,
+        published_only: bool,
+    ) -> Result<HashMap<u32, String>, Error> {
+        let connection = self.get_standart_connection()?;
+        let mut query = String::from(
+            "SELECT t.typeId, t.typeName FROM invTypes AS t \
+             INNER JOIN invGroups AS g ON (g.groupId = t.groupId) \
+             WHERE g.categoryId = ?1",
+        );
+        if published_only {
+            query += " AND t.published = 1";
+        }
+        let mut statement = connection.prepare(query.as_str())?;
+        let rows = statement.query([category])?;
+        Self::read_names(rows)
+    }
+
+    /// Reads the `(id, name)` pairs a query returned.
+    pub(super) fn read_names(mut rows: rusqlite::Rows<'_>) -> Result<HashMap<u32, String>, Error> {
+        let mut result = HashMap::new();
+        while let Some(row) = rows.next()? {
+            result.insert(row.get(0)?, row.get(1)?);
+        }
+        Ok(result)
+    }
+
+    // ---- Regions ----
+
+    /// Every region, optionally narrowed by `regions` (an id allowlist)
+    /// and/or `region_name` (a case-insensitive substring match, same
+    /// `LIKE` caveat as [`Self::get_system_id`]) -- both empty/`None`
+    /// means no filter; both given combines them with `AND`. Each
+    /// returned [`crate::objects::Region`] has its `constellations` populated
+    /// (a second query, filtered to just the regions the first one
+    /// matched).
+    #[tracing::instrument(skip(self))]
+    pub fn get_region(
+        &self,
+        regions: Vec<u32>,
+        region_name: Option<String>,
+    ) -> Result<HashMap<u32, Region>, Error> {
+        let connection = self.get_standart_connection()?;
+        let mut result = Self::select_regions(connection, &regions, region_name.as_deref())?;
+        let filtered = !regions.is_empty() || region_name.is_some();
+        // Only the regions the first query matched get their constellations.
+        let region_ids: Vec<u32> = result.keys().copied().collect();
+        Self::add_region_constellations(connection, &mut result, filtered.then_some(region_ids))?;
+        Ok(result)
+    }
+
+    /// The first query of [`Self::get_region`]: the regions themselves,
+    /// without constellations.
+    fn select_regions(
+        connection: &Connection,
+        regions: &[u32],
+        region_name: Option<&str>,
+    ) -> Result<HashMap<u32, Region>, Error> {
+        let mut conditions: Vec<&str> = Vec::new();
+        let mut params: Vec<Box<dyn ToSql>> = Vec::new();
+        if !regions.is_empty() {
+            conditions.push("regionId IN rarray(?) ");
+            params.push(Box::new(Self::id_array(regions.to_vec())));
+        }
+        if let Some(name) = region_name {
+            conditions.push("LOWER(regionName) LIKE ? ");
+            params.push(Box::new(format!("%{name}%")));
+        }
+
+        let mut query =
+            String::from("SELECT regionId, regionName, wormholeClassId FROM mapRegions ");
+        if !conditions.is_empty() {
+            query += &format!(" WHERE {}", conditions.join(" AND "));
+        }
+        query += "ORDER BY regionName ";
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = statement.query(rusqlite::params_from_iter(params.iter()))?;
+        let mut result = HashMap::new();
+        while let Some(row) = rows.next()? {
+            let mut region = Region::new();
+            region.id = row.get(0)?;
+            region.name = row.get(1)?;
+            region.wormhole_class = row.get(2)?;
+            result.insert(region.id, region);
+        }
+        Ok(result)
+    }
+
+    /// The second query of [`Self::get_region`]: fills in the
+    /// `constellations` of the regions in `result`, restricted to
+    /// `region_ids` when given.
+    fn add_region_constellations(
+        connection: &Connection,
+        result: &mut HashMap<u32, Region>,
+        region_ids: Option<Vec<u32>>,
+    ) -> Result<(), Error> {
+        let mut query = String::from("SELECT regionId,constellationId FROM mapConstellations");
+        if region_ids.is_some() {
+            query += " WHERE regionId IN rarray(?1) ";
+        }
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = match region_ids {
+            None => statement.query([])?,
+            Some(ids) => statement.query([Self::id_array(ids)])?,
+        };
+        while let Some(row) = rows.next()? {
+            let constellation = row.get(1)?;
+            result
+                .entry(row.get(0)?)
+                .and_modify(|region| region.constellations.push(constellation));
+        }
+        Ok(())
+    }
+
+    // ---- Region areas ----
+
+    /// The 2D bounding box (`EveRegionArea.max`/`.min`) of every
+    /// K-space region (`regionId` between `10000000` and `10999999`),
+    /// computed from the `MAX`/`MIN` of every solar system's
+    /// `position2DX`/`position2DY` across all its constellations.
+    /// Regions where every system lacks a 2D projection are excluded
+    /// (there's no box to report); regions with at least one projected
+    /// system still get a box even if others in it are missing one,
+    /// since `MAX`/`MIN` ignore individual `NULL`s.
+    ///
+    /// If `self.invert_coordinates`, the Y components of both corners get
+    /// their sign flipped *and* swapped with each other (X stays raw --
+    /// see `Self::scale_coords` for why only Y flips): flipping the
+    /// sign alone would leave what used to be the maximum corner with
+    /// the smaller (now negative) Y, so `max`/`min` would no longer
+    /// actually describe the box's extremes without the swap.
+    #[tracing::instrument(skip(self))]
+    pub fn get_region_coordinates(&self) -> Result<Vec<EveRegionArea>, Error> {
+        let connection = self.get_standart_connection()?;
+
+        let mut query = String::from("SELECT reg.regionId, reg.regionName, ");
+        query += "MAX(reg.max_x) AS region_max_x, MAX(reg.max_y) AS region_max_y, ";
+        query += "MIN(reg.min_x) AS region_min_x, MIN(reg.min_y) AS region_min_y ";
+        query += "FROM (SELECT mr.regionId, mr.regionName, ";
+        query +=
+            "mc.constellationId, MAX(mss.position2DX) AS max_x, MAX(mss.position2DY) AS max_y, ";
+        query += "MIN(mss.position2DX) AS min_x, MIN(mss.position2DY) AS min_y ";
+        query += "FROM mapRegions AS mr ";
+        query += "INNER JOIN mapConstellations mc ON (mc.regionId = mr.regionId) ";
+        query += "INNER JOIN mapSolarSystems mss ON (mc.constellationId = mss.constellationId) ";
+        query += " WHERE mr.regionId BETWEEN 10000000 AND 10999999 GROUP BY mr.regionId, mr.regionName, mc.constellationId) ";
+        query += "AS reg GROUP BY reg.regionId ";
+        // position2DX/Y are nullable; MAX()/MIN() already ignore each
+        // individual system's NULLs, but if EVERY system in a region
+        // lacks a 2D projection, the final aggregate still comes out
+        // NULL -- that region is excluded here instead of breaking the
+        // row read (there's no bounding box to report for it).
+        query += "HAVING MAX(reg.max_x) IS NOT NULL AND MAX(reg.max_y) IS NOT NULL ";
+        query += "AND MIN(reg.min_x) IS NOT NULL AND MIN(reg.min_y) IS NOT NULL;";
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = statement.query([])?;
+        let mut areas = Vec::new();
+        while let Some(row) = rows.next()? {
+            let mut region = EveRegionArea::new();
+            region.region_id = row.get(0)?;
+            region.name = row.get(1)?;
+            // mapSolarSystems.position2DX/Y have REAL affinity, so
+            // MAX()/MIN() over them (even doubly-aggregated through the
+            // subquery) also yield REAL storage class -- rusqlite's `i64`
+            // FromSql impl does NOT coerce a SQLite REAL into an integer,
+            // so this has to be read as f64. Unlike before the
+            // SdePoint/SdePoint merge, there's no need to narrow it to
+            // `i64` afterward -- `SdePoint::from([f64; 3])` takes the
+            // f64 values directly, without an unnecessary
+            // f64 -> i64 -> f64 round-trip that would silently truncate
+            // any fractional part.
+            //
+            // EveRegionArea.max/min stay `SdePoint` (3D) for API
+            // stability, but the region bounding box is now 2D (there's
+            // no third component to report anymore) -- the Z component is
+            // just always 0.
+            region.max =
+                SdePoint::from([row.get::<usize, f64>(2)?, row.get::<usize, f64>(3)?, 0.0]);
+            region.min =
+                SdePoint::from([row.get::<usize, f64>(4)?, row.get::<usize, f64>(5)?, 0.0]);
+            // we invert the Y coordinates and swap them between min and
+            // max; X stays raw (only Y flips for screen rendering, see
+            // `scale_coords`)
+            if self.invert_coordinates {
+                std::mem::swap(&mut region.max.coords[1], &mut region.min.coords[1]);
+                region.min.coords[1] *= -1.0;
+                region.max.coords[1] *= -1.0;
+            }
+            areas.push(region);
+        }
+        Ok(areas)
+    }
+
+    // ---- Constellations ----
+
+    /// Every constellation, optionally narrowed to just the given
+    /// `regions` (an id allowlist; empty means no filter). Each
+    /// [`crate::objects::Constellation`] has its `solar_systems` populated (a
+    /// second query, filtered to just the constellations the first one
+    /// matched) -- same two-query shape as [`Self::get_region`].
+    fn get_constellation(&self, regions: Vec<u32>) -> Result<HashMap<u32, Constellation>, Error> {
+        // preparing the connections that will be shared between threads
+        let connection = self.get_standart_connection()?;
+
+        let mut query = String::from("SELECT constellationId, constellationName, regionId ");
+        query += "FROM mapConstellations ";
+        if !regions.is_empty() {
+            query += "WHERE regionId IN rarray(?1);";
+        }
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = if regions.is_empty() {
+            statement.query([])?
+        } else {
+            statement.query([Self::id_array(regions)])?
+        };
+
+        //while there are regions left to consume
+        let mut result = HashMap::new();
+        while let Some(row) = rows.next()? {
+            let mut object = Constellation::new();
+            object.id = row.get(0)?;
+            object.name = row.get(1)?;
+            object.region = row.get(2)?;
+            result.insert(object.id, object);
+        }
+
+        Self::add_constellation_systems(connection, &mut result)?;
+
+        Ok(result)
+    }
+
+    /// The second query of `get_constellation`: fills in the
+    /// `solar_systems` of the constellations in `result`.
+    fn add_constellation_systems(
+        connection: &Connection,
+        result: &mut HashMap<u32, Constellation>,
+    ) -> Result<(), Error> {
+        let mut query = String::from("SELECT constellationId, solarSystemId FROM mapSolarSystems");
+        query += " WHERE constellationId IN rarray(?1);";
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let constellations: Vec<u32> = result.keys().copied().collect();
+        let mut rows = statement.query(params![Self::id_array(constellations)])?;
+
+        while let Some(row) = rows.next()? {
+            let solar_system = row.get(1)?;
+            result
+                .entry(row.get(0)?)
+                .and_modify(|constel| constel.solar_systems.push(solar_system));
+        }
+        Ok(())
+    }
+
+    // ---- Solar systems ----
+
+    /// Every solar system, optionally narrowed to just the given
+    /// `constellation` ids (empty means no filter), keyed by
+    /// `solarSystemId`. Each [`crate::objects::SolarSystem`] carries both its
+    /// real 3D position (`real_coords`, from its own
+    /// `centerX`/`Y`/`Z`) and its 2D map position (`projected_coords`,
+    /// from `position2DX`/`Y`, falling back to `(0.0, 0.0)` if the
+    /// system has none, and oriented like [`Self::get_systems`] output:
+    /// Y-only inversion when `self.invert_coordinates`) plus its
+    /// stargate `connections`,
+    /// `disallowed_anchor_categories`, `disallowed_anchor_groups`, and
+    /// `star`, each populated by its own second query (over
+    /// `mapSystemConnections`/`mapSolarSystemDisallowedAnchorableCategories`/
+    /// `...Groups`/`mapStars` joined with `typeStar` respectively).
+    /// `disallowed_anchor_categories`/`disallowed_anchor_groups` come
+    /// back empty for the (large majority of) systems with no
+    /// restrictions of that kind, populated for the ones that do.
+    /// `star` is `None` for the systems with no `mapStars` row (401 of
+    /// 8490 real solar systems, 4.7%, confirmed August 2026), populated
+    /// with both the star's own data and its spectral-class properties
+    /// for the rest. Unlike
+    /// [`Self::get_systems`]/[`Self::get_connections`], systems
+    /// without a 2D projection are kept (with that fallback position)
+    /// rather than excluded -- this method feeds general system data,
+    /// not just the map.
+    fn get_solarsystem(&self, constellation: Vec<u32>) -> Result<HashMap<u32, SolarSystem>, Error> {
+        // preparing the connections that will be shared between threads
+        let connection = self.get_standart_connection()?;
+        let mut result = self.select_solar_systems(connection, constellation)?;
+
+        // Optimization: to avoid printing twice the same line, we are just skipping coordinates
+        // for SolarSystems that has an Id less than the current one printed. with the exception
+        // of the lowest ID
+        Self::for_each_id_pair(
+            connection,
+            "SELECT systemA, systemB FROM mapSystemConnections;",
+            |system_a, system_b| {
+                result.entry(system_a).and_modify(|point| {
+                    point.connections.push(system_b);
+                });
+                result.entry(system_b).and_modify(|point| {
+                    point.connections.push(system_a);
+                });
+            },
+        )?;
+        Self::for_each_id_pair(
+            connection,
+            "SELECT solarSystemId, categoryId FROM mapSolarSystemDisallowedAnchorableCategories;",
+            |system_id, category_id| {
+                result.entry(system_id).and_modify(|point| {
+                    point.disallowed_anchor_categories.push(category_id);
+                });
+            },
+        )?;
+        Self::for_each_id_pair(
+            connection,
+            "SELECT solarSystemId, groupId FROM mapSolarSystemDisallowedAnchorableGroups;",
+            |system_id, group_id| {
+                result.entry(system_id).and_modify(|point| {
+                    point.disallowed_anchor_groups.push(group_id);
+                });
+            },
+        )?;
+        Self::add_solar_system_stars(connection, &mut result)?;
+
+        Ok(result)
+    }
+
+    /// The first query of [`Self::get_solarsystem`]: the systems with their
+    /// coordinates, restricted to `constellation` when it isn't empty.
+    fn select_solar_systems(
+        &self,
+        connection: &Connection,
+        constellation: Vec<u32>,
+    ) -> Result<HashMap<u32, SolarSystem>, Error> {
+        let mut query =
+            String::from("SELECT mss.solarSystemId, mss.solarSystemName, mc.regionId, ");
+        query += " mss.centerX, mss.centerY, mss.centerZ, mss.position2DX, mss.position2DY, ";
+        query += " mss.constellationId, mss.security, mss.wormholeClassId ";
+        query += " FROM mapSolarSystems AS mss ";
+        query +=
+            " INNER JOIN mapConstellations AS mc ON(mss.constellationId = mc.constellationId)  ";
+        if !constellation.is_empty() {
+            query += " WHERE mss.constellationId IN rarray(?1);";
+        }
+        let mut statement = connection.prepare(query.as_str())?;
+
+        let mut rows = if constellation.is_empty() {
+            statement.query([])?
+        } else {
+            statement.query([Self::id_array(constellation)])?
+        };
+
+        let mut result = HashMap::new();
+        while let Some(row) = rows.next()? {
+            let object = self.solar_system_from_row(row)?;
+            result.insert(object.id, object);
+        }
+        Ok(result)
+    }
+
+    /// One row of the query in [`Self::select_solar_systems`] as a system
+    /// (no connections, anchor restrictions or star yet).
+    fn solar_system_from_row(&self, row: &rusqlite::Row) -> Result<SolarSystem, Error> {
+        let mut object = SolarSystem::new(self.factor);
+        object.id = row.get(0)?;
+        object.name = row.get(1)?;
+        object.constellation = row.get(8)?;
+        object.security = row.get(9)?;
+        object.wormhole_class = row.get(10)?;
+
+        let mut real_x = row.get::<_, f64>(3)?;
+        let mut real_y = row.get::<_, f64>(4)?;
+        let mut real_z = row.get::<_, f64>(5)?;
+        // Unlike get_systems()/get_connections() (which filter
+        // out systems without a 2D projection), the row is kept
+        // as-is here: this method feeds general system data (name,
+        // region, constellation, real coordinates), not just the
+        // map, so a missing position2D falls back to (0.0, 0.0)
+        // instead of excluding the system entirely.
+        let proj_x = row.get::<_, Option<f64>>(6)?.unwrap_or(0.0);
+        let mut proj_y = row.get::<_, Option<f64>>(7)?.unwrap_or(0.0);
+
+        // Invert coordinates if needed: real 3D coords flip all
+        // components, the 2D map projection flips only Y (same
+        // orientation `get_systems`/`scale_coords` produce)
+        if self.invert_coordinates {
+            real_x *= -1.0;
+            real_y *= -1.0;
+            real_z *= -1.0;
+            proj_y *= -1.0;
+        }
+        object.real_coords = SdePoint::new(real_x, real_y, real_z);
+        object.projected_coords = SdePoint::new(proj_x, proj_y, 0.0);
+
+        object.region = row.get(2)?;
+        Ok(object)
+    }
+
+    /// Fills in the `star` of each system in `result` (`mapStars` joined
+    /// with `typeStar`); systems without a star keep `None`.
+    fn add_solar_system_stars(
+        connection: &Connection,
+        result: &mut HashMap<u32, SolarSystem>,
+    ) -> Result<(), Error> {
+        let query = "SELECT ms.solarSystemId, ms.starId, ms.locked, ms.radius, ts.name, ts.color \
+             FROM mapStars AS ms INNER JOIN typeStar AS ts ON (ms.starTypeId = ts.typeId);";
+        let mut statement = connection.prepare(query)?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let system_id = row.get::<usize, u32>(0)?;
+            let star = Star {
+                id: row.get(1)?,
+                locked: row.get(2)?,
+                radius: row.get(3)?,
+                spectral_class: row.get(4)?,
+                color: row.get(5)?,
+            };
+            result.entry(system_id).and_modify(|point| {
+                point.star = Some(star);
+            });
+        }
+        Ok(())
+    }
+
+    /// Finds solar systems by a case-insensitive substring match on
+    /// their name (`%name%`), returning every match as
+    /// `(solarSystemId, solarSystemName, regionId, regionName)` --
+    /// there can be more than one, and there's no k-space/w-space
+    /// filter here (unlike [`Self::get_systems`]). The query does
+    /// `LOWER(solarSystemName) LIKE ?1` without lowercasing `name`
+    /// itself, but that's not a bug: SQLite's `LIKE` is already
+    /// case-insensitive for ASCII by default, so the `LOWER()` on the
+    /// column side is redundant, not load-bearing.
+    #[tracing::instrument(skip(self))]
+    pub fn get_system_id(
+        &self,
+        name: String,
+    ) -> Result<Vec<(isize, String, isize, String)>, Error> {
+        let connection = self.get_standart_connection()?;
+
+        let mut query = String::from(
+            "SELECT mss.SolarSystemId, mss.SolarSystemName, mr.RegionId, mr.regionName ",
+        );
+        query += "FROM mapSolarSystems AS mss ";
+        query +=
+            "INNER JOIN mapConstellations AS mc ON (mc.constellationId = mss.constellationId) ";
+        query += "INNER JOIN mapRegions AS mr ON (mr.RegionId = mc.RegionId) ";
+        query += "WHERE LOWER(mss.SolarSystemName) LIKE ?1; ";
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let system_like_name = "%".to_string() + name.as_str() + "%";
+        let mut rows = statement.query(params![system_like_name])?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next()? {
+            results.push((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?));
+        }
+        Ok(results)
+    }
+
+    /// The name of each solar system in `systems`, by id; an empty list
+    /// means every solar system (the convention of this API). An id the
+    /// database doesn't know is left out.
+    #[tracing::instrument(skip(self))]
+    pub fn get_system_names(&self, systems: Vec<u32>) -> Result<HashMap<u32, String>, Error> {
+        let connection = self.get_standart_connection()?;
+        let mut query = String::from("SELECT solarSystemId, solarSystemName FROM mapSolarSystems");
+        if !systems.is_empty() {
+            query += " WHERE solarSystemId IN rarray(?1)";
+        }
+        let mut statement = connection.prepare(query.as_str())?;
+        let rows = if systems.is_empty() {
+            statement.query([])?
+        } else {
+            statement.query([Self::id_array(systems)])?
+        };
+        Self::read_names(rows)
+    }
+
+    /// The region of every solar system, as `solarSystemId -> regionId`.
+    /// Much lighter than [`Self::get_universe`] when only the region of
+    /// each system matters.
+    #[tracing::instrument(skip(self))]
+    pub fn get_system_regions(&self) -> Result<HashMap<u32, u32>, Error> {
+        let connection = self.get_standart_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT mss.solarSystemId, mc.regionId FROM mapSolarSystems AS mss \
+             INNER JOIN mapConstellations AS mc ON (mss.constellationId = mc.constellationId)",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut result = HashMap::new();
+        while let Some(row) = rows.next()? {
+            result.insert(row.get(0)?, row.get(1)?);
+        }
+        Ok(result)
+    }
+
+    // ---- Planets ----
+
+    /// Every planet, optionally narrowed to just the given
+    /// `solar_systems` (an id allowlist; empty means no filter). Unlike
+    /// [`Self::get_region`]/`Self::get_constellation`/
+    /// `Self::get_solarsystem`, this returns a flat `Vec`, not a
+    /// `HashMap` keyed by id -- [`Self::get_universe`] keys it into one
+    /// itself when populating `universe.planets`.
+    #[tracing::instrument(skip(self))]
+    pub fn get_planet(&self, solar_systems: Vec<u32>) -> Result<Vec<Planet>, Error> {
+        // preparing the connections that will be shared between threads
+        let connection = self.get_standart_connection()?;
+        let mut result = vec![];
+
+        let mut query = String::from("SELECT planetId, planetaryIndex, solarSystemId");
+        query += " FROM mapPlanets";
+        if !solar_systems.is_empty() {
+            query += " WHERE solarSystemId IN rarray(?1)";
+        }
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows;
+        if solar_systems.is_empty() {
+            rows = statement.query([])?;
+        } else {
+            let id_list: array::Array = Rc::new(
+                solar_systems
+                    .into_iter()
+                    .map(rusqlite::types::Value::from)
+                    .collect::<Vec<rusqlite::types::Value>>(),
+            );
+            rows = statement.query([id_list])?;
+        }
+
+        //while there are regions left to consume
+        while let Some(row) = rows.next()? {
+            let mut object = Planet::new();
+            object.id = row.get(0)?;
+            object.solar_system = row.get(2)?;
+            object.index = row.get(1)?;
+            result.push(object);
+        }
+
+        Ok(result)
+    }
+
+    // ---- Moons ----
+
+    /// Every moon, optionally narrowed to just the given `planets` (an
+    /// id allowlist; empty means no filter). Same flat-`Vec` shape as
+    /// [`Self::get_planet`] -- [`Self::get_universe`] keys it into a
+    /// `HashMap` itself when populating `universe.moons`.
+    #[tracing::instrument(skip(self))]
+    pub fn get_moon(&self, planets: Vec<u32>) -> Result<Vec<Moon>, Error> {
+        // preparing the connections that will be shared between threads
+        let connection = self.get_standart_connection()?;
+        let mut result = vec![];
+
+        let mut query = String::from("SELECT moonId, moonIndex, solarSystemId, planetId ");
+        query += "FROM mapMoons ";
+
+        if !planets.is_empty() {
+            query += " WHERE planetId IN rarray(?1)";
+        };
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows;
+        if planets.is_empty() {
+            rows = statement.query([])?;
+        } else {
+            let id_list: array::Array = Rc::new(
+                planets
+                    .into_iter()
+                    .map(rusqlite::types::Value::from)
+                    .collect::<Vec<rusqlite::types::Value>>(),
+            );
+            rows = statement.query([id_list])?;
+        }
+        //while there are regions left to consume
+        while let Some(row) = rows.next()? {
+            let mut object = Moon::new();
+            object.id = row.get(0)?;
+            object.planet = row.get(3)?;
+            object.index = row.get(1)?;
+            object.solar_system = row.get(2)?;
+            result.push(object);
+        }
+
+        Ok(result)
+    }
+
+    // ---- Points of the maps ----
+
+    /// All K-space solar systems with a computed 2D map projection,
+    /// keyed by `solarSystemId` -- `SdePoint.id` is `Some(that same
+    /// id)`, kept on the point too (same redundancy already accepted
+    /// for `HashMap<u32, SolarSystem>` elsewhere in this crate).
+    ///
+    /// "K-space" here means `solarSystemId` between `30000000` and
+    /// `30999999`, a hardcoded range rather than a query against
+    /// `ParserConfig`'s k-space/w-space/abyssal/void flags (those only
+    /// affect what [`crate::builder::parser`] writes at build time, not what
+    /// this read-side method selects). Systems without a 2D projection
+    /// (`position2DX`/`position2DY` both `NULL` -- CCP doesn't provide
+    /// one for every system, and [`crate::builder::parser`] only computes one
+    /// locally under a local-projection
+    /// [`Position2DMode`](crate::objects::Position2DMode)) are excluded
+    /// entirely rather than appearing with a placeholder position.
+    ///
+    /// Each point also carries the ids of every solar system it has a
+    /// stargate connection to (via `mapSystemConnections`), in
+    /// [`crate::objects::SdePoint::connections`].
+    #[tracing::instrument(skip(self))]
+    pub fn get_systems(&self) -> Result<HashMap<usize, SdePoint>, Error> {
+        let connection = self.get_standart_connection()?;
+
+        let mut result = HashMap::new();
+        // centerX, centerY, centerZ,
+        let mut query = String::from(
+            "SELECT sos.SolarSystemId, sos.position2DX, sos.position2DY, sos.SolarSystemName, msc.systemA, msc.systemB ",
+        );
+        query += " FROM mapSolarSystems AS sos LEFT OUTER JOIN mapSystemConnections AS msc";
+        query += " ON (msc.systemA = sos.SolarSystemId OR msc.systemB = sos.SolarSystemId)";
+        query += " WHERE sos.SolarSystemId BETWEEN ?1 AND ?2";
+        // position2DX/Y are nullable (unlike the old projX/Y/Z, which
+        // always carried a value via DEFAULT(0.0)): a system without a
+        // computed 2D projection (CCP doesn't provide one and the
+        // database wasn't built with a local-projection
+        // Position2DMode) simply doesn't show
+        // up on the map, instead of breaking the query.
+        query += " AND sos.position2DX IS NOT NULL AND sos.position2DY IS NOT NULL";
+        query += " ORDER BY sos.SolarSystemId ASC";
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = statement.query(params![30000000, 30999999])?;
+        let mut last_id = isize::MIN;
+        let mut point = SdePoint {
+            id: None,
+            name: None,
+            coords: [0.0, 0.0, 0.0],
+            connections: Vec::new(),
+            color: None,
+        };
+        while let Some(row) = rows.next()? {
+            let id = row.get::<usize, isize>(0)?;
+            if id != last_id {
+                if last_id != isize::MIN {
+                    result.insert(point.id.unwrap(), point.clone());
+                }
+                last_id = id;
+                point = self.system_point(row, id)?;
+            }
+            // NULL when the system has no stargates (Jove space).
+            if let (Some(a), Some(b)) = (
+                row.get::<usize, Option<i64>>(4)?,
+                row.get::<usize, Option<i64>>(5)?,
+            ) {
+                point.connections.push((a as usize, b as usize));
+            }
+        }
+        if last_id != isize::MIN {
+            result.insert(point.id.unwrap(), point);
+        }
+
+        self.add_star_colors(connection, &mut result)?;
+
+        Ok(result)
+    }
+
+    /// Star color, joined in separately (like get_solarsystem does for
+    /// SolarSystem.star): the main query above already depends on a
+    /// JOIN against mapSystemConnections, so folding mapStars/typeStar
+    /// into it directly would tie "has a color" to "has a stargate
+    /// connection" for no reason. A second pass over `result` keeps the
+    /// color purely additive -- systems with no mapStars row (~4.7%,
+    /// see SolarSystem::star) simply keep color: None.
+    fn add_star_colors(
+        &self,
+        connection: &Connection,
+        result: &mut HashMap<usize, SdePoint>,
+    ) -> Result<(), Error> {
+        let query = "SELECT ms.solarSystemId, ts.color \
+                      FROM mapStars AS ms INNER JOIN typeStar AS ts ON (ms.starTypeId = ts.typeId);";
+        let mut statement = connection.prepare(query)?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let system_id = row.get::<usize, isize>(0)? as usize;
+            let color: String = row.get(1)?;
+            result
+                .entry(system_id)
+                .and_modify(|p| p.color = Some(color));
+        }
+        Ok(())
+    }
+
+    /// The point of a system from the first row of its group in the
+    /// `get_systems` query (the scaled 2D position, no connections yet).
+    fn system_point(&self, row: &rusqlite::Row, id: isize) -> Result<SdePoint, Error> {
+        let x = row.get::<usize, f64>(1)?;
+        let y = row.get::<usize, f64>(2)?;
+
+        //we get the coordinate point and multiply with the adjust factor
+        let [x, y] = self.scale_coords([x, y], self.invert_coordinates);
+        Ok(SdePoint {
+            id: Some(id.try_into().unwrap()),
+            name: Some(row.get::<usize, String>(3)?),
+            coords: [x, y, 0.0],
+            connections: Vec::new(),
+            color: None,
+        })
+    }
+
+    /// The real 3D coordinates (`centerX`/`Y`/`Z`, always `NOT NULL` in
+    /// the schema, unlike the nullable `position2DX`/`Y` used
+    /// elsewhere) of the solar system with id `id_node`, scaled by
+    /// `self.factor` and sign-flipped (all three components -- real 3D
+    /// data, not screen space; see `Self::scale_coords`) if
+    /// `self.invert_coordinates`.
+    /// `Ok(None)` if no system has that id -- not an error. (The local
+    /// variable holding the id as a string is misleadingly named
+    /// `system_like_name`: despite the name, the query does an exact
+    /// `= ?1` match, not a `LIKE`.)
+    #[tracing::instrument(skip(self))]
+    pub fn get_system_coords(&self, id_node: usize) -> Result<Option<SdePoint>, Error> {
+        let connection = self.get_standart_connection()?;
+
+        // projX/Y/Z no longer exist (see the note in get_systems());
+        // this function returns a genuinely 3D SdePoint (unlike
+        // get_systems()/get_connections(), which only need 2
+        // components), so it reads centerX/Y/Z -- the system's
+        // real 3D coordinates, always `NOT NULL` in the schema, without
+        // the null-handling complexity position2DX/Y has.
+        let mut query = String::from("SELECT mss.centerX, mss.centerY, mss.centerZ ");
+        query += "FROM mapSolarSystems AS mss WHERE mss.SolarSystemId = ?1; ";
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let system_like_name = id_node.to_string();
+        let mut rows = statement.query(params![system_like_name])?;
+        if let Some(row) = rows.next()? {
+            let mut coord = SdePoint::from([
+                row.get::<usize, f64>(0)?,
+                row.get::<usize, f64>(1)?,
+                row.get::<usize, f64>(2)?,
+            ]);
+            if self.factor > 1.0 {
+                coord /= self.factor;
+            } else if self.factor < -1.0 {
+                coord *= self.factor.abs();
+            }
+            if self.invert_coordinates {
+                coord *= -1.0;
+            }
+            return Ok(Some(coord));
+        }
+        Ok(None)
+    }
+
+    /// Same shape and purpose as [`Self::get_systems`], but for the
+    /// abstract map (`mapAbstractSystems`, from `builder::community`'s
+    /// community-maintained, third-party layer -- see
+    /// `ParserConfig.with_third_party`) instead of the canonical one:
+    /// every abstract system, optionally filtered to just the given
+    /// `regions` (an empty `Vec` means no filter, same convention as
+    /// every other filtered getter here), keyed by `solarSystemId` with
+    /// each point's stargate connections attached. Unlike
+    /// [`Self::get_systems`], coordinates are never inverted here
+    /// regardless of `self.invert_coordinates`.
+    ///
+    /// `mapAbstractSystems` doesn't exist at all in a database built
+    /// without `--with-third-party` (or, equivalently,
+    /// `ParserConfig.with_third_party = false`) -- this method returns
+    /// an `Err(`[`Error`]`)` in that case, not a panic, whose
+    /// `std::error::Error::source()` is a
+    /// `rusqlite::Error::SqliteFailure(..., "no such table:
+    /// mapAbstractSystems")`. There's currently no way to check for
+    /// this ahead of the call other than handling that `Err`; a
+    /// fingerprint of what a given database actually contains,
+    /// queryable without hitting this error, is planned but not
+    /// implemented yet.
+    #[tracing::instrument(skip(self))]
+    pub fn get_abstract_systems(
+        &self,
+        regions: Vec<u32>,
+    ) -> Result<HashMap<usize, SdePoint>, Error> {
+        let connection = self.get_standart_connection()?;
+
+        let query = Self::abstract_systems_sql(!regions.is_empty());
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = if regions.is_empty() {
+            statement.query([])?
+        } else {
+            let id_list: array::Array = Rc::new(
+                regions
+                    .into_iter()
+                    .map(rusqlite::types::Value::from)
+                    .collect::<Vec<rusqlite::types::Value>>(),
+            );
+            // `?1` appears twice (once per UNION ALL branch, for the same
+            // region filter) but is bound once: SQLite reuses the same
+            // bound value for every occurrence of a given numbered
+            // parameter in a statement.
+            statement.query([id_list])?
+        };
+
+        let mut result = self.collect_abstract_points(&mut rows)?;
+
+        // Star color, same second-pass approach as get_systems (see there
+        // for why it isn't folded into the main query): unscoped by
+        // region, but `.and_modify` is a no-op for any solarSystemId not
+        // already a key of `result`, so this is still effectively
+        // region-filtered.
+        self.add_star_colors(connection, &mut result)?;
+
+        Ok(result)
+    }
+
+    /// The systems of the given `regions` that have no row in
+    /// `mapAbstractSystems`, so they are on no region map. Wormhole space
+    /// is the case: Thera is alone in its region (G-R00031), with no
+    /// stargates and no abstract position.
+    ///
+    /// They are placed at the origin `[0, 0]` of the region map, with no
+    /// connections, so a region of one system has something to show. Star
+    /// colors are filled like in [`Self::get_abstract_systems`]. An empty
+    /// `regions` returns nothing (unlike the other getters there is no
+    /// "all of them": every system of a mapped region is on the abstract
+    /// map already).
+    ///
+    /// Fails like [`Self::get_abstract_systems`] against a database built
+    /// without `--with-third-party`.
+    #[tracing::instrument(skip(self))]
+    pub fn get_unplaced_systems(
+        &self,
+        regions: Vec<u32>,
+    ) -> Result<HashMap<usize, SdePoint>, Error> {
+        let mut result = HashMap::new();
+        if regions.is_empty() {
+            return Ok(result);
+        }
+        let connection = self.get_standart_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT mss.solarSystemId, mss.solarSystemName \
+             FROM mapSolarSystems AS mss \
+             INNER JOIN mapConstellations AS mc ON mc.constellationId = mss.constellationId \
+             WHERE mc.regionId IN rarray(?1) \
+               AND NOT EXISTS (SELECT 1 FROM mapAbstractSystems AS mas \
+                               WHERE mas.solarSystemId = mss.solarSystemId) \
+             ORDER BY mss.solarSystemId ASC;",
+        )?;
+        let id_list: array::Array = Rc::new(
+            regions
+                .into_iter()
+                .map(rusqlite::types::Value::from)
+                .collect::<Vec<rusqlite::types::Value>>(),
+        );
+        let mut rows = statement.query([id_list])?;
+        while let Some(row) = rows.next()? {
+            let id = row.get::<usize, i64>(0)? as usize;
+            result.insert(
+                id,
+                SdePoint {
+                    id: Some(id),
+                    name: Some(row.get::<usize, String>(1)?),
+                    coords: [0.0, 0.0, 0.0],
+                    connections: Vec::new(),
+                    color: None,
+                },
+            );
+        }
+        drop(rows);
+        drop(statement);
+        self.add_star_colors(connection, &mut result)?;
+        Ok(result)
+    }
+
+    /// The `get_abstract_systems` query, with the region filter when `filtered`.
+    fn abstract_systems_sql(filtered: bool) -> String {
+        let filter = if filtered {
+            " WHERE mas.regionId IN rarray(?1) "
+        } else {
+            ""
+        };
+        // Driven from `mapAbstractSystems` (not from the connections), so
+        // a system without stargates (the Jove regions) still produces
+        // one row, with NULL `systemA`/`systemB`.
+        format!(
+            "SELECT mas.solarSystemId AS solarSystemId, mas.x, mas.y, mas.regionId, \
+                msc.systemA, msc.systemB, mss.solarSystemName \
+             FROM mapAbstractSystems AS mas \
+             INNER JOIN mapSolarSystems AS mss ON mss.solarSystemId = mas.solarSystemId \
+             LEFT OUTER JOIN mapSystemConnections AS msc \
+                ON (msc.systemA = mas.solarSystemId OR msc.systemB = mas.solarSystemId) \
+             {filter} \
+             ORDER BY solarSystemId ASC;"
+        )
+    }
+
+    /// Groups the rows of the `get_abstract_systems` query (ordered by
+    /// system) into one point per system, with its connections.
+    fn collect_abstract_points(
+        &self,
+        rows: &mut rusqlite::Rows,
+    ) -> Result<HashMap<usize, SdePoint>, Error> {
+        let mut result = HashMap::new();
+        let mut current: Option<SdePoint> = None;
+        while let Some(row) = rows.next()? {
+            let id = row.get::<usize, isize>(0)?;
+            if current.as_ref().and_then(|point| point.id) != Some(id as usize) {
+                // The finished point moves into `result` (no clone).
+                if let Some(finished) = current.take() {
+                    result.insert(finished.id.unwrap(), finished);
+                }
+                current = Some(self.abstract_system_point(row, id)?);
+            }
+            if let Some(point) = current.as_mut() {
+                // NULL for a system without stargates: it stays a
+                // point with no connections.
+                if let (Some(a), Some(b)) = (
+                    row.get::<usize, Option<i64>>(4)?,
+                    row.get::<usize, Option<i64>>(5)?,
+                ) {
+                    point.connections.push((a as usize, b as usize));
+                }
+            }
+        }
+        if let Some(point) = current {
+            result.insert(point.id.unwrap(), point);
+        }
+        Ok(result)
+    }
+
+    /// The point of an abstract system from the first row of its group in
+    /// the `get_abstract_systems` query (no connections yet).
+    /// Coordinates are not inverted here, unlike get_systems/get_connections.
+    fn abstract_system_point(&self, row: &rusqlite::Row, id: isize) -> Result<SdePoint, Error> {
+        let [x, y] = self.scale_coords(
+            [row.get::<usize, f64>(1)?, row.get::<usize, f64>(2)?],
+            false,
+        );
+        Ok(SdePoint {
+            id: Some(id.try_into().unwrap()),
+            name: Some(row.get::<usize, String>(6)?),
+            coords: [x, y, 0.0],
+            connections: Vec::new(),
+            color: None,
+        })
+    }
+
+    // ---- Segments of the maps ----
+
+    /// Line segments connecting solar systems via stargates, keyed by
+    /// `(systemA, systemB)` (matching [`crate::objects::SdeSegment::id`]).
+    /// Anyone who needs the spatial-query capabilities `SdeSegment`
+    /// already supports (`rstar::RTreeObject`/`rstar::PointDistance`)
+    /// can build their own `rstar::RTree::bulk_load(map.into_values().collect())`
+    /// from this directly.
+    #[tracing::instrument(skip(self))]
+    pub fn get_connections(&self) -> Result<HashMap<(usize, usize), SdeSegment>, Error> {
+        let connection = self.get_standart_connection()?;
+
+        let mut query = String::from("SELECT msc.systemA, msc.systemB, ");
+        query += "mssa.position2DX, mssa.position2DY, mssb.position2DX, mssb.position2DY ";
+        query += "FROM mapSystemConnections AS msc INNER JOIN mapSolarSystems AS mssa ";
+        query += "ON(msc.systemA = mssa.solarSystemId) INNER JOIN mapSolarSystems AS mssb ";
+        query += "ON(msc.systemB = mssb.solarSystemId) ";
+        // Both endpoints need a valid 2D projection to be able to draw
+        // the line; if either one is missing it (see the same
+        // nullability note in get_systems), the whole connection is
+        // skipped instead of failing the entire query.
+        query += "WHERE mssa.position2DX IS NOT NULL AND mssa.position2DY IS NOT NULL ";
+        query += "AND mssb.position2DX IS NOT NULL AND mssb.position2DY IS NOT NULL;";
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows = statement.query([])?;
+        let mut results = HashMap::new();
+        while let Some(row) = rows.next()? {
+            let point1 = self.scale_coords(
+                [row.get::<usize, f64>(2)?, row.get::<usize, f64>(3)?],
+                self.invert_coordinates,
+            );
+            let point2 = self.scale_coords(
+                [row.get::<usize, f64>(4)?, row.get::<usize, f64>(5)?],
+                self.invert_coordinates,
+            );
+            let id = (
+                row.get::<usize, i64>(0)? as usize,
+                row.get::<usize, i64>(1)? as usize,
+            );
+            results.insert(id, SdeSegment { id, point1, point2 });
+        }
+        Ok(results)
+    }
+
+    /// Same as [`Self::get_connections`], but for the abstract map
+    /// (`mapAbstractSystems`), optionally filtered by region.
+    ///
+    /// Same caveat as [`Self::get_abstract_systems`]: fails with an
+    /// `Err(`[`Error`]`)` sourced from `rusqlite::Error::SqliteFailure(...,
+    /// "no such table: mapAbstractSystems")`, not a panic, against a
+    /// database built without `--with-third-party`.
+    #[tracing::instrument(skip(self))]
+    pub fn get_abstract_connections(
+        &self,
+        regions: Vec<u32>,
+    ) -> Result<HashMap<(usize, usize), SdeSegment>, Error> {
+        let connection = self.get_standart_connection()?;
+
+        let mut query = String::from("SELECT msc.systemA, msc.systemB, ");
+        query += "masa.x, masa.y, masb.x, masb.y ";
+        query += "FROM mapSystemConnections AS msc INNER JOIN mapAbstractSystems AS masa ";
+        query += "ON(msc.systemA = masa.solarSystemId) INNER JOIN mapAbstractSystems AS masb ";
+        query += "ON(msc.systemB = masb.solarSystemId) ";
+        if !regions.is_empty() {
+            query += " WHERE masa.regionId IN rarray(?1) AND masb.regionId IN rarray(?2);";
+        }
+
+        let mut statement = connection.prepare(query.as_str())?;
+        let mut rows;
+        if regions.is_empty() {
+            rows = statement.query([])?;
+        } else {
+            let id_list: array::Array = Rc::new(
+                regions
+                    .into_iter()
+                    .map(rusqlite::types::Value::from)
+                    .collect::<Vec<rusqlite::types::Value>>(),
+            );
+            rows = statement.query([id_list.clone(), id_list])?;
+        }
+
+        let mut results = HashMap::new();
+        while let Some(row) = rows.next()? {
+            let point1 = self.scale_coords(
+                [row.get::<usize, f64>(2)?, row.get::<usize, f64>(3)?],
+                false,
+            );
+            let point2 = self.scale_coords(
+                [row.get::<usize, f64>(4)?, row.get::<usize, f64>(5)?],
+                false,
+            );
+            let id = (
+                row.get::<usize, i64>(0)? as usize,
+                row.get::<usize, i64>(1)? as usize,
+            );
+            results.insert(id, SdeSegment { id, point1, point2 });
+        }
+        Ok(results)
+    }
+
+    // ---- Fingerprint of the database ----
+
+    /// The settings this specific database was built with (see
+    /// [`crate::objects::SdeFingerprint`]), plus whether they still match the
+    /// stored hash -- `true` means the `sdeFingerprint` row hasn't been
+    /// altered since `Parser::build_database` wrote it (or at least not
+    /// in a way this hash would catch; see that type's docstring for
+    /// what this can and can't guarantee).
+    ///
+    /// `Ok(None)` if the table exists but has no row -- a database
+    /// built by calling [`crate::builder::parser::Parser::parse_data`]
+    /// directly, bypassing `build_database`, never gets one written.
+    /// `Err(...)` (not a panic) against a database built before this
+    /// table existed at all (`sdeFingerprint` wasn't always part of the
+    /// static schema) -- same "no such table" pattern as
+    /// [`Self::get_abstract_systems`] against a database without
+    /// `mapAbstractSystems`.
+    #[tracing::instrument(skip(self))]
+    pub fn get_fingerprint(&self) -> Result<Option<(SdeFingerprint, bool)>, Error> {
+        let connection = self.get_standart_connection()?;
+
+        let mut statement = connection.prepare(
+            "SELECT sdeBuild, language, forceIsometricPosition2d, isometricProjectedAxis, \
+            mapKspace, mapWspace, mapAbyssal, mapVoid, withGates, withMoons, withThirdParty, \
+            withIcebelts, withTriglavianStatus, withJoveObservatories, withSpecialOre, hash \
+            FROM sdeFingerprint WHERE id = 1",
+        )?;
+        let mut rows = statement.query([])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+
+        let (fingerprint, stored_hash) = Self::fingerprint_from_row(row)?;
+        let matches = fingerprint.hash() == stored_hash;
+        Ok(Some((fingerprint, matches)))
+    }
+
+    /// One row of the `sdeFingerprint` query as the fingerprint plus the
+    /// hash stored next to it.
+    fn fingerprint_from_row(row: &rusqlite::Row) -> Result<(SdeFingerprint, String), Error> {
+        let axis_text: String = row.get(3)?;
+        // `forceIsometricPosition2d` + `isometricProjectedAxis` encode
+        // `Position2DMode` (see `Position2DMode::fingerprint_columns`,
+        // shared with the write side so the two can never disagree).
+        let position_2d = Position2DMode::from_fingerprint_columns(row.get(2)?, axis_text.as_str());
+        // Columns 4..=10 are the seven boolean flags, 11..=14 the four
+        // nullable ones, in table order.
+        let mut flags = [false; 7];
+        for (offset, flag) in flags.iter_mut().enumerate() {
+            *flag = row.get(4 + offset)?;
+        }
+        let [
+            map_kspace,
+            map_wspace,
+            map_abyssal,
+            map_void,
+            with_gates,
+            with_moons,
+            with_third_party,
+        ] = flags;
+        let mut optional_flags = [None; 4];
+        for (offset, flag) in optional_flags.iter_mut().enumerate() {
+            *flag = row.get(11 + offset)?;
+        }
+        let [
+            with_icebelts,
+            with_triglavian_status,
+            with_jove_observatories,
+            with_special_ore,
+        ] = optional_flags;
+
+        let fingerprint = SdeFingerprint {
+            sde_build: row.get(0)?,
+            language: row.get(1)?,
+            position_2d,
+            map_kspace,
+            map_wspace,
+            map_abyssal,
+            map_void,
+            with_gates,
+            with_moons,
+            with_third_party,
+            with_icebelts,
+            with_triglavian_status,
+            with_jove_observatories,
+            with_special_ore,
+        };
+        Ok((fingerprint, row.get(15)?))
+    }
+
+    // ---- Universe ----
+
+    /// Populates `self.universe` with the whole SDE: regions,
+    /// constellations, solar systems, planets, and moons, all
+    /// unfiltered (an empty id list to each underlying getter means "no
+    /// filter, return everything" throughout this API). `planets`/
+    /// `moons` come back from [`Self::get_planet`]/[`Self::get_moon`]
+    /// as a `Vec`, keyed here by `.id` into the `HashMap` shape
+    /// `universe.planets`/`.moons` actually store. Always returns
+    /// `Ok(true)` -- the `bool` carries no information beyond
+    /// "succeeded" (any failure short-circuits via `?` instead).
+    #[tracing::instrument(skip(self))]
+    pub fn get_universe(&mut self) -> Result<bool, Error> {
+        let filter = Vec::new();
+        self.universe.regions = self.get_region(filter.clone(), None)?;
+        self.universe.constellations = self.get_constellation(filter.clone())?;
+        self.universe.solar_systems = self.get_solarsystem(filter.clone())?;
+        self.universe.planets = self
+            .get_planet(filter.clone())?
+            .into_iter()
+            .map(|planet| (planet.id, planet))
+            .collect();
+        self.universe.moons = self
+            .get_moon(filter)?
+            .into_iter()
+            .map(|moon| (moon.id, moon))
+            .collect();
+        Ok(true)
+    }
+
+    // ---- System summaries ----
+
+    /// The [`SystemSummary`] of every solar system, by its identifier, in a
+    /// single query: the same systems, names, regions and classes that
+    /// [`Self::get_universe`] gives, without reading the planets, the moons
+    /// or the stars.
+    #[tracing::instrument(skip(self))]
+    pub fn get_system_summaries(&self) -> Result<HashMap<u32, SystemSummary>, Error> {
+        let connection = self.get_standart_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT mss.solarSystemId, mss.solarSystemName, mc.regionId, mr.regionName, \
+                    mss.security, COALESCE(mss.wormholeClassId, mr.wormholeClassId) \
+             FROM mapSolarSystems AS mss \
+             INNER JOIN mapConstellations AS mc ON mc.constellationId = mss.constellationId \
+             INNER JOIN mapRegions AS mr ON mr.regionId = mc.regionId;",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut result = HashMap::new();
+        while let Some(row) = rows.next()? {
+            result.insert(
+                row.get::<usize, u32>(0)?,
+                SystemSummary {
+                    name: row.get(1)?,
+                    region_id: row.get(2)?,
+                    region_name: row.get(3)?,
+                    security: row.get(4)?,
+                    wormhole_class: row.get(5)?,
+                },
+            );
+        }
+        Ok(result)
+    }
+}

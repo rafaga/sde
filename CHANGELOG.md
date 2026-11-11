@@ -8,6 +8,97 @@ project uses [Semantic Versioning](https://semver.org/). Published versions (tag
 each tag. The top section covers what is on the current branch on top of the latest tag
 (`0.7.4`) and has no version bump in `Cargo.toml` yet.
 
+## [0.8.0] - 2026-11-11
+
+### Changed
+
+- `SdeManager` opens its SQLite connection once, the first time it reads, and reuses it in every
+  later read (before, each read opened the file again). The connection stays open while the manager
+  lives, so drop the manager before replacing `sde.db` (on Windows an open file cannot be
+  replaced). Cloning a manager starts with its own connection. The universe loads ~11% faster.
+- `SdeManager` and everything it reads are in `src/objects/sde_manager.rs`, no longer in `lib.rs`. 
+  The public API is the same (`sde::SdeManager` stays).
+- `builder::parser` split the same way: `parser.rs` keeps the config, the helpers to read records, the
+  orchestration (`parse_data`, foreign keys, `build_database`), and each table has its own file in
+  `src/builder/parser/` (`types`, `races`, `corporations`, `factions`, `regions`, `constellations`,
+  `solar_systems`, `stargates`, `stars`, `planets`, `moons`, `connections`, `stations`) with its
+  `parse_*` method and its tests. Nothing changes in the public paths.
+
+### Fixed
+
+- `get_systems` and `get_abstract_systems` now list systems without stargates (the Jove
+  regions UUA-F4, J7HZ-F and A821-A): they were dropped because both queries started from
+  `mapSystemConnections`. They appear with an empty `connections` list.
+
+### Added
+
+- `GateGraph` counts crossing Thera: a route that comes in through one wormhole of Thera and goes
+  out through another has a leg of `THERA_CROSSING_METERS` (73% of the 342 AU of its diameter,
+  249.66 AU, a standard figure), with the constants `THERA_SYSTEM_ID`, `THERA_DIAMETER_AU` and
+  `THERA_CROSSING_FRACTION`. Before it was free, so the shortest flight always preferred it. Starting
+  or ending in Thera is not crossing it, and the other systems without gates keep their free wormholes.
+- `SdeManager::get_system_summaries` and `SystemSummary`: the name, security, region and wormhole
+  class of every system in a single query, without reading the planets and moons that
+  `get_universe` does.
+- `Region::wormhole_class`, `SolarSystem::wormhole_class` and `Universe::wormhole_class`: the wormhole
+  class lives in the region (`mapRegions.wormholeClassId`: 1 to 6 for C1 to C6, 12 for Thera, 13, 19 to
+  23 abyssal, 25 Pochven, 7 to 9 for k-space), a system only has one of its own when it is a drifter
+  (14 to 18), and `Universe::wormhole_class(system)` gives the one that applies.
+- `SdeManager::get_unplaced_systems`: the systems of some regions that have no abstract position
+  (Thera, alone in G-R00031), placed at the origin of the region map with no connections.
+- `links`: connections between systems that are not stargates, kept in a `LinkLayer` next to
+  the `Universe`, which does not change (Thera stays one system with its real id and no
+  gates). A `Link` has an origin, a destination and a `LinkSource` (for now a `Wormhole`
+  with its signatures and, if known, when it collapses); it works in both directions.
+  `LinkLayer` has no clock: `active` and `neighbours` take the `now` to look at from the
+  caller. `LinkLayer::neighbours` gives the stargate neighbours of a system followed by the
+  ones an active link leads to, so the code that must keep seeing gates only goes on reading
+  `SolarSystem::connections`. New dependency: `chrono` (no default features).
+- `GateGraph::with_links`, `is_virtual` and `virtual_link`: a copy of the graph with the active
+  links of a `LinkLayer` as virtual gates (an entry and an exit for each direction of a link).
+  A wormhole costs one jump and no flight, because where its signature is inside the system is
+  not known, so `Priority::ShortestFlight` favours it. A system without stargates, like Thera,
+  can be a start, an end or a stop of a route. A virtual gate is no shortcut between the real
+  gates of its system: it can only be entered by flying to it and left by jumping, and the
+  other way round for its exit. The virtual gates are among `Route::gates`, `gate` and
+  `gates_in_system`, and `gate_count` counts them; the graph without links is not changed.
+- `projection_patch` (feature `projection-patch`, on by default): a postprocessing step for
+  `sde.db` that moves apart the systems whose 2D projection puts them closer than
+  `ProjectionPatch::distance` (default 16 map units, read at `ProjectionPatch::factor`), so a
+  map that draws every system as a node can tell them apart. It only rewrites
+  `position2DX`/`position2DY` of the K-space systems and is deterministic. It is idempotent
+  without recording anything: on a database that is already patched nothing is too close, so
+  it moves nothing and writes nothing. `ProjectionPatch::apply` runs it on the database of an
+  `SdeManager`, and the distance is in the units of that manager: the patch takes its `factor`,
+  so what is patched and how it is read can't disagree.
+- `Pipeline::projection_patch`, `Pipeline::factor` and `Event::ProjectionPatch`: with a patch
+  set, `build` and `update` end by applying it, whatever they did (a fresh build, a rebuild from
+  the mirror, a version bump or an up-to-date database), so a database built before the patch
+  existed gets it on its next update. `factor` is the one the database is read with, and is only
+  read when `projection_patch` is set. `sde-builder` takes `--projection-patch <DISTANCE>`, which
+  requires `--factor <FACTOR>` (no default).
+- `Pipeline::cancel` (an `Arc<AtomicBool>`) and `Outcome::Cancelled`: a caller can stop a
+  `build` or `update` from another thread. The phase in progress finishes and the next one does
+  not start; the database there was is left alone and the build number recorded next to CCP's
+  zip is forgotten, so the next update still sees that export as new.
+- `Event::Downloaded { bytes }`, `Event::Verifying`, `Event::Verified` and
+  `Event::CleanupFailed { error }`: what a window showing progress needs. A failure removing what
+  was downloaded no longer fails a build whose database and mirror are in place.
+- `UpdateOptions::build_missing_mirror` (default `true`, as before): with `false`, a database at
+  CCP's latest build that has no mirror is left as it is instead of being rebuilt from CCP's
+  export just to leave one, and says it is up to date with CCP out of reach instead of failing.
+
+### Changed
+
+- `Pipeline` has new public fields (`cancel`, and with the `projection-patch` feature, on by
+  default, `projection_patch` and `factor`), so a struct literal needs `cancel: None`,
+  `projection_patch: None` and `factor` to keep the old behavior. `UpdateOptions` has a new
+  field too.
+- `pipeline::Event` and `pipeline::Outcome` are `#[non_exhaustive]`: a new kind is no longer a
+  breaking change, so a `match` on them needs a wildcard arm.
+- A projection patch that fails no longer fails `build` or `update`: it is reported as
+  `Event::ProjectionPatchFailed`, and the database stays as it was built.
+
 ## [0.7.5] — 2026-11-04
 
 ### Added

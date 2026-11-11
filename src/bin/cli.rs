@@ -84,6 +84,18 @@ struct Common {
     /// Suppress the progress output the parser prints by default.
     #[arg(short, long)]
     quiet: bool,
+    /// After building or updating, move apart the systems whose 2D
+    /// projection puts them closer than DISTANCE map units (16 is the usual
+    /// value), unless the database already has it. Off unless given.
+    #[cfg(feature = "projection-patch")]
+    #[arg(long, value_name = "DISTANCE", requires = "factor")]
+    projection_patch: Option<f64>,
+    /// The factor the database is read with, which gives the units of
+    /// `--projection-patch` (the columns are divided by it). There is no
+    /// default: whoever reads the database knows it.
+    #[cfg(feature = "projection-patch")]
+    #[arg(long, value_name = "FACTOR", allow_negative_numbers = true)]
+    factor: Option<f64>,
 }
 
 fn build_number(text: &str) -> Result<String, String> {
@@ -133,6 +145,17 @@ impl Common {
             },
             keep_source: self.keep_source,
             updates,
+            cancel: None,
+            #[cfg(feature = "projection-patch")]
+            projection_patch: self.projection_patch.map(|distance| {
+                sde::projection_patch::ProjectionPatch {
+                    distance,
+                    ..Default::default()
+                }
+            }),
+            // Required with `--projection-patch`, and not used without it.
+            #[cfg(feature = "projection-patch")]
+            factor: self.factor.unwrap_or(1.0),
         })
     }
 }
