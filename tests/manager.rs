@@ -53,7 +53,11 @@ impl Fixture {
         let conn = Connection::open(&path).expect("cannot create fixture database");
         conn.execute_batch(
             "
-            CREATE TABLE mapRegions (regionId INTEGER PRIMARY KEY, regionName TEXT NOT NULL);
+            CREATE TABLE mapRegions (
+                regionId INTEGER PRIMARY KEY,
+                regionName TEXT NOT NULL,
+                wormholeClassId INTEGER
+            );
             CREATE TABLE mapConstellations (
                 constellationId INTEGER PRIMARY KEY,
                 constellationName TEXT NOT NULL,
@@ -66,7 +70,8 @@ impl Fixture {
                 constellationId INTEGER NOT NULL,
                 centerX REAL, centerY REAL, centerZ REAL,
                 position2DX REAL, position2DY REAL,
-                security REAL
+                security REAL,
+                wormholeClassId INTEGER
             );
             CREATE TABLE mapSystemConnections (
                 systemA INTEGER NOT NULL,
