@@ -31,12 +31,34 @@
 //!
 //! [`GateGraph::route`] finds the route with Dijkstra's algorithm.
 //!
+//! # Links that are not stargates
+//!
+//! [`GateGraph::with_links`] adds the connections of a
+//! [`LinkLayer`](crate::links::LinkLayer) (a wormhole to Thera, say) as
+//! **virtual gates**, a pair for each link, one in each system, that lead
+//! to each other. The pilot jumps through a wormhole like through a
+//! stargate, so it costs **one jump**; where its signature is inside the
+//! system is not known, so reaching it or leaving it costs **no leg**
+//! (no distance and no fixed leg cost). That makes [`Priority::ShortestFlight`]
+//! favour them, since a jump costs no flight; choose another priority if
+//! that is not wanted. A system without stargates, Thera for one, becomes
+//! an endpoint that a route can start from, end at or cross.
+//!
+//! The exception is crossing Thera: a route that comes in through one
+//! wormhole and goes out through another flies across the system, which is
+//! about [`THERA_DIAMETER_AU`] wide, so that flight is one leg of
+//! [`THERA_CROSSING_METERS`] (the [`THERA_CROSSING_FRACTION`] of the
+//! diameter, a standard figure and not a measure of the real flight). Starting
+//! or ending in Thera is not crossing it.
+//!
 //! The graph is built in memory from `mapSystemGates` (one query, a few
 //! tens of milliseconds for the whole universe) and the leg distances are
 //! computed on demand while searching, so nothing derived is stored in the
 //! database.
 
+use crate::links::{Link, LinkLayer};
 use crate::{Error, SdeManager};
+use chrono::{DateTime, Utc};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::ops::Add;
@@ -44,6 +66,20 @@ use std::ops::Add;
 /// Meters in one astronomical unit. Handy to express a [`RouteCost`] in
 /// AU: `Priority::balanced(2.0 * METERS_PER_AU, 0.0)`.
 pub const METERS_PER_AU: f64 = 149_597_870_700.0;
+
+/// The id of Thera, the system that routes cross by wormhole.
+pub const THERA_SYSTEM_ID: usize = 31_000_005;
+
+/// The diameter of Thera, in astronomical units.
+pub const THERA_DIAMETER_AU: f64 = 342.0;
+
+/// The part of the diameter of Thera that a route is taken to fly when it
+/// crosses the system: a standard figure.
+pub const THERA_CROSSING_FRACTION: f64 = 0.73;
+
+/// The leg of a route that crosses Thera, in meters (the unit of the
+/// distances of a route): 249.66 AU.
+pub const THERA_CROSSING_METERS: f64 = THERA_DIAMETER_AU * THERA_CROSSING_FRACTION * METERS_PER_AU;
 
 /// A stargate, as stored in `mapSystemGates`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -346,6 +382,26 @@ pub struct GateGraph {
     index: HashMap<usize, usize>,
     /// System id -> indexes in `gates` of the gates it has.
     by_system: HashMap<usize, Vec<usize>>,
+    /// The links the virtual gates stand for (see [`GateGraph::with_links`]).
+    links: Vec<Link>,
+    /// Index in `gates` of a virtual gate -> index in `links` of its link,
+    /// and which end of the jump it is.
+    virtual_nodes: HashMap<usize, (usize, VirtualRole)>,
+}
+
+/// What a virtual gate is for. A link is made of two jumps, one for each
+/// direction, and each jump has its own pair of gates: the pilot enters
+/// through one and leaves by the other. Keeping them apart is what stops a
+/// virtual gate, which has no position, from being a free way to cross a
+/// system between two real gates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VirtualRole {
+    /// Where the jump starts: it can be reached by flying, and the only
+    /// thing to do there is to jump.
+    Entry,
+    /// Where the jump ends: it can only be reached by jumping, and from
+    /// there the pilot flies on.
+    Exit,
 }
 
 impl GateGraph {
@@ -399,7 +455,99 @@ impl GateGraph {
         Ok(GateGraph::from_gates(gates))
     }
 
-    /// Number of gates in the graph.
+    /// A copy of the graph with the links of `layer` that are active at
+    /// `now` as virtual gates, as the [module documentation](self) says.
+    /// The virtual gates the graph already had are dropped first, so it can
+    /// be called again on the result when the layer changes.
+    ///
+    /// Each link makes four virtual gates, an entry and an exit for each
+    /// direction: a route enters a wormhole by an entry gate and comes out
+    /// of an exit gate, which has no [`Gate::destination_id`] of a gate that
+    /// exists. A virtual gate has an id that no real gate has, and it is
+    /// among the gates of its system ([`GateGraph::gate`],
+    /// [`GateGraph::gates_in_system`], [`Route::gates`]);
+    /// [`GateGraph::is_virtual`] and [`GateGraph::virtual_link`] tell them
+    /// apart. Its [`Gate::position`] is `[0.0; 3]` and means nothing.
+    pub fn with_links(&self, layer: &LinkLayer, now: DateTime<Utc>) -> GateGraph {
+        let real = self
+            .gates
+            .iter()
+            .enumerate()
+            .filter(|(node, _)| !self.virtual_nodes.contains_key(node))
+            .map(|(_, gate)| *gate)
+            .collect();
+        let mut graph = GateGraph::from_gates(real);
+        let mut next_id = graph
+            .gates
+            .iter()
+            .map(|gate| gate.id)
+            .max()
+            .map_or(0, |id| id + 1);
+        for link in layer
+            .active(now)
+            .filter(|link| link.origin != link.destination)
+        {
+            let (origin, destination) = (link.origin as usize, link.destination as usize);
+            let link_index = graph.links.len();
+            graph.links.push(link.clone());
+            // One jump for each direction: an entry gate where it starts and
+            // an exit gate where it ends.
+            for (from, to) in [(origin, destination), (destination, origin)] {
+                let (entry, exit) = (next_id, next_id + 1);
+                next_id += 2;
+                graph.add_virtual(entry, from, exit, to, link_index, VirtualRole::Entry);
+                graph.add_virtual(exit, to, usize::MAX, from, link_index, VirtualRole::Exit);
+            }
+        }
+        graph
+    }
+
+    /// Adds one virtual gate.
+    fn add_virtual(
+        &mut self,
+        id: usize,
+        system_id: usize,
+        destination_id: usize,
+        destination_system_id: usize,
+        link_index: usize,
+        role: VirtualRole,
+    ) {
+        let node = self.gates.len();
+        self.index.insert(id, node);
+        self.by_system.entry(system_id).or_default().push(node);
+        self.virtual_nodes.insert(node, (link_index, role));
+        self.gates.push(Gate {
+            id,
+            system_id,
+            destination_id,
+            destination_system_id,
+            position: [0.0; 3],
+        });
+    }
+
+    /// The role of the gate `node`, when it is a virtual one.
+    fn role(&self, node: usize) -> Option<VirtualRole> {
+        self.virtual_nodes.get(&node).map(|(_, role)| *role)
+    }
+
+    /// Whether the gate with this id is a virtual one, made by
+    /// [`GateGraph::with_links`].
+    pub fn is_virtual(&self, gate_id: usize) -> bool {
+        self.index
+            .get(&gate_id)
+            .is_some_and(|node| self.virtual_nodes.contains_key(node))
+    }
+
+    /// The link a virtual gate stands for, or `None` for a real gate or one
+    /// the graph doesn't have.
+    pub fn virtual_link(&self, gate_id: usize) -> Option<&Link> {
+        let node = self.index.get(&gate_id)?;
+        self.virtual_nodes
+            .get(node)
+            .map(|(link_index, _)| &self.links[*link_index])
+    }
+
+    /// Number of gates in the graph, the virtual ones included.
     pub fn gate_count(&self) -> usize {
         self.gates.len()
     }
@@ -475,7 +623,7 @@ impl GateGraph {
                 continue;
             }
             let gate = &self.gates[node];
-            if let Some(exit) = self.exit_cost(gate, &to, &pricing)
+            if let Some(exit) = self.exit_cost(node, &to, &pricing)
                 && spent + exit < best_total
             {
                 best_total = spent + exit;
@@ -484,10 +632,10 @@ impl GateGraph {
             // Legs to the other gates of the same system.
             if let Some(neighbours) = self.by_system.get(&gate.system_id) {
                 for other in neighbours {
-                    if *other == node {
+                    if *other == node || !self.can_fly(node, *other) {
                         continue;
                     }
-                    let next = spent + pricing.leg(gate.distance_to(self.gates[*other].position));
+                    let next = spent + self.leg_cost(node, *other, &pricing);
                     if next < best_cost[*other] {
                         best_cost[*other] = next;
                         previous[*other] = Some(node);
@@ -583,8 +731,10 @@ impl GateGraph {
     fn entry_costs(&self, from: &Endpoint, pricing: &Pricing) -> Vec<(usize, Cost)> {
         match from {
             Endpoint::Gate(id) => vec![(self.index[id], Cost::ZERO)],
+            // Nobody is at an exit gate without having jumped to it.
             Endpoint::System(id) => self.by_system[id]
                 .iter()
+                .filter(|node| self.role(**node) != Some(VirtualRole::Exit))
                 .map(|node| (*node, Cost::ZERO))
                 .collect(),
             Endpoint::Point {
@@ -592,21 +742,67 @@ impl GateGraph {
                 position,
             } => self.by_system[system_id]
                 .iter()
-                .map(|node| (*node, pricing.leg(self.gates[*node].distance_to(*position))))
+                .filter(|node| self.role(**node) != Some(VirtualRole::Exit))
+                .map(|node| (*node, self.point_cost(*node, *position, pricing)))
                 .collect(),
         }
     }
 
-    /// What it costs to finish at `to` when standing at `gate`, or `None`
-    /// if `gate` is not a valid way to finish there.
-    fn exit_cost(&self, gate: &Gate, to: &Endpoint, pricing: &Pricing) -> Option<Cost> {
+    /// What it costs to finish at `to` when standing at the gate `node`, or
+    /// `None` if that gate is not a valid way to finish there.
+    fn exit_cost(&self, node: usize, to: &Endpoint, pricing: &Pricing) -> Option<Cost> {
+        // An entry gate is only for jumping: ending there would be a way to
+        // reach the end of the route without the flight to it.
+        if self.role(node) == Some(VirtualRole::Entry) {
+            return None;
+        }
+        let gate = &self.gates[node];
         match to {
             Endpoint::Gate(id) => (gate.id == *id).then_some(Cost::ZERO),
             Endpoint::System(id) => (gate.system_id == *id).then_some(Cost::ZERO),
             Endpoint::Point {
                 system_id,
                 position,
-            } => (gate.system_id == *system_id).then(|| pricing.leg(gate.distance_to(*position))),
+            } => (gate.system_id == *system_id).then(|| self.point_cost(node, *position, pricing)),
+        }
+    }
+
+    /// Whether the pilot can fly from the gate `from` to the gate `to`, both
+    /// of the same system. Nobody flies out of an entry gate (the only thing
+    /// to do there is to jump) nor to an exit gate (it is reached by
+    /// jumping).
+    fn can_fly(&self, from: usize, to: usize) -> bool {
+        self.role(from) != Some(VirtualRole::Entry) && self.role(to) != Some(VirtualRole::Exit)
+    }
+
+    /// Whether the flight from the gate `from` to the gate `to` crosses Thera:
+    /// it comes out of a wormhole of Thera and goes into another.
+    fn crosses_thera(&self, from: usize, to: usize) -> bool {
+        self.gates[from].system_id == THERA_SYSTEM_ID
+            && self.role(from) == Some(VirtualRole::Exit)
+            && self.role(to) == Some(VirtualRole::Entry)
+    }
+
+    /// What the flight between two gates of the same system costs. A virtual
+    /// gate has no known position, so any flight to or from it is free,
+    /// except the one that crosses Thera.
+    fn leg_cost(&self, from: usize, to: usize, pricing: &Pricing) -> Cost {
+        if self.crosses_thera(from, to) {
+            pricing.leg(THERA_CROSSING_METERS)
+        } else if self.virtual_nodes.contains_key(&from) || self.virtual_nodes.contains_key(&to) {
+            Cost::ZERO
+        } else {
+            pricing.leg(self.gates[from].distance_to(self.gates[to].position))
+        }
+    }
+
+    /// What the flight between the gate `node` and a point of its system
+    /// costs; free for a virtual gate, as in [`Self::leg_cost`].
+    fn point_cost(&self, node: usize, position: [f64; 3], pricing: &Pricing) -> Cost {
+        if self.virtual_nodes.contains_key(&node) {
+            Cost::ZERO
+        } else {
+            pricing.leg(self.gates[node].distance_to(position))
         }
     }
 
@@ -624,20 +820,29 @@ impl GateGraph {
         let mut distance = 0.0;
         let mut legs = 0;
         let mut jumps = 0;
-        if let (Endpoint::Point { position, .. }, Some(first)) = (from, path.first()) {
+        // A flight to or from a virtual gate is not one: see `leg_cost`.
+        let is_real = |node: &usize| !self.virtual_nodes.contains_key(node);
+        if let (Endpoint::Point { position, .. }, Some(first)) = (from, path.first())
+            && is_real(first)
+        {
             distance += self.gates[*first].distance_to(*position);
             legs += 1;
         }
         for pair in path.windows(2) {
             let (a, b) = (&self.gates[pair[0]], &self.gates[pair[1]]);
-            if a.system_id == b.system_id {
+            if a.system_id != b.system_id {
+                jumps += 1;
+            } else if self.crosses_thera(pair[0], pair[1]) {
+                distance += THERA_CROSSING_METERS;
+                legs += 1;
+            } else if is_real(&pair[0]) && is_real(&pair[1]) {
                 distance += a.distance_to(b.position);
                 legs += 1;
-            } else {
-                jumps += 1;
             }
         }
-        if let (Endpoint::Point { position, .. }, Some(last)) = (to, path.last()) {
+        if let (Endpoint::Point { position, .. }, Some(last)) = (to, path.last())
+            && is_real(last)
+        {
             distance += self.gates[*last].distance_to(*position);
             legs += 1;
         }
@@ -703,6 +908,304 @@ mod tests {
             system_id: 1,
             position: [0.0, 0.0, 0.0],
         }
+    }
+
+    fn now() -> DateTime<Utc> {
+        DateTime::from_timestamp(1_800_000_000, 0).unwrap()
+    }
+
+    fn wormhole_between(a: u32, b: u32, expires_in: Option<chrono::TimeDelta>) -> Link {
+        Link::wormhole(
+            a,
+            b,
+            crate::links::Wormhole {
+                out_signature: String::from("ABC-123"),
+                in_signature: None,
+                expires_at: expires_in.map(|left| now() + left),
+            },
+        )
+    }
+
+    /// `sample()` with system 7, which has no gates, linked to systems 1
+    /// and 4 by wormholes.
+    fn with_thera() -> GateGraph {
+        sample().with_links(
+            &LinkLayer::from_links(vec![
+                wormhole_between(1, 7, None),
+                wormhole_between(7, 4, None),
+            ]),
+            now(),
+        )
+    }
+
+    #[test]
+    fn a_system_without_gates_is_unknown_until_a_link_reaches_it() {
+        assert!(
+            sample()
+                .route(
+                    Endpoint::System(1),
+                    Endpoint::System(7),
+                    &Priority::FewestJumps
+                )
+                .is_err()
+        );
+        let route = with_thera()
+            .route(
+                Endpoint::System(1),
+                Endpoint::System(7),
+                &Priority::FewestJumps,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(route.jumps, 1);
+        assert_eq!(route.legs, 0);
+        assert_eq!(route.distance, 0.0);
+    }
+
+    #[test]
+    fn a_wormhole_is_one_jump_and_no_flight() {
+        let graph = with_thera();
+        // Without the links the best route from system 1 to 4 costs 250 at
+        // this jump price (see `cheap_jumps_prefer_the_short_flight`);
+        // through Thera it is two jumps and no flight.
+        let route = graph
+            .route(
+                start(),
+                Endpoint::System(4),
+                &Priority::balanced(100.0, 0.0),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(route.jumps, 2);
+        assert_eq!(route.legs, 0);
+        assert_eq!(route.distance, 0.0);
+        assert_eq!(route.cost, 200.0);
+        assert_eq!(route.gates.len(), 4);
+        assert!(route.gates.iter().all(|gate| graph.is_virtual(*gate)));
+    }
+
+    #[test]
+    fn a_wormhole_is_not_a_shortcut_between_the_gates_of_its_system() {
+        // Gates 11 and 13 are 500 apart and system 1 has a wormhole: the
+        // flight between them costs what it did without it.
+        let route = with_thera()
+            .route(
+                Endpoint::Gate(11),
+                Endpoint::Gate(13),
+                &Priority::balanced(1000.0, 0.0),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(route.gates, vec![11, 13]);
+        assert_eq!(route.legs, 1);
+        assert_eq!(route.distance, 500.0);
+    }
+
+    #[test]
+    fn a_flight_to_a_point_is_not_skipped_by_the_wormhole_of_its_system() {
+        let route = with_thera()
+            .route(
+                Endpoint::Gate(11),
+                Endpoint::Point {
+                    system_id: 1,
+                    position: [500.0, 0.0, 0.0],
+                },
+                &Priority::balanced(1000.0, 0.0),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(route.distance, 500.0);
+        assert_eq!(route.legs, 1);
+    }
+
+    /// `sample()` with the real Thera linked to systems 1, 4 and 8.
+    fn with_real_thera() -> GateGraph {
+        let thera = THERA_SYSTEM_ID as u32;
+        sample().with_links(
+            &LinkLayer::from_links(vec![
+                wormhole_between(1, thera, None),
+                wormhole_between(thera, 4, None),
+                wormhole_between(thera, 8, None),
+            ]),
+            now(),
+        )
+    }
+
+    #[test]
+    fn crossing_thera_is_a_leg_of_the_standard_length() {
+        assert!((THERA_CROSSING_METERS / METERS_PER_AU - 249.66).abs() < 1e-9);
+        let route = with_real_thera()
+            .route(
+                Endpoint::System(1),
+                Endpoint::System(8),
+                &Priority::balanced(100.0, 10.0),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(route.jumps, 2);
+        assert_eq!(route.legs, 1);
+        assert_eq!(route.distance, THERA_CROSSING_METERS);
+        assert_eq!(route.cost, THERA_CROSSING_METERS + 10.0 + 200.0);
+    }
+
+    #[test]
+    fn starting_or_ending_in_thera_is_not_crossing_it() {
+        let thera = Endpoint::System(THERA_SYSTEM_ID);
+        for (from, to) in [(Endpoint::System(1), thera), (thera, Endpoint::System(8))] {
+            let route = with_real_thera()
+                .route(from, to, &Priority::FewestJumps)
+                .unwrap()
+                .unwrap();
+            assert_eq!(route.jumps, 1);
+            assert_eq!(route.legs, 0);
+            assert_eq!(route.distance, 0.0);
+        }
+    }
+
+    #[test]
+    fn the_crossing_of_thera_decides_between_it_and_the_gates() {
+        // Without the crossing a route through Thera would be free of flight
+        // and always win the shortest flight; with it, the 50 of flight
+        // through the gates of system 2 is better than 249.66 AU.
+        let graph = with_real_thera();
+        let route = graph
+            .route(start(), Endpoint::System(4), &Priority::ShortestFlight)
+            .unwrap()
+            .unwrap();
+        assert_eq!(route.distance, 50.0);
+        assert!(route.gates.iter().all(|gate| !graph.is_virtual(*gate)));
+    }
+
+    #[test]
+    fn a_route_through_thera_can_come_back_through_another_wormhole() {
+        // From system 1 to Thera and on to system 8, which has no gates
+        // either: the second jump starts where the first ended, with no
+        // flight in between (not even the fixed cost of a leg).
+        let graph = sample().with_links(
+            &LinkLayer::from_links(vec![
+                wormhole_between(1, 7, None),
+                wormhole_between(7, 8, None),
+            ]),
+            now(),
+        );
+        let route = graph
+            .route(
+                Endpoint::System(1),
+                Endpoint::System(8),
+                &Priority::balanced(100.0, 50.0),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(route.jumps, 2);
+        assert_eq!(route.legs, 0);
+        assert_eq!(route.cost, 200.0);
+    }
+
+    #[test]
+    fn a_wormhole_does_not_make_a_route_longer_when_the_gates_are_better() {
+        let route = with_thera()
+            .route(start(), Endpoint::System(4), &Priority::FewestJumps)
+            .unwrap()
+            .unwrap();
+        // One jump through the stargate at 500 beats two through Thera.
+        assert_eq!(route.gates, vec![13, 43]);
+        assert_eq!(route.jumps, 1);
+    }
+
+    #[test]
+    fn the_shortest_flight_favours_a_wormhole() {
+        let route = with_thera()
+            .route(start(), Endpoint::System(4), &Priority::ShortestFlight)
+            .unwrap()
+            .unwrap();
+        assert_eq!(route.distance, 0.0);
+        assert_eq!(route.jumps, 2);
+    }
+
+    #[test]
+    fn a_route_can_end_at_a_point_of_a_system_without_gates() {
+        let route = with_thera()
+            .route(
+                start(),
+                Endpoint::Point {
+                    system_id: 7,
+                    position: [1.0e9, 0.0, 0.0],
+                },
+                &Priority::default(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(route.jumps, 1);
+        assert_eq!(route.legs, 0);
+        assert_eq!(route.distance, 0.0);
+    }
+
+    #[test]
+    fn a_wormhole_that_has_collapsed_is_left_out() {
+        let layer = LinkLayer::from_links(vec![wormhole_between(
+            1,
+            7,
+            Some(chrono::TimeDelta::hours(1)),
+        )]);
+        let before = sample().with_links(&layer, now());
+        let after = sample().with_links(&layer, now() + chrono::TimeDelta::hours(2));
+        // Four virtual gates for a link: an entry and an exit for each way.
+        assert_eq!(before.gate_count(), sample().gate_count() + 4);
+        assert_eq!(after.gate_count(), sample().gate_count());
+        assert!(
+            after
+                .route(
+                    Endpoint::System(1),
+                    Endpoint::System(7),
+                    &Priority::FewestJumps
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn the_links_are_replaced_when_the_graph_is_made_again() {
+        let first = sample().with_links(
+            &LinkLayer::from_links(vec![wormhole_between(1, 7, None)]),
+            now(),
+        );
+        let second = first.with_links(
+            &LinkLayer::from_links(vec![wormhole_between(2, 7, None)]),
+            now(),
+        );
+        assert_eq!(first.gate_count(), sample().gate_count() + 4);
+        assert_eq!(second.gate_count(), sample().gate_count() + 4);
+        let link_ends = |graph: &GateGraph| {
+            let mut ends: Vec<_> = graph
+                .gates_in_system(7)
+                .map(|gate| gate.destination_system_id)
+                .collect();
+            ends.dedup();
+            ends
+        };
+        assert_eq!(link_ends(&first), vec![1]);
+        assert_eq!(link_ends(&second), vec![2]);
+    }
+
+    #[test]
+    fn a_virtual_gate_knows_its_link_and_a_real_one_does_not() {
+        let graph = with_thera();
+        let virtual_gate = graph.gates_in_system(7).next().unwrap().id;
+        assert!(graph.is_virtual(virtual_gate));
+        assert!(!graph.is_virtual(11));
+        assert!(!graph.is_virtual(12_345));
+        let link = graph.virtual_link(virtual_gate).unwrap();
+        assert!(link.origin == 7 || link.destination == 7);
+        assert!(graph.virtual_link(11).is_none());
+    }
+
+    #[test]
+    fn a_link_from_a_system_to_itself_is_ignored() {
+        let graph = sample().with_links(
+            &LinkLayer::from_links(vec![wormhole_between(1, 1, None)]),
+            now(),
+        );
+        assert_eq!(graph.gate_count(), sample().gate_count());
     }
 
     #[test]

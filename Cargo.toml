@@ -7,7 +7,7 @@ repository = "https://github.com/rafaga/sde/"
 keywords = ["sde", "eve-online"]
 categories = ["games", "value-formatting"]
 exclude = ["tests/",".github/",".gitignore"]
-version = "0.7.5"
+version = "0.8.0"
 edition = "2024"
 license = "MIT"
 
@@ -79,9 +79,10 @@ profile = ["dep:tracing-tracy"]
 projection-patch = []
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 kdtree = "0.8"
-rstar = "0.13"
-rusqlite = { version = "0.41", features = ["bundled", "backup", "blob", "array"] }
+rstar = "0.14"
+rusqlite = { version = "0.42", features = ["bundled", "backup", "blob", "array"] }
 sha2 = "0.11.0"
 tracing = "0.1"
 
