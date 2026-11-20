@@ -8,7 +8,7 @@ project uses [Semantic Versioning](https://semver.org/). Published versions (tag
 each tag. The top section covers what is on the current branch on top of the latest tag
 (`0.7.4`) and has no version bump in `Cargo.toml` yet.
 
-## [Unreleased]
+## [0.9.0] - 2026-11-19
 
 ### Changed
 
