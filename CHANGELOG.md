@@ -8,6 +8,15 @@ project uses [Semantic Versioning](https://semver.org/). Published versions (tag
 each tag. The top section covers what is on the current branch on top of the latest tag
 (`0.7.4`) and has no version bump in `Cargo.toml` yet.
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking:** the times of the wormhole links use `jiff` and not `chrono`: `Wormhole::expires_at` is an
+  `Option<jiff::Timestamp>`, and `Link::is_active`, `LinkLayer::active`, `LinkLayer::neighbours` and
+  `GateGraph::with_links` take a `jiff::Timestamp` as `now`. The dependency `chrono` is gone and `jiff`
+  (`std` only) takes its place.
+
 ## [0.8.0] - 2026-11-11
 
 ### Changed

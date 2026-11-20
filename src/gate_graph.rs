@@ -58,7 +58,7 @@
 
 use crate::links::{Link, LinkLayer};
 use crate::{Error, SdeManager};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::ops::Add;
@@ -468,7 +468,7 @@ impl GateGraph {
     /// [`GateGraph::gates_in_system`], [`Route::gates`]);
     /// [`GateGraph::is_virtual`] and [`GateGraph::virtual_link`] tell them
     /// apart. Its [`Gate::position`] is `[0.0; 3]` and means nothing.
-    pub fn with_links(&self, layer: &LinkLayer, now: DateTime<Utc>) -> GateGraph {
+    pub fn with_links(&self, layer: &LinkLayer, now: Timestamp) -> GateGraph {
         let real = self
             .gates
             .iter()
@@ -910,11 +910,11 @@ mod tests {
         }
     }
 
-    fn now() -> DateTime<Utc> {
-        DateTime::from_timestamp(1_800_000_000, 0).unwrap()
+    fn now() -> Timestamp {
+        Timestamp::from_second(1_800_000_000).unwrap()
     }
 
-    fn wormhole_between(a: u32, b: u32, expires_in: Option<chrono::TimeDelta>) -> Link {
+    fn wormhole_between(a: u32, b: u32, expires_in: Option<jiff::SignedDuration>) -> Link {
         Link::wormhole(
             a,
             b,
@@ -1145,10 +1145,10 @@ mod tests {
         let layer = LinkLayer::from_links(vec![wormhole_between(
             1,
             7,
-            Some(chrono::TimeDelta::hours(1)),
+            Some(jiff::SignedDuration::from_hours(1)),
         )]);
         let before = sample().with_links(&layer, now());
-        let after = sample().with_links(&layer, now() + chrono::TimeDelta::hours(2));
+        let after = sample().with_links(&layer, now() + jiff::SignedDuration::from_hours(2));
         // Four virtual gates for a link: an entry and an exit for each way.
         assert_eq!(before.gate_count(), sample().gate_count() + 4);
         assert_eq!(after.gate_count(), sample().gate_count());

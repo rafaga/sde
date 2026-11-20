@@ -16,7 +16,7 @@
 //! signatures, for one, are turned into [`Link`]s by the application.
 
 use crate::objects::Universe;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 /// A wormhole between two systems, as the two signatures that show it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +26,7 @@ pub struct Wormhole {
     /// The signature in the destination system, once it is known.
     pub in_signature: Option<String>,
     /// When it is expected to collapse, if it is known.
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<Timestamp>,
 }
 
 /// What a [`Link`] is.
@@ -63,7 +63,7 @@ impl Link {
 
     /// Whether the connection can still be used at `now`. A wormhole whose
     /// collapse is not known is taken as usable.
-    pub fn is_active(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_active(&self, now: Timestamp) -> bool {
         match &self.source {
             LinkSource::Wormhole(wormhole) => wormhole
                 .expires_at
@@ -132,7 +132,7 @@ impl LinkLayer {
     }
 
     /// The links that can be used at `now`.
-    pub fn active(&self, now: DateTime<Utc>) -> impl Iterator<Item = &Link> {
+    pub fn active(&self, now: Timestamp) -> impl Iterator<Item = &Link> {
         self.links.iter().filter(move |link| link.is_active(now))
     }
 
@@ -144,7 +144,7 @@ impl LinkLayer {
     /// The universe is not changed, so whoever must keep seeing gates only
     /// (the intel alarms, the kill counts) goes on reading
     /// `SolarSystem::connections`.
-    pub fn neighbours(&self, universe: &Universe, system: u32, now: DateTime<Utc>) -> Vec<u32> {
+    pub fn neighbours(&self, universe: &Universe, system: u32, now: Timestamp) -> Vec<u32> {
         let mut neighbours: Vec<u32> = universe
             .solar_systems
             .get(&system)
@@ -163,18 +163,18 @@ impl LinkLayer {
 mod tests {
     use super::*;
     use crate::objects::SolarSystem;
-    use chrono::TimeDelta;
+    use jiff::SignedDuration;
 
     const THERA: u32 = 31_000_005;
     const JITA: u32 = 30_000_142;
     const NEW_CAULDRON: u32 = 30_000_139;
     const PERIMETER: u32 = 30_000_144;
 
-    fn now() -> DateTime<Utc> {
-        DateTime::from_timestamp(1_800_000_000, 0).unwrap()
+    fn now() -> Timestamp {
+        Timestamp::from_second(1_800_000_000).unwrap()
     }
 
-    fn wormhole(expires_in: Option<TimeDelta>) -> Wormhole {
+    fn wormhole(expires_in: Option<SignedDuration>) -> Wormhole {
         Wormhole {
             out_signature: String::from("ABC-123"),
             in_signature: Some(String::from("XYZ-789")),
@@ -202,17 +202,17 @@ mod tests {
 
     #[test]
     fn a_wormhole_can_be_used_until_it_collapses() {
-        let link = Link::wormhole(JITA, THERA, wormhole(Some(TimeDelta::hours(2))));
+        let link = Link::wormhole(JITA, THERA, wormhole(Some(SignedDuration::from_hours(2))));
         assert!(link.is_active(now()));
-        assert!(link.is_active(now() + TimeDelta::hours(1)));
-        assert!(!link.is_active(now() + TimeDelta::hours(2)));
-        assert!(!link.is_active(now() + TimeDelta::hours(3)));
+        assert!(link.is_active(now() + SignedDuration::from_hours(1)));
+        assert!(!link.is_active(now() + SignedDuration::from_hours(2)));
+        assert!(!link.is_active(now() + SignedDuration::from_hours(3)));
     }
 
     #[test]
     fn a_wormhole_with_no_known_collapse_is_taken_as_usable() {
         let link = Link::wormhole(JITA, THERA, wormhole(None));
-        assert!(link.is_active(now() + TimeDelta::days(30)));
+        assert!(link.is_active(now() + SignedDuration::from_hours(24 * 30)));
     }
 
     #[test]
@@ -229,7 +229,7 @@ mod tests {
         let layer = LinkLayer::from_links(vec![Link::wormhole(
             THERA,
             JITA,
-            wormhole(Some(TimeDelta::hours(5))),
+            wormhole(Some(SignedDuration::from_hours(5))),
         )]);
         assert_eq!(
             layer.neighbours(&universe, JITA, now()),
@@ -245,9 +245,9 @@ mod tests {
         let layer = LinkLayer::from_links(vec![Link::wormhole(
             THERA,
             JITA,
-            wormhole(Some(TimeDelta::hours(1))),
+            wormhole(Some(SignedDuration::from_hours(1))),
         )]);
-        let later = now() + TimeDelta::hours(2);
+        let later = now() + SignedDuration::from_hours(2);
         assert_eq!(
             layer.neighbours(&universe, JITA, later),
             vec![NEW_CAULDRON, PERIMETER]
@@ -309,10 +309,10 @@ mod tests {
     #[test]
     fn only_the_active_links_are_listed_as_active() {
         let layer = LinkLayer::from_links(vec![
-            Link::wormhole(THERA, JITA, wormhole(Some(TimeDelta::hours(1)))),
-            Link::wormhole(THERA, PERIMETER, wormhole(Some(TimeDelta::hours(5)))),
+            Link::wormhole(THERA, JITA, wormhole(Some(SignedDuration::from_hours(1)))),
+            Link::wormhole(THERA, PERIMETER, wormhole(Some(SignedDuration::from_hours(5)))),
         ]);
-        let later = now() + TimeDelta::hours(2);
+        let later = now() + SignedDuration::from_hours(2);
         let active: Vec<_> = layer.active(later).map(|link| link.destination).collect();
         assert_eq!(active, vec![PERIMETER]);
     }
