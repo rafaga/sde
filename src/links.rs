@@ -310,7 +310,11 @@ mod tests {
     fn only_the_active_links_are_listed_as_active() {
         let layer = LinkLayer::from_links(vec![
             Link::wormhole(THERA, JITA, wormhole(Some(SignedDuration::from_hours(1)))),
-            Link::wormhole(THERA, PERIMETER, wormhole(Some(SignedDuration::from_hours(5)))),
+            Link::wormhole(
+                THERA,
+                PERIMETER,
+                wormhole(Some(SignedDuration::from_hours(5))),
+            ),
         ]);
         let later = now() + SignedDuration::from_hours(2);
         let active: Vec<_> = layer.active(later).map(|link| link.destination).collect();
